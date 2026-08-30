@@ -194,6 +194,10 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             headers = curl_slist_append(headers, auth_header);
         }
 
+        if (self->prompt_caching) {
+            headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
+        }
+
         long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 120L;
         curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
@@ -377,6 +381,10 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->timeout_sec = 120;
     gw->max_retries = 3;
     gw->streaming = true;
+    const char *pc_env = getenv("PROMPT_CACHING");
+    if (pc_env && (strcmp(pc_env, "true") == 0 || strcmp(pc_env, "1") == 0)) {
+        gw->prompt_caching = true;
+    }
     gw->chat_complete = openai_chat_complete;
     return gw;
 }

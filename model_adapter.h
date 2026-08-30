@@ -27,6 +27,7 @@ typedef struct ModelGateway {
     int timeout_sec;
     int max_retries;
     bool streaming;
+    bool prompt_caching;
     TokenStreamCallback stream_cb;
     void *stream_userdata;
     ModelGatewayResponse (*chat_complete)(struct ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema);

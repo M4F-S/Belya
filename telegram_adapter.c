@@ -354,11 +354,58 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                         "• Model: <code>%s</code>\n"
                         "• CWD: <code>%s</code>\n"
                         "• Memory Table: <code>%s</code>\n"
-                        "• Context: <code>%zu messages</code>",
+                        "• Context: <code>%zu messages (%zu estimated tokens)</code>\n"
+                        "• Prompt Caching: <code>%s</code>",
                         harness->agent->gateway->model, harness->cwd,
                         harness->agent->has_fts5 ? "SQLite FTS5 (BM25)" : "Standard SQLite",
-                        harness->agent->msg_count);
+                        harness->agent->msg_count, c_agent_total_tokens(harness->agent),
+                        harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
                     telegram_bot_send_message(bot, chat_id_str, status_msg);
+                    continue;
+                }
+
+                if (strcmp(text, "/sessions") == 0) {
+                    char *sess_list = c_agent_list_sessions(harness->agent);
+                    telegram_bot_send_chunks(bot, chat_id_str, sess_list);
+                    free(sess_list);
+                    continue;
+                }
+
+                if (strncmp(text, "/save", 5) == 0) {
+                    const char *sid = strlen(text) > 5 ? text + 5 : "telegram_session";
+                    while (*sid == ' ') sid++;
+                    if (strlen(sid) == 0) sid = "telegram_session";
+                    if (c_agent_save_session(harness->agent, sid, sid)) {
+                        char smsg[256];
+                        snprintf(smsg, sizeof(smsg), "💾 Session <code>%s</code> saved to database.", sid);
+                        telegram_bot_send_message(bot, chat_id_str, smsg);
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "❌ Failed to save session.");
+                    }
+                    continue;
+                }
+
+                if (strncmp(text, "/resume", 7) == 0) {
+                    const char *sid = strlen(text) > 7 ? text + 7 : "";
+                    while (*sid == ' ') sid++;
+                    if (strlen(sid) > 0) {
+                        if (c_agent_load_session(harness->agent, sid)) {
+                            char rmsg[256];
+                            snprintf(rmsg, sizeof(rmsg), "📂 Session <code>%s</code> loaded (%zu messages restored).", sid, harness->agent->msg_count);
+                            telegram_bot_send_message(bot, chat_id_str, rmsg);
+                        } else {
+                            telegram_bot_send_message(bot, chat_id_str, "❌ Session not found.");
+                        }
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "Usage: /resume <session_id>");
+                    }
+                    continue;
+                }
+
+                if (strcmp(text, "/reflect") == 0) {
+                    char *ref = c_agent_reflect_and_distill(harness->agent);
+                    telegram_bot_send_chunks(bot, chat_id_str, ref);
+                    free(ref);
                     continue;
                 }
 
@@ -366,9 +413,11 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     DynString td = dyn_str_new();
                     dyn_str_appendf(&td, "🛠️ <b>Registered Tools (%zu):</b>\n\n", harness->tool_count);
                     for (size_t t = 0; t < harness->tool_count; t++) {
-                        dyn_str_appendf(&td, "• <code>%s</code> [%s]: %s\n",
+                        const char *origin = harness->tools[t].mcp_client ? " [MCP]" : (harness->tools[t].custom_script_path ? " [Custom]" : "");
+                        dyn_str_appendf(&td, "• <code>%s</code> [%s]%s: %s\n",
                             harness->tools[t].name,
                             harness->tools[t].security == PERM_ALLOW ? "ALLOW" : "ASK",
+                            origin,
                             t < harness->agent->schema_count ? harness->agent->schemas[t].description : "");
                     }
                     telegram_bot_send_chunks(bot, chat_id_str, td.data);

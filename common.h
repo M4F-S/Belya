@@ -111,4 +111,29 @@ static inline void dyn_str_free(DynString *ds) {
     ds->len = ds->cap = 0;
 }
 
+static inline size_t count_estimated_tokens(const char *text) {
+    if (!text || *text == '\0') return 0;
+    size_t tokens = 0;
+    size_t char_count = 0;
+    bool in_word = false;
+
+    for (const char *p = text; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        char_count++;
+        if (c <= 32 || (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)) {
+            if (in_word) {
+                tokens++;
+                in_word = false;
+            }
+            if (c > 32) tokens++;
+        } else {
+            in_word = true;
+        }
+    }
+    if (in_word) tokens++;
+
+    size_t char_based = (char_count + 3) / 4;
+    return (tokens > char_based) ? tokens : char_based;
+}
+
 #endif

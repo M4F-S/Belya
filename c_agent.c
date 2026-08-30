@@ -24,13 +24,30 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     agent->messages = calloc(agent->msg_cap, sizeof(AgentMessage));
     agent->max_context_messages = 50;
 
-    // Initialize SQLite memory store for Hermes skills and reflections
+    // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
         const char *schema_sql = 
             "CREATE TABLE IF NOT EXISTS agent_memory ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  topic TEXT NOT NULL,"
             "  content TEXT NOT NULL,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS sessions ("
+            "  id TEXT PRIMARY KEY,"
+            "  title TEXT,"
+            "  model TEXT,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS session_messages ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id TEXT NOT NULL,"
+            "  idx INTEGER NOT NULL,"
+            "  role TEXT NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  tool_call_id TEXT,"
+            "  tool_calls_json TEXT,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");";
         sqlite3_exec(agent->db, schema_sql, 0, 0, 0);
@@ -152,7 +169,6 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
     if (!agent->db) return strdup("Memory database not active.");
     DynString out = dyn_str_new();
 
-    // Try FTS5 first if enabled
     if (agent->has_fts5 && query && strlen(query) > 0) {
         sqlite3_stmt *stmt;
         const char *sql = "SELECT topic, content FROM agent_memory_fts WHERE agent_memory_fts MATCH ? ORDER BY rank LIMIT 5;";
@@ -171,7 +187,6 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
         }
     }
 
-    // Fallback to LIKE query if FTS5 produced no results
     if (out.len == 0) {
         sqlite3_stmt *stmt;
         const char *sql = "SELECT topic, content FROM agent_memory WHERE topic LIKE ? OR content LIKE ? LIMIT 5;";
@@ -206,7 +221,6 @@ void c_agent_compact_history(CAgent *agent, size_t keep_recent) {
         free_single_message(&agent->messages[i]);
     }
 
-    // Shift remaining messages down (preserving messages[0] which is system)
     size_t remaining = keep_recent;
     for (size_t i = 0; i < remaining; i++) {
         agent->messages[1 + i] = agent->messages[1 + drop_count + i];
@@ -220,6 +234,221 @@ void c_agent_clear_history(CAgent *agent) {
         free_single_message(&agent->messages[i]);
     }
     agent->msg_count = 1;
+}
+
+size_t c_agent_total_tokens(const CAgent *agent) {
+    if (!agent) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < agent->msg_count; i++) {
+        total += 4; // overhead per message
+        if (agent->messages[i].content) {
+            total += count_estimated_tokens(agent->messages[i].content);
+        }
+        if (agent->messages[i].tool_calls) {
+            for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                if (agent->messages[i].tool_calls[k].arguments_json) {
+                    total += count_estimated_tokens(agent->messages[i].tool_calls[k].arguments_json);
+                }
+            }
+        }
+    }
+    return total;
+}
+
+bool c_agent_save_session(CAgent *agent, const char *session_id, const char *title) {
+    if (!agent || !agent->db || !session_id || strlen(session_id) == 0) return false;
+
+    // Upsert session metadata
+    sqlite3_stmt *stmt;
+    const char *sess_sql = "INSERT INTO sessions (id, title, model, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+                           "ON CONFLICT(id) DO UPDATE SET title = excluded.title, model = excluded.model, updated_at = CURRENT_TIMESTAMP;";
+    if (sqlite3_prepare_v2(agent->db, sess_sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, title ? title : session_id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, agent->gateway->model, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Delete existing session messages
+    const char *del_sql = "DELETE FROM session_messages WHERE session_id = ?;";
+    if (sqlite3_prepare_v2(agent->db, del_sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Insert current messages
+    const char *ins_sql = "INSERT INTO session_messages (session_id, idx, role, content, tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?);";
+    for (size_t i = 0; i < agent->msg_count; i++) {
+        if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+            sqlite3_bind_int(stmt, 2, (int)i);
+            sqlite3_bind_text(stmt, 3, agent->messages[i].role, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 4, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 5, agent->messages[i].tool_call_id ? agent->messages[i].tool_call_id : "", -1, SQLITE_STATIC);
+
+            char *tc_json = NULL;
+            if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+                JsonValue *arr = json_create_array();
+                for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                    JsonValue *tc_obj = json_create_object();
+                    json_obj_add(tc_obj, "id", json_create_string(agent->messages[i].tool_calls[k].id));
+                    json_obj_add(tc_obj, "name", json_create_string(agent->messages[i].tool_calls[k].name));
+                    json_obj_add(tc_obj, "arguments", json_create_string(agent->messages[i].tool_calls[k].arguments_json));
+                    json_arr_add(arr, tc_obj);
+                }
+                tc_json = json_serialize(arr);
+                json_free(arr);
+            }
+
+            sqlite3_bind_text(stmt, 6, tc_json ? tc_json : "", -1, SQLITE_STATIC);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+            if (tc_json) free(tc_json);
+        }
+    }
+    return true;
+}
+
+bool c_agent_load_session(CAgent *agent, const char *session_id) {
+    if (!agent || !agent->db || !session_id) return false;
+
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT idx, role, content, tool_call_id, tool_calls_json FROM session_messages WHERE session_id = ? ORDER BY idx ASC;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+
+    sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+
+    // Temporarily collect messages
+    size_t count = 0;
+    size_t cap = 32;
+    AgentMessage *loaded = calloc(cap, sizeof(AgentMessage));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (count >= cap) {
+            cap *= 2;
+            AgentMessage *more = realloc(loaded, sizeof(AgentMessage) * cap);
+            if (!more) { sqlite3_finalize(stmt); return false; }
+            loaded = more;
+        }
+
+        const char *role = (const char *)sqlite3_column_text(stmt, 1);
+        const char *content = (const char *)sqlite3_column_text(stmt, 2);
+        const char *t_id = (const char *)sqlite3_column_text(stmt, 3);
+        const char *tc_json = (const char *)sqlite3_column_text(stmt, 4);
+
+        AgentMessage *m = &loaded[count++];
+        memset(m, 0, sizeof(AgentMessage));
+        m->role = strdup(role ? role : "user");
+        m->content = strdup(content ? content : "");
+        if (t_id && strlen(t_id) > 0) m->tool_call_id = strdup(t_id);
+
+        if (tc_json && strlen(tc_json) > 0) {
+            JsonValue *tc_arr = json_parse(tc_json);
+            if (tc_arr && tc_arr->type == JSON_ARRAY && tc_arr->u.array.count > 0) {
+                m->tool_call_count = tc_arr->u.array.count;
+                m->tool_calls = calloc(m->tool_call_count, sizeof(ModelParsedToolCall));
+                for (size_t k = 0; k < m->tool_call_count; k++) {
+                    JsonValue *tc_o = tc_arr->u.array.items[k];
+                    const char *tid = json_obj_get_str(tc_o, "id");
+                    const char *tname = json_obj_get_str(tc_o, "name");
+                    const char *targs = json_obj_get_str(tc_o, "arguments");
+                    m->tool_calls[k].id = strdup(tid ? tid : "");
+                    m->tool_calls[k].name = strdup(tname ? tname : "");
+                    m->tool_calls[k].arguments_json = strdup(targs ? targs : "{}");
+                }
+            }
+            if (tc_arr) json_free(tc_arr);
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) {
+        free(loaded);
+        return false;
+    }
+
+    // Free existing messages in agent
+    for (size_t i = 0; i < agent->msg_count; i++) {
+        free_single_message(&agent->messages[i]);
+    }
+    free(agent->messages);
+
+    agent->messages = loaded;
+    agent->msg_count = count;
+    agent->msg_cap = cap;
+    return true;
+}
+
+char *c_agent_list_sessions(CAgent *agent) {
+    if (!agent || !agent->db) return strdup("Session store not active.");
+
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT s.id, s.title, s.model, s.updated_at, COUNT(m.id) "
+                      "FROM sessions s LEFT JOIN session_messages m ON s.id = m.session_id "
+                      "GROUP BY s.id ORDER BY s.updated_at DESC LIMIT 15;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return strdup("Failed to query sessions table.");
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Saved Sessions ===\n");
+    size_t count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *id = (const char *)sqlite3_column_text(stmt, 0);
+        const char *title = (const char *)sqlite3_column_text(stmt, 1);
+        const char *model = (const char *)sqlite3_column_text(stmt, 2);
+        const char *updated = (const char *)sqlite3_column_text(stmt, 3);
+        int msgs = sqlite3_column_int(stmt, 4);
+
+        dyn_str_appendf(&ds, "• [%s] \"%s\" (%d msgs) | Model: %s | Saved: %s\n",
+            id ? id : "", title ? title : "", msgs, model ? model : "", updated ? updated : "");
+        count++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) dyn_str_append(&ds, "No saved sessions found. Use /save <session_id> to checkpoint.");
+    return ds.data;
+}
+
+char *c_agent_reflect_and_distill(CAgent *agent) {
+    if (!agent || agent->msg_count <= 2) {
+        return strdup("Not enough conversation turns to distill a reusable skill.");
+    }
+
+    DynString skill = dyn_str_new();
+    dyn_str_append(&skill, "Distilled Workflow Trajectory:\n");
+    int tool_uses = 0;
+
+    for (size_t i = 1; i < agent->msg_count; i++) {
+        if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+            for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                dyn_str_appendf(&skill, "Step: Tool %s with arguments: %s\n",
+                    agent->messages[i].tool_calls[k].name,
+                    agent->messages[i].tool_calls[k].arguments_json);
+                tool_uses++;
+            }
+        }
+    }
+
+    if (tool_uses == 0) {
+        dyn_str_free(&skill);
+        return strdup("No tool actions detected in recent turns to distill.");
+    }
+
+    char topic[128];
+    snprintf(topic, sizeof(topic), "Skill (%s)", agent->messages[1].content ? agent->messages[1].content : "workflow");
+    if (strlen(topic) > 60) {
+        topic[57] = '.'; topic[58] = '.'; topic[59] = '.'; topic[60] = '\0';
+    }
+
+    c_agent_persist_memory(agent, topic, skill.data);
+    dyn_str_free(&skill);
+
+    DynString res = dyn_str_new();
+    dyn_str_appendf(&res, "Successfully distilled and indexed skill into SQLite FTS5 memory under topic: '%s'", topic);
+    return res.data;
 }
 
 ModelGatewayResponse c_agent_step(CAgent *agent) {

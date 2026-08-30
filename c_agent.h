@@ -38,6 +38,18 @@ void c_agent_persist_memory(CAgent *agent, const char *topic, const char *conten
 char *c_agent_search_memory(CAgent *agent, const char *query);
 void c_agent_compact_history(CAgent *agent, size_t keep_recent);
 void c_agent_clear_history(CAgent *agent);
+
+// Token Budgeting & Estimation
+size_t c_agent_total_tokens(const CAgent *agent);
+
+// Session Management
+bool c_agent_save_session(CAgent *agent, const char *session_id, const char *title);
+bool c_agent_load_session(CAgent *agent, const char *session_id);
+char *c_agent_list_sessions(CAgent *agent);
+
+// Skill Auto-Distillation & Trajectory Reflection
+char *c_agent_reflect_and_distill(CAgent *agent);
+
 ModelGatewayResponse c_agent_step(CAgent *agent);
 void c_agent_free(CAgent *agent);
 

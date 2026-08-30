@@ -22,6 +22,7 @@ typedef struct {
     SecurityLevel security;
     ToolCallback callback;
     MCPClient *mcp_client;
+    char *custom_script_path;   // Non-null if tool is backed by an on-disk script
 } CHarnessRegisteredTool;
 
 struct CHarness {
@@ -37,6 +38,8 @@ struct CHarness {
 
 CHarness *c_harness_init(CAgent *agent);
 void c_harness_register_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, ToolCallback fn);
+bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body);
+void c_harness_load_custom_tools(CHarness *h);
 bool c_harness_connect_mcp(CHarness *h, const char *server_cmd);
 void c_harness_repl(CHarness *h);
 void c_harness_free(CHarness *h);

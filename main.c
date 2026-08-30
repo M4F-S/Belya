@@ -3,9 +3,13 @@
 
 int main(int argc, char **argv) {
     bool telegram_mode = false;
+    const char *resume_session_id = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0) {
             telegram_mode = true;
+        } else if ((strcmp(argv[i], "--resume") == 0 || strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--session") == 0) && i + 1 < argc) {
+            resume_session_id = argv[++i];
         }
     }
 
@@ -42,6 +46,15 @@ int main(int argc, char **argv) {
         "You are an expert autonomous software engineer operating inside CHarness on a VPS. "
         "Always inspect files and verify system status before coming to conclusions."
     );
+
+    // If resume flag is provided, restore session
+    if (resume_session_id) {
+        if (c_agent_load_session(agent, resume_session_id)) {
+            printf("\033[1;32m[Session Restored]\033[0m Successfully resumed session '%s' (%zu messages loaded).\n", resume_session_id, agent->msg_count);
+        } else {
+            printf("\033[1;33m[Session Alert]\033[0m Session '%s' not found. Starting fresh session.\n", resume_session_id);
+        }
+    }
 
     // 3. Initialize CHarness & register execution engine
     CHarness *harness = c_harness_init(agent);

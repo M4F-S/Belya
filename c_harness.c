@@ -606,6 +606,264 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     return result_summary.data;
 }
 
+// Dynamic Custom Tool Execution Runner
+static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
+    (void)agent;
+    // Find matching custom tool path from harness
+    const char *script_path = NULL;
+    if (g_harness) {
+        for (size_t i = 0; i < g_harness->tool_count; i++) {
+            if (g_harness->tools[i].custom_script_path) {
+                // If callback matches or was invoked
+                script_path = g_harness->tools[i].custom_script_path;
+                break;
+            }
+        }
+    }
+    if (!script_path) return strdup("Error: Custom script path not found.");
+
+    char *args_str = args ? json_serialize(args) : strdup("{}");
+
+    int in_pipe[2];
+    int out_pipe[2];
+    if (pipe(in_pipe) == -1 || pipe(out_pipe) == -1) {
+        free(args_str);
+        return strdup("Error: Failed to create pipes for custom tool execution.");
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        free(args_str);
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        return strdup("Error: Failed to fork process for custom tool.");
+    }
+
+    if (pid == 0) {
+        // Child
+        close(in_pipe[1]);
+        dup2(in_pipe[0], STDIN_FILENO);
+        close(in_pipe[0]);
+
+        close(out_pipe[0]);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(out_pipe[1], STDERR_FILENO);
+        close(out_pipe[1]);
+
+        execl(script_path, script_path, (char *)NULL);
+        // Fallback to /bin/sh if not directly executable binary
+        execl("/bin/sh", "sh", script_path, (char *)NULL);
+        _exit(127);
+    }
+
+    // Parent
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+
+    write(in_pipe[1], args_str, strlen(args_str));
+    write(in_pipe[1], "\n", 1);
+    close(in_pipe[1]);
+    free(args_str);
+
+    int flags = fcntl(out_pipe[0], F_GETFL, 0);
+    fcntl(out_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+    DynString out = dyn_str_new();
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+    bool timed_out = false;
+
+    while (1) {
+        char buf[512];
+        ssize_t bytes = read(out_pipe[0], buf, sizeof(buf) - 1);
+        if (bytes > 0) {
+            buf[bytes] = '\0';
+            dyn_str_append(&out, buf);
+            if (out.len > 100000) break;
+        }
+
+        int status;
+        pid_t res = waitpid(pid, &status, WNOHANG);
+        if (res == pid) {
+            while ((bytes = read(out_pipe[0], buf, sizeof(buf) - 1)) > 0) {
+                buf[bytes] = '\0';
+                dyn_str_append(&out, buf);
+            }
+            break;
+        }
+
+        gettimeofday(&now, NULL);
+        double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_usec - start.tv_usec) / 1000000.0;
+        if (elapsed > 15.0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            timed_out = true;
+            break;
+        }
+        usleep(10000);
+    }
+    close(out_pipe[0]);
+
+    if (timed_out) dyn_str_append(&out, "\n[Custom tool execution timed out after 15s]");
+    if (out.len == 0) dyn_str_append(&out, "Custom tool executed successfully with no output.");
+    return out.data;
+}
+
+// Tool define_tool: Enables CAgent to dynamically add new tools to itself
+static char *tool_define_tool(CAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return strdup("Error: Harness runtime not active.");
+
+    const char *name = json_obj_get_str(args, "name");
+    const char *desc = json_obj_get_str(args, "description");
+    JsonValue *params = json_obj_get(args, "parameters");
+    const char *script_body = json_obj_get_str(args, "script_body");
+
+    if (!name || !desc || !script_body) {
+        return strdup("Error: Missing required fields (name, description, script_body).");
+    }
+
+    // Clone params if present, or create default object schema
+    JsonValue *params_clone = NULL;
+    if (params) {
+        char *s = json_serialize(params);
+        params_clone = json_parse(s);
+        free(s);
+    } else {
+        params_clone = json_create_object();
+        json_obj_add(params_clone, "type", json_create_string("object"));
+    }
+
+    bool ok = c_harness_define_custom_tool(g_harness, name, desc, params_clone, script_body);
+    if (ok) {
+        DynString res = dyn_str_new();
+        dyn_str_appendf(&res, "Tool '%s' successfully defined, persisted, and registered into active tool catalog.", name);
+        return res.data;
+    }
+    return strdup("Error: Failed to register custom tool (max tool limit reached or disk write error).");
+}
+
+bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
+    if (!h || !name || !script_body || h->tool_count >= 64) {
+        if (params) json_free(params);
+        return false;
+    }
+
+    mkdir(".charness", 0755);
+    mkdir(".charness/tools", 0755);
+
+    char script_path[512];
+    snprintf(script_path, sizeof(script_path), ".charness/tools/%s.sh", name);
+
+    FILE *sf = fopen(script_path, "wb");
+    if (!sf) {
+        if (params) json_free(params);
+        return false;
+    }
+
+    // Write shebang if missing
+    if (strncmp(script_body, "#!", 2) != 0) {
+        fprintf(sf, "#!/bin/sh\n");
+    }
+    fprintf(sf, "%s\n", script_body);
+    fclose(sf);
+    chmod(script_path, 0755);
+
+    // Save JSON metadata for auto-loading on restart
+    char meta_path[512];
+    snprintf(meta_path, sizeof(meta_path), ".charness/tools/%s.json", name);
+    JsonValue *meta = json_create_object();
+    json_obj_add(meta, "name", json_create_string(name));
+    json_obj_add(meta, "description", json_create_string(desc ? desc : ""));
+    json_obj_add(meta, "parameters", params);
+    json_obj_add(meta, "script_path", json_create_string(script_path));
+
+    char *meta_str = json_serialize(meta);
+    FILE *mf = fopen(meta_path, "wb");
+    if (mf) {
+        fwrite(meta_str, 1, strlen(meta_str), mf);
+        fclose(mf);
+    }
+    free(meta_str);
+
+    // Detach params before freeing meta wrapper
+    meta->u.object.members[2].value = NULL;
+    json_free(meta);
+
+    // Register into active harness
+    h->tools[h->tool_count].name = strdup(name);
+    h->tools[h->tool_count].security = PERM_ASK_USER;
+    h->tools[h->tool_count].callback = tool_custom_script_runner;
+    h->tools[h->tool_count].custom_script_path = strdup(script_path);
+    h->tools[h->tool_count].mcp_client = NULL;
+    h->tool_count++;
+
+    c_agent_register_schema(h->agent, name, desc ? desc : "", params);
+    return true;
+}
+
+void c_harness_load_custom_tools(CHarness *h) {
+    if (!h) return;
+    DIR *d = opendir(".charness/tools");
+    if (!d) return;
+
+    struct dirent *dir;
+    while ((dir = readdir(d)) != NULL) {
+        const char *ext = strrchr(dir->d_name, '.');
+        if (ext && strcmp(ext, ".json") == 0) {
+            char fpath[512];
+            snprintf(fpath, sizeof(fpath), ".charness/tools/%s", dir->d_name);
+            FILE *f = fopen(fpath, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long sz = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                char *buf = malloc(sz + 1);
+                if (buf) {
+                    size_t r = fread(buf, 1, sz, f);
+                    buf[r] = '\0';
+                    JsonValue *meta = json_parse(buf);
+                    if (meta) {
+                        const char *t_name = json_obj_get_str(meta, "name");
+                        const char *t_desc = json_obj_get_str(meta, "description");
+                        const char *s_path = json_obj_get_str(meta, "script_path");
+                        JsonValue *t_schema = json_obj_get(meta, "parameters");
+
+                        if (t_name && s_path && h->tool_count < 64) {
+                            // Check if already registered
+                            bool exists = false;
+                            for (size_t k = 0; k < h->tool_count; k++) {
+                                if (strcmp(h->tools[k].name, t_name) == 0) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists) {
+                                char *sch_str = t_schema ? json_serialize(t_schema) : strdup("{\"type\":\"object\"}");
+                                JsonValue *sch_clone = json_parse(sch_str);
+                                free(sch_str);
+
+                                h->tools[h->tool_count].name = strdup(t_name);
+                                h->tools[h->tool_count].security = PERM_ASK_USER;
+                                h->tools[h->tool_count].callback = tool_custom_script_runner;
+                                h->tools[h->tool_count].custom_script_path = strdup(s_path);
+                                h->tools[h->tool_count].mcp_client = NULL;
+                                h->tool_count++;
+
+                                c_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
+                            }
+                        }
+                        json_free(meta);
+                    }
+                    free(buf);
+                }
+                fclose(f);
+            }
+        }
+    }
+    closedir(d);
+}
+
 // Harness Setup
 
 static JsonValue *build_string_param_schema(const char *prop_name, const char *prop_desc) {
@@ -800,6 +1058,33 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(sub_params, "required", sub_req);
     c_harness_register_tool(h, "spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
 
+    // 13. define_tool (Self-Tooling Dynamic Evolution)
+    JsonValue *def_params = json_create_object();
+    json_obj_add(def_params, "type", json_create_string("object"));
+    JsonValue *d_props = json_create_object();
+    JsonValue *d_name = json_create_object();
+    json_obj_add(d_name, "type", json_create_string("string"));
+    json_obj_add(d_name, "description", json_create_string("Unique identifier name for the new tool"));
+    json_obj_add(d_props, "name", d_name);
+    JsonValue *d_desc = json_create_object();
+    json_obj_add(d_desc, "type", json_create_string("string"));
+    json_obj_add(d_desc, "description", json_create_string("Clear explanation of what the tool does"));
+    json_obj_add(d_props, "description", d_desc);
+    JsonValue *d_body = json_create_object();
+    json_obj_add(d_body, "type", json_create_string("string"));
+    json_obj_add(d_body, "description", json_create_string("Executable shell/python script body"));
+    json_obj_add(d_props, "script_body", d_body);
+    json_obj_add(def_params, "properties", d_props);
+    JsonValue *d_req = json_create_array();
+    json_arr_add(d_req, json_create_string("name"));
+    json_arr_add(d_req, json_create_string("description"));
+    json_arr_add(d_req, json_create_string("script_body"));
+    json_obj_add(def_params, "required", d_req);
+    c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool for self-evolution", def_params, PERM_ASK_USER, tool_define_tool);
+
+    // Load any previously defined custom tools
+    c_harness_load_custom_tools(h);
+
     return h;
 }
 
@@ -812,6 +1097,7 @@ void c_harness_register_tool(CHarness *h, const char *name, const char *desc, Js
     h->tools[h->tool_count].security = sec;
     h->tools[h->tool_count].callback = fn;
     h->tools[h->tool_count].mcp_client = NULL;
+    h->tools[h->tool_count].custom_script_path = NULL;
     h->tool_count++;
 
     c_agent_register_schema(h->agent, name, desc, params);
@@ -843,6 +1129,7 @@ bool c_harness_connect_mcp(CHarness *h, const char *server_cmd) {
                 h->tools[h->tool_count].name = strdup(t_name);
                 h->tools[h->tool_count].security = PERM_ASK_USER;
                 h->tools[h->tool_count].callback = NULL;
+                h->tools[h->tool_count].custom_script_path = NULL;
                 h->tools[h->tool_count].mcp_client = client;
                 h->tool_count++;
 
@@ -875,14 +1162,20 @@ static void print_help(CHarness *h) {
     printf("\n\033[1;36m=== CHarness & CAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
     printf("Current CWD:     \033[1;33m%s\033[0m\n", h->cwd);
-    printf("Context Size:    \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
-    printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Disabled (LIKE fallback)");
+    printf("Context Size:    \033[1;33m%zu messages | %zu estimated tokens\033[0m\n", h->agent->msg_count, c_agent_total_tokens(h->agent));
+    printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
+    printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
     printf("Streaming SSE:   \033[1;33m%s\033[0m\n", h->agent->gateway->streaming ? "Enabled (Real-time)" : "Disabled");
     printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
     printf("\033[1;32mAvailable Slash Commands:\033[0m\n");
     printf("  /help            Show this help reference\n");
+    printf("  /status          View active system status and token utilization\n");
     printf("  /tools           List all registered tools and permissions\n");
     printf("  /rules           View active repository guidelines (.agentrules)\n");
+    printf("  /sessions        List all checkpointed conversation sessions\n");
+    printf("  /save [id]       Checkpoint conversation tree to SQLite\n");
+    printf("  /resume <id>     Restore conversation session by ID\n");
+    printf("  /reflect         Distill recent trajectory into reusable SQLite FTS5 skill\n");
     printf("  /clear           Reset conversation history (preserves system prompt)\n");
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
     printf("  /memory [query]  Search SQLite persistent memory directly\n");
@@ -904,7 +1197,7 @@ static void list_tools(CHarness *h) {
             sec_str = "DENY";
             sec_color = "\033[1;31m";
         }
-        const char *origin = h->tools[i].mcp_client ? " [MCP]" : "";
+        const char *origin = h->tools[i].mcp_client ? " [MCP]" : (h->tools[i].custom_script_path ? " [Custom Script]" : "");
         printf("  - \033[1;37m%-16s\033[0m [%s%s\033[0m]%s %s\n", 
             h->tools[i].name, sec_color, sec_str, origin,
             i < h->agent->schema_count ? h->agent->schemas[i].description : "");
@@ -915,7 +1208,8 @@ static void list_tools(CHarness *h) {
 static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == '/') {
         const char *commands[] = {
-            "/help", "/tools", "/status", "/rules", "/clear", "/compact",
+            "/help", "/status", "/tools", "/rules", "/sessions",
+            "/save", "/resume", "/reflect", "/clear", "/compact",
             "/memory", "/model", "/cwd", "/mcp", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -931,13 +1225,14 @@ void c_harness_repl(CHarness *h) {
     linenoiseHistoryLoad(".charness_history");
     linenoiseSetCompletionCallback(harness_completion_hook);
 
-    printf("\033[1;32m=== CHarness & CAgent Evolution System Activated ===\033[0m\n");
+    printf("\033[1;32m=== CHarness & CAgent Evolution 2.0 System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
     while (1) {
+        size_t est_tokens = c_agent_total_tokens(h->agent);
         char prompt[128];
-        snprintf(prompt, sizeof(prompt), "\033[1;35mcharness [%zu msgs]>\033[0m ", h->agent->msg_count);
+        snprintf(prompt, sizeof(prompt), "\033[1;35mcharness [%zu msgs | %zu toks]>\033[0m ", h->agent->msg_count, est_tokens);
 
         char *line = linenoise(prompt);
         if (!line) break;
@@ -962,6 +1257,18 @@ void c_harness_repl(CHarness *h) {
                 print_help(h);
                 continue;
             }
+            if (strcmp(input_buf, "/status") == 0) {
+                printf("\n\033[1;36m=== CHarness System Status ===\033[0m\n");
+                printf("Active Model:    \033[1;33m%s\033[0m\n", h->agent->gateway->model);
+                printf("Endpoint:        \033[1;33m%s\033[0m\n", h->agent->gateway->endpoint);
+                printf("Working Dir:     \033[1;33m%s\033[0m\n", h->cwd);
+                printf("Message History: \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
+                printf("Token Budget:    \033[1;33m%zu estimated tokens\033[0m\n", c_agent_total_tokens(h->agent));
+                printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
+                printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
+                printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
+                continue;
+            }
             if (strcmp(input_buf, "/tools") == 0) {
                 list_tools(h);
                 continue;
@@ -978,14 +1285,41 @@ void c_harness_repl(CHarness *h) {
                 }
                 continue;
             }
-            if (strcmp(input_buf, "/status") == 0) {
-                printf("\n\033[1;36m=== CHarness System Status ===\033[0m\n");
-                printf("Active Model:    \033[1;33m%s\033[0m\n", h->agent->gateway->model);
-                printf("Endpoint:        \033[1;33m%s\033[0m\n", h->agent->gateway->endpoint);
-                printf("Working Dir:     \033[1;33m%s\033[0m\n", h->cwd);
-                printf("Message History: \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
-                printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
-                printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
+            if (strcmp(input_buf, "/sessions") == 0) {
+                char *sess_list = c_agent_list_sessions(h->agent);
+                printf("\n%s\n", sess_list);
+                free(sess_list);
+                continue;
+            }
+            if (strncmp(input_buf, "/save", 5) == 0) {
+                const char *s_id = strlen(input_buf) > 5 ? input_buf + 5 : "default_session";
+                while (*s_id == ' ') s_id++;
+                if (strlen(s_id) == 0) s_id = "default_session";
+                if (c_agent_save_session(h->agent, s_id, s_id)) {
+                    printf("\033[1;32mSession '%s' successfully checkpointed to SQLite database.\033[0m\n\n", s_id);
+                } else {
+                    printf("\033[1;31mFailed to save session.\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/resume", 7) == 0) {
+                const char *s_id = strlen(input_buf) > 7 ? input_buf + 7 : "";
+                while (*s_id == ' ') s_id++;
+                if (strlen(s_id) > 0) {
+                    if (c_agent_load_session(h->agent, s_id)) {
+                        printf("\033[1;32mSession '%s' successfully loaded (%zu messages restored).\033[0m\n\n", s_id, h->agent->msg_count);
+                    } else {
+                        printf("\033[1;31mSession '%s' not found or empty.\033[0m\n\n", s_id);
+                    }
+                } else {
+                    printf("Usage: /resume <session_id>. Type /sessions to list available sessions.\n\n");
+                }
+                continue;
+            }
+            if (strcmp(input_buf, "/reflect") == 0) {
+                char *ref = c_agent_reflect_and_distill(h->agent);
+                printf("\n\033[1;36m=== Reflection & Skill Distillation ===\033[0m\n%s\n\n", ref);
+                free(ref);
                 continue;
             }
             if (strcmp(input_buf, "/clear") == 0) {
@@ -1126,6 +1460,7 @@ void c_harness_free(CHarness *h) {
     if (!h) return;
     for (size_t i = 0; i < h->tool_count; i++) {
         if (h->tools[i].name) free(h->tools[i].name);
+        if (h->tools[i].custom_script_path) free(h->tools[i].custom_script_path);
     }
     for (size_t s = 0; s < h->mcp_server_count; s++) {
         mcp_client_close(h->mcp_servers[s]);

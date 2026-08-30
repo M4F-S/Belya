@@ -75,6 +75,25 @@ void test_minijson(void) {
     printf("  -> MiniJSON PASSED\n");
 }
 
+void test_token_estimator(void) {
+    printf("[Test] BPE-calibrated Token Estimator...\n");
+    const char *sample = "Hello world! This is a test of the BPE token estimation algorithm in C99.";
+    size_t tokens = count_estimated_tokens(sample);
+    assert(tokens >= 15 && tokens <= 25);
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, ":memory:", "System instructions for token testing");
+    c_agent_add_message(agent, "user", "How many tokens are in this sentence?");
+    c_agent_add_message(agent, "assistant", "This sentence contains approximately 10 tokens.");
+
+    size_t total_agent_tokens = c_agent_total_tokens(agent);
+    assert(total_agent_tokens > 20);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    printf("  -> Token Estimator PASSED (Total: %zu tokens)\n", total_agent_tokens);
+}
+
 void test_agent_memory_and_rules(void) {
     printf("[Test] Agent Memory (FTS5) & Rules Auto-Discovery...\n");
 
@@ -125,14 +144,98 @@ void test_agent_memory_and_rules(void) {
     printf("  -> Agent Memory & Rules PASSED\n");
 }
 
+void test_session_checkpointing(void) {
+    printf("[Test] Session Checkpointing & Resumption...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_session_db.sqlite", "System Root Instructions");
+
+    c_agent_add_message(agent, "user", "Fix bug in memory allocator");
+    c_agent_add_message(agent, "assistant", "I am inspecting the allocator code.");
+    c_agent_add_tool_result(agent, "call_123", "read_file", "void *alloc() { return malloc(10); }");
+    c_agent_add_message(agent, "assistant", "Fixed the bug by checking null pointers.");
+
+    assert(agent->msg_count == 5);
+
+    // Save Session
+    bool saved = c_agent_save_session(agent, "test_sess_001", "Memory Bug Fix");
+    assert(saved == true);
+
+    char *sessions_list = c_agent_list_sessions(agent);
+    assert(strstr(sessions_list, "test_sess_001") != NULL);
+    assert(strstr(sessions_list, "Memory Bug Fix") != NULL);
+    free(sessions_list);
+
+    // Clear agent memory completely
+    c_agent_clear_history(agent);
+    assert(agent->msg_count == 1);
+
+    // Restore Session
+    bool loaded = c_agent_load_session(agent, "test_sess_001");
+    assert(loaded == true);
+    assert(agent->msg_count == 5);
+    assert(strcmp(agent->messages[1].role, "user") == 0);
+    assert(strcmp(agent->messages[1].content, "Fix bug in memory allocator") == 0);
+    assert(strcmp(agent->messages[3].role, "tool") == 0);
+    assert(strstr(agent->messages[3].content, "void *alloc()") != NULL);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_session_db.sqlite");
+    printf("  -> Session Checkpointing & Resumption PASSED\n");
+}
+
+void test_self_tooling_define_tool(void) {
+    printf("[Test] Dynamic Self-Tooling (define_tool & Custom Script Execution)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_dynamic_tool.sqlite", "System Prompt");
+    CHarness *h = c_harness_init(agent);
+
+    size_t orig_tools = h->tool_count;
+
+    // Define a new tool dynamically
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    const char *script = "#!/bin/sh\necho \"CUSTOM_TOOL_OUTPUT_VERIFIED\"\n";
+
+    bool def_ok = c_harness_define_custom_tool(h, "custom_calc", "A dynamically invented calculator tool", params, script);
+    assert(def_ok == true);
+    assert(h->tool_count == orig_tools + 1);
+
+    // Execute the custom tool
+    CHarnessRegisteredTool *custom_t = &h->tools[h->tool_count - 1];
+    assert(strcmp(custom_t->name, "custom_calc") == 0);
+    assert(custom_t->callback != NULL);
+
+    char *obs = custom_t->callback(agent, NULL);
+    assert(obs != NULL);
+    assert(strstr(obs, "CUSTOM_TOOL_OUTPUT_VERIFIED") != NULL);
+    free(obs);
+
+    // Test Reflection
+    c_agent_add_message(agent, "user", "Invent and run custom_calc");
+    c_agent_add_message(agent, "assistant", "Executing custom calc");
+    char *reflection = c_agent_reflect_and_distill(agent);
+    assert(reflection != NULL);
+    free(reflection);
+
+    c_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_dynamic_tool.sqlite");
+    unlink(".charness/tools/custom_calc.sh");
+    unlink(".charness/tools/custom_calc.json");
+    rmdir(".charness/tools");
+    rmdir(".charness");
+    printf("  -> Dynamic Self-Tooling PASSED\n");
+}
+
 void test_harness_tools_and_patches(void) {
-    printf("[Test] Harness Tool Suite (12 Tools) & Patch Engine...\n");
+    printf("[Test] Harness Tool Suite (13 Tools) & Patch Engine...\n");
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
     gw->streaming = false;
     CAgent *agent = c_agent_init(gw, "test_harness_mem.sqlite", "Test");
     CHarness *h = c_harness_init(agent);
 
-    assert(h->tool_count >= 12);
+    assert(h->tool_count >= 13);
 
     // 1. Write file
     JsonValue *w_args = json_create_object();
@@ -238,7 +341,6 @@ void test_telegram_adapter(void) {
     assert(bot != NULL);
     assert(strcmp(bot->bot_token, "123456:FAKE_TOKEN_FOR_UNIT_TEST") == 0);
 
-    // Test stop
     telegram_bot_stop(bot);
     assert(bot->running == false);
 
@@ -247,10 +349,13 @@ void test_telegram_adapter(void) {
 }
 
 int main(void) {
-    printf("\n================ Running CHarness & CAgent Test Suite ================\n");
+    printf("\n================ Running CHarness & CAgent Evolution 2.0 Test Suite ================\n");
     test_dyn_string();
     test_minijson();
+    test_token_estimator();
     test_agent_memory_and_rules();
+    test_session_checkpointing();
+    test_self_tooling_define_tool();
     test_harness_tools_and_patches();
     test_telegram_adapter();
     printf("================ All Tests Passed Successfully (100%%) ================\n\n");
