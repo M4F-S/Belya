@@ -46,6 +46,32 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     DynString sys = dyn_str_new();
     dyn_str_append(&sys, system_instructions);
     dyn_str_append(&sys, "\nYou are C Agent, an autonomous software engine. Use your tools sequentially to solve tasks.");
+
+    // Check for repository guidelines (.agentrules / AGENT.md / CLAUDE.md)
+    const char *rules_files[] = {".agentrules", "AGENT.md", "CLAUDE.md", NULL};
+    for (int rf = 0; rules_files[rf]; rf++) {
+        FILE *rfp = fopen(rules_files[rf], "r");
+        if (rfp) {
+            fseek(rfp, 0, SEEK_END);
+            long rsz = ftell(rfp);
+            fseek(rfp, 0, SEEK_SET);
+            if (rsz > 0 && rsz < 50000) {
+                char *rbuf = malloc(rsz + 1);
+                if (rbuf) {
+                    size_t rread = fread(rbuf, 1, rsz, rfp);
+                    rbuf[rread] = '\0';
+                    dyn_str_append(&sys, "\n\n=== Repository Guidelines (");
+                    dyn_str_append(&sys, rules_files[rf]);
+                    dyn_str_append(&sys, ") ===\n");
+                    dyn_str_append(&sys, rbuf);
+                    free(rbuf);
+                }
+            }
+            fclose(rfp);
+            break;
+        }
+    }
+
     c_agent_add_message(agent, "system", sys.data);
     dyn_str_free(&sys);
 

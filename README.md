@@ -1,20 +1,22 @@
 # CHarness — High-Performance Autonomous C Agent & Security Harness
 
-A lightweight, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, and low-level POSIX execution safety.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, and Model Context Protocol (MCP) tool extensibility.
 
 ---
 
 ## Key Features
 
-- **Zero Heavy Dependencies:** Built on pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js or Python runtime required.
-- **Micro Footprint:** Compiles to a self-contained ~55KB binary with instant (<2ms) startup and minimal memory usage.
-- **Model Agnostic:** Works with OpenAI, OpenRouter, Groq, or local offline LLMs (Ollama, vLLM, llama.cpp).
-- **Hermes-3 ReAct Reasoning:** Multi-turn autonomous tool execution loop with dynamic schema emission.
-- **Persistent Knowledge Memory:** SQLite `FTS5` virtual tables with BM25 rank-ordered full-text retrieval.
-- **Claude Code-Style Security Gates:** Tiered authorization (`PERM_ALLOW`, `PERM_ASK_USER`, `PERM_DENY`) for sensitive system operations.
-- **POSIX Sandbox & Process Control:** Non-blocking pipe execution with 15-second timeout protection and persistent directory tracking.
-- **Sliding Context Window:** Dynamic message compaction and history pruning.
-- **Interactive REPL & Slash Commands:** In-terminal controls (`/help`, `/tools`, `/clear`, `/compact`, `/memory`, `/model`, `/cwd`).
+- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
+- **Micro Footprint & Instant Startup:** Single self-contained ~80KB binary with instant (<2ms) startup and minimal RAM footprint.
+- **Model Agnostic with SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and reasoning display. Works with OpenAI, Groq, OpenRouter, or local offline LLMs (Ollama, vLLM, llama.cpp).
+- **Hierarchical Subagent Delegation (`spawn_subagent`):** Autonomous multi-agent task execution in isolated sandboxes.
+- **Project Guidelines Auto-Discovery:** Automatically discovers and injects `.agentrules`, `AGENT.md`, or `CLAUDE.md` from repository roots.
+- **Model Context Protocol (MCP) Client:** Built-in stdio JSON-RPC 2.0 client to connect external MCP tool servers dynamically.
+- **Claude Code-Style Tool Suite:** 12 native tools including unified search/replace patch application, line-range file slicing, and Git tools.
+- **Persistent SQLite FTS5 Memory:** BM25 rank-ordered full-text indexing for skill recall.
+- **Tiered Security Gates:** Operator confirmation (`PERM_ALLOW`, `PERM_ASK_USER`, `PERM_DENY`) for sensitive filesystem and shell operations.
+- **POSIX Sandbox & Process Control:** Non-blocking execution with persistent working directory (`cwd`) tracking and 15s execution timeouts.
+- **Linenoise Interactive CLI:** Up/Down history navigation, persistent `.charness_history`, and tab autocompletion.
 
 ---
 
@@ -23,14 +25,18 @@ A lightweight, zero-dependency autonomous AI agent and security execution harnes
 ```
 .
 ├── common.h          # Dynamic string buffers & memory management
+├── linenoise.h       # Single-file zero-dependency line editor header
+├── linenoise.c       # Terminal raw mode, ANSI escape codes, & tab completion
 ├── minijson.h        # Lightweight JSON AST parser & serializer header
 ├── minijson.c        # Zero-dependency JSON AST engine
-├── model_adapter.h   # Transport interface definition
-├── model_adapter.c   # libcurl client with exponential backoff retries & error handling
+├── mcp_client.h      # Stdio JSON-RPC 2.0 Model Context Protocol client header
+├── mcp_client.c      # Bidirectional pipe transport & tool discovery
+├── model_adapter.h   # Transport interface definition & SSE streaming
+├── model_adapter.c   # libcurl client with exponential backoff & SSE parser
 ├── c_agent.h         # Hermes-style Agent reasoning core & SQLite memory header
 ├── c_agent.c         # ReAct agent loop, history compaction, and FTS5 search
 ├── c_harness.h       # Terminal harness & security gate header
-├── c_harness.c       # POSIX sandboxing, 8 native tools, persistent CWD, and REPL
+├── c_harness.c       # POSIX sandboxing, 12 native tools, subagents, and REPL
 ├── main.c            # Entry point and runtime configuration
 ├── test_suite.c      # Unit and integration test suite
 ├── Makefile          # Build configuration
@@ -39,16 +45,20 @@ A lightweight, zero-dependency autonomous AI agent and security execution harnes
 
 ---
 
-## Native Tool Suite
+## Native Tool Suite (12 Tools)
 
 1. **`bash`** (`PERM_ASK_USER`): Executes shell commands with persistent CWD tracking and 15s timeout protection.
 2. **`read_file`** (`PERM_ALLOW`): Reads file contents with optional line-range slicing (`offset` & `limit`).
 3. **`write_file`** (`PERM_ASK_USER`): Writes text content directly to disk.
-4. **`edit_file`** (`PERM_ASK_USER`): Performs exact search-and-replace snippet modifications without rewriting full files.
-5. **`list_dir`** (`PERM_ALLOW`): Inspects directory contents.
-6. **`search_files`** (`PERM_ALLOW`): Recursively searches text patterns across codebase files (grep-like).
-7. **`save_memory`** (`PERM_ALLOW`): Stores verified knowledge and skills into SQLite persistent memory.
-8. **`recall_memory`** (`PERM_ALLOW`): Searches SQLite memory using FTS5 BM25 ranking.
+4. **`edit_file`** (`PERM_ASK_USER`): Performs exact search-and-replace snippet modifications.
+5. **`apply_patch`** (`PERM_ASK_USER`): Applies multi-hunk structured replacement patches (`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE`).
+6. **`list_dir`** (`PERM_ALLOW`): Inspects directory contents.
+7. **`search_files`** (`PERM_ALLOW`): Recursively searches text patterns across codebase files (grep-like).
+8. **`git_status`** (`PERM_ALLOW`): Inspects Git working copy status.
+9. **`git_diff`** (`PERM_ALLOW`): Inspects staged or unstaged Git diffs.
+10. **`save_memory`** (`PERM_ALLOW`): Stores verified knowledge and skills into SQLite persistent memory.
+11. **`recall_memory`** (`PERM_ALLOW`): Searches SQLite memory using FTS5 BM25 ranking.
+12. **`spawn_subagent`** (`PERM_ALLOW`): Spawns a child autonomous agent worker in an isolated context.
 
 ---
 
@@ -63,7 +73,7 @@ A lightweight, zero-dependency autonomous AI agent and security execution harnes
 make
 ```
 
-### Run Tests
+### Run Test Suite
 ```bash
 make test
 ```
@@ -90,15 +100,17 @@ export MODEL_API_KEY="sk-..."
 
 ---
 
-## REPL Commands
+## REPL Commands & Controls
 
 - `/help` — Display system status and command reference
-- `/tools` — Show registered tools and permission levels
+- `/tools` — Show registered tools (including dynamic MCP tools) and permissions
+- `/rules` — View active repository guidelines (`.agentrules`)
 - `/clear` — Reset conversation history (preserves system instructions)
 - `/compact [N]` — Prune older messages, keeping `N` recent turns
 - `/memory [query]` — Query SQLite persistent memory directly
 - `/model <name>` — Switch active AI model dynamically
 - `/cwd [path]` — View or change current working directory
+- `/mcp <command>` — Connect to an external stdio MCP server (e.g. `/mcp npx -y @modelcontextprotocol/server-filesystem .`)
 - `exit` — Terminate the REPL
 
 ---

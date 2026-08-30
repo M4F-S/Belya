@@ -1,5 +1,4 @@
 #include "c_harness.h"
-#include "linenoise.h"
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -11,30 +10,6 @@
 #include <fnmatch.h>
 
 static CHarness *g_harness = NULL;
-static bool g_reasoning_header_printed = false;
-static bool g_content_header_printed = false;
-
-static void cli_stream_callback(const char *chunk, bool is_reasoning, void *userdata) {
-    (void)userdata;
-    if (is_reasoning) {
-        if (!g_reasoning_header_printed) {
-            printf("\n\033[0;36m[Thinking / Reasoning]:\033[0m\n\033[0;90m");
-            g_reasoning_header_printed = true;
-        }
-        printf("%s", chunk);
-        fflush(stdout);
-    } else {
-        if (g_reasoning_header_printed && !g_content_header_printed) {
-            printf("\033[0m\n\n\033[1;34m[C Agent]:\033[0m\n");
-            g_content_header_printed = true;
-        } else if (!g_content_header_printed) {
-            printf("\n\033[1;34m[C Agent]:\033[0m\n");
-            g_content_header_printed = true;
-        }
-        printf("%s", chunk);
-        fflush(stdout);
-    }
-}
 
 // Built-in Native Tools
 
@@ -140,7 +115,6 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
         int status;
         pid_t res = waitpid(pid, &status, WNOHANG);
         if (res == pid) {
-            // Child exited, drain remaining pipe bytes
             while ((bytes = read(pipefd[0], buf, sizeof(buf) - 1)) > 0) {
                 buf[bytes] = '\0';
                 dyn_str_append(&out, buf);
@@ -181,7 +155,6 @@ static char *tool_read_file(CAgent *agent, const JsonValue *args) {
     FILE *f = fopen(path, "rb");
     if (!f) return strdup("Error: Target file not found or inaccessible.");
 
-    // If offset or limit specified, read line-by-line
     if (offset_num > 0 || limit_num > 0) {
         size_t start_line = offset_num > 0 ? (size_t)offset_num : 1;
         size_t max_lines = limit_num > 0 ? (size_t)limit_num : 200;
@@ -309,6 +282,95 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
     return msg.data;
 }
 
+static char *tool_apply_patch(CAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *path = json_obj_get_str(args, "path");
+    const char *patch = json_obj_get_str(args, "patch");
+
+    if (!path || !patch) return strdup("Error: Missing path or patch argument.");
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return strdup("Error: Target file not found.");
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char *orig = malloc(sz + 1);
+    if (!orig) { fclose(f); return strdup("Error: Out of memory."); }
+    size_t r = fread(orig, 1, sz, f);
+    orig[r] = '\0';
+    fclose(f);
+
+    const char *search_marker = "<<<<<<< SEARCH\n";
+    const char *div_marker = "=======\n";
+    const char *replace_marker = ">>>>>>> REPLACE";
+
+    if (strstr(patch, search_marker) && strstr(patch, div_marker)) {
+        const char *p = patch;
+        char *cur_doc = orig;
+
+        while ((p = strstr(p, search_marker)) != NULL) {
+            p += strlen(search_marker);
+            const char *div = strstr(p, div_marker);
+            if (!div) break;
+
+            size_t search_len = div - p;
+            char *search_str = malloc(search_len + 1);
+            memcpy(search_str, p, search_len);
+            search_str[search_len] = '\0';
+
+            const char *rep_start = div + strlen(div_marker);
+            const char *rep_end = strstr(rep_start, replace_marker);
+            if (!rep_end) { free(search_str); break; }
+
+            size_t rep_len = rep_end - rep_start;
+            char *rep_str = malloc(rep_len + 1);
+            memcpy(rep_str, rep_start, rep_len);
+            rep_str[rep_len] = '\0';
+
+            char *match = strstr(cur_doc, search_str);
+            if (!match) {
+                free(search_str);
+                free(rep_str);
+                if (cur_doc != orig) free(cur_doc);
+                free(orig);
+                return strdup("Error: Search block mismatch during patch application.");
+            }
+
+            size_t pre_len = match - cur_doc;
+            size_t post_len = strlen(match + search_len);
+
+            DynString next_doc = dyn_str_new();
+            dyn_str_append_len(&next_doc, cur_doc, pre_len);
+            dyn_str_append_len(&next_doc, rep_str, rep_len);
+            dyn_str_append_len(&next_doc, match + search_len, post_len);
+
+            if (cur_doc != orig) free(cur_doc);
+            cur_doc = next_doc.data;
+
+            free(search_str);
+            free(rep_str);
+            p = rep_end + strlen(replace_marker);
+        }
+
+        FILE *out_f = fopen(path, "wb");
+        if (!out_f) {
+            if (cur_doc != orig) free(cur_doc);
+            free(orig);
+            return strdup("Error: Failed to open target file for writing.");
+        }
+        fwrite(cur_doc, 1, strlen(cur_doc), out_f);
+        fclose(out_f);
+        if (cur_doc != orig) free(cur_doc);
+        free(orig);
+        return strdup("Patch successfully applied to file.");
+    }
+
+    free(orig);
+    return strdup("Error: Unsupported patch format. Use <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks.");
+}
+
 static char *tool_list_dir(CAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
@@ -406,6 +468,62 @@ static char *tool_search_files(CAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
+static char *tool_git_status(CAgent *agent, const JsonValue *args) {
+    (void)agent; (void)args;
+    DynString cmd = dyn_str_new();
+    if (g_harness && strlen(g_harness->cwd) > 0) {
+        dyn_str_appendf(&cmd, "cd \"%s\" && git status -s", g_harness->cwd);
+    } else {
+        dyn_str_append(&cmd, "git status -s");
+    }
+
+    FILE *pipe = popen(cmd.data, "r");
+    dyn_str_free(&cmd);
+    if (!pipe) return strdup("Error: Failed to execute git status.");
+
+    DynString out = dyn_str_new();
+    char buf[512];
+    while (fgets(buf, sizeof(buf), pipe)) {
+        dyn_str_append(&out, buf);
+        if (out.len > 10000) break;
+    }
+    pclose(pipe);
+
+    if (out.len == 0) dyn_str_append(&out, "Working tree clean (no changes).");
+    return out.data;
+}
+
+static char *tool_git_diff(CAgent *agent, const JsonValue *args) {
+    (void)agent;
+    bool staged = json_obj_get_bool(args, "staged", false);
+    const char *path = json_obj_get_str(args, "path");
+
+    DynString cmd = dyn_str_new();
+    if (g_harness && strlen(g_harness->cwd) > 0) {
+        dyn_str_appendf(&cmd, "cd \"%s\" && git diff %s %s", g_harness->cwd, staged ? "--cached" : "", path ? path : "");
+    } else {
+        dyn_str_appendf(&cmd, "git diff %s %s", staged ? "--cached" : "", path ? path : "");
+    }
+
+    FILE *pipe = popen(cmd.data, "r");
+    dyn_str_free(&cmd);
+    if (!pipe) return strdup("Error: Failed to execute git diff.");
+
+    DynString out = dyn_str_new();
+    char buf[512];
+    while (fgets(buf, sizeof(buf), pipe)) {
+        dyn_str_append(&out, buf);
+        if (out.len > 50000) {
+            dyn_str_append(&out, "\n[Diff truncated: exceeded 50KB limit]");
+            break;
+        }
+    }
+    pclose(pipe);
+
+    if (out.len == 0) dyn_str_append(&out, "No diff detected.");
+    return out.data;
+}
+
 static char *tool_save_memory(CAgent *agent, const JsonValue *args) {
     const char *topic = json_obj_get_str(args, "topic");
     const char *content = json_obj_get_str(args, "content");
@@ -418,6 +536,74 @@ static char *tool_recall_memory(CAgent *agent, const JsonValue *args) {
     const char *query = json_obj_get_str(args, "query");
     if (!query) return strdup("Error: Missing query string.");
     return c_agent_search_memory(agent, query);
+}
+
+static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
+    const char *task = json_obj_get_str(args, "task");
+    const char *instructions = json_obj_get_str(args, "instructions");
+    double max_turns_num = json_obj_get_num(args, "max_turns", 5);
+
+    if (!task) return strdup("Error: Missing subagent task argument.");
+
+    DynString sys = dyn_str_new();
+    dyn_str_append(&sys, "You are a specialized subagent worker. Execute the assigned task and provide a concise, direct answer.");
+    if (instructions && strlen(instructions) > 0) {
+        dyn_str_append(&sys, "\nTask instructions:\n");
+        dyn_str_append(&sys, instructions);
+    }
+
+    ModelGateway *sub_gw = model_gateway_init(agent->gateway->endpoint, agent->gateway->api_key, agent->gateway->model);
+    sub_gw->streaming = false; // Run silent to avoid stdout collision
+
+    CAgent *sub_agent = c_agent_init(sub_gw, ":memory:", sys.data);
+    dyn_str_free(&sys);
+
+    CHarness *sub_harness = c_harness_init(sub_agent);
+    c_agent_add_message(sub_agent, "user", task);
+
+    int turns = (int)max_turns_num;
+    if (turns <= 0 || turns > 10) turns = 5;
+
+    DynString result_summary = dyn_str_new();
+    bool running = true;
+
+    while (running && turns-- > 0) {
+        ModelGatewayResponse resp = c_agent_step(sub_agent);
+        if (!resp.has_tool_call) {
+            if (resp.content) dyn_str_append(&result_summary, resp.content);
+            running = false;
+        } else {
+            for (size_t i = 0; i < resp.tool_call_count; i++) {
+                ModelParsedToolCall *tc = &resp.tool_calls[i];
+                CHarnessRegisteredTool *matched = NULL;
+                for (size_t t = 0; t < sub_harness->tool_count; t++) {
+                    if (strcmp(sub_harness->tools[t].name, tc->name) == 0 &&
+                        strcmp(tc->name, "spawn_subagent") != 0) {
+                        matched = &sub_harness->tools[t];
+                        break;
+                    }
+                }
+                if (matched && matched->callback) {
+                    JsonValue *p_args = json_parse(tc->arguments_json);
+                    char *obs = matched->callback(sub_agent, p_args);
+                    json_free(p_args);
+                    c_agent_add_tool_result(sub_agent, tc->id, tc->name, obs);
+                    if (obs) free(obs);
+                } else {
+                    c_agent_add_tool_result(sub_agent, tc->id, tc->name, "Tool not available in subagent sandbox.");
+                }
+            }
+        }
+        model_gateway_response_free(&resp);
+    }
+
+    c_harness_free(sub_harness);
+    model_gateway_free(sub_gw);
+
+    if (result_summary.len == 0) {
+        dyn_str_append(&result_summary, "Subagent completed execution.");
+    }
+    return result_summary.data;
 }
 
 // Harness Setup
@@ -511,11 +697,29 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(edit_params, "required", e_req);
     c_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file", edit_params, PERM_ASK_USER, tool_edit_file);
 
-    // 5. list_dir
+    // 5. apply_patch
+    JsonValue *patch_params = json_create_object();
+    json_obj_add(patch_params, "type", json_create_string("object"));
+    JsonValue *p_props = json_create_object();
+    JsonValue *p_path = json_create_object();
+    json_obj_add(p_path, "type", json_create_string("string"));
+    json_obj_add(p_props, "path", p_path);
+    JsonValue *p_patch = json_create_object();
+    json_obj_add(p_patch, "type", json_create_string("string"));
+    json_obj_add(p_patch, "description", json_create_string("Patch block in <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE format"));
+    json_obj_add(p_props, "patch", p_patch);
+    json_obj_add(patch_params, "properties", p_props);
+    JsonValue *p_req = json_create_array();
+    json_arr_add(p_req, json_create_string("path"));
+    json_arr_add(p_req, json_create_string("patch"));
+    json_obj_add(patch_params, "required", p_req);
+    c_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch to a file", patch_params, PERM_ASK_USER, tool_apply_patch);
+
+    // 6. list_dir
     c_harness_register_tool(h, "list_dir", "List files and directories in path",
         build_string_param_schema("path", "Directory path"), PERM_ALLOW, tool_list_dir);
 
-    // 6. search_files
+    // 7. search_files
     JsonValue *s_params = json_create_object();
     json_obj_add(s_params, "type", json_create_string("object"));
     JsonValue *s_props = json_create_object();
@@ -537,7 +741,27 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(s_params, "required", s_req);
     c_harness_register_tool(h, "search_files", "Search for text patterns recursively across files", s_params, PERM_ALLOW, tool_search_files);
 
-    // 7. save_memory
+    // 8. git_status
+    JsonValue *gs_params = json_create_object();
+    json_obj_add(gs_params, "type", json_create_string("object"));
+    c_harness_register_tool(h, "git_status", "Check Git repository status in current workspace", gs_params, PERM_ALLOW, tool_git_status);
+
+    // 9. git_diff
+    JsonValue *gd_params = json_create_object();
+    json_obj_add(gd_params, "type", json_create_string("object"));
+    JsonValue *gd_props = json_create_object();
+    JsonValue *gd_staged = json_create_object();
+    json_obj_add(gd_staged, "type", json_create_string("boolean"));
+    json_obj_add(gd_staged, "description", json_create_string("Whether to diff staged changes (--cached)"));
+    json_obj_add(gd_props, "staged", gd_staged);
+    JsonValue *gd_path = json_create_object();
+    json_obj_add(gd_path, "type", json_create_string("string"));
+    json_obj_add(gd_path, "description", json_create_string("Optional specific file path to diff"));
+    json_obj_add(gd_props, "path", gd_path);
+    json_obj_add(gd_params, "properties", gd_props);
+    c_harness_register_tool(h, "git_diff", "View Git working copy or staged diffs", gd_params, PERM_ALLOW, tool_git_diff);
+
+    // 10. save_memory
     JsonValue *mem_params = json_create_object();
     json_obj_add(mem_params, "type", json_create_string("object"));
     JsonValue *m_props = json_create_object();
@@ -550,9 +774,31 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(mem_params, "properties", m_props);
     c_harness_register_tool(h, "save_memory", "Save a verified skill or trajectory to SQLite memory", mem_params, PERM_ALLOW, tool_save_memory);
 
-    // 8. recall_memory
+    // 11. recall_memory
     c_harness_register_tool(h, "recall_memory", "Search SQLite memory for past solutions and skills",
         build_string_param_schema("query", "Search term"), PERM_ALLOW, tool_recall_memory);
+
+    // 12. spawn_subagent
+    JsonValue *sub_params = json_create_object();
+    json_obj_add(sub_params, "type", json_create_string("object"));
+    JsonValue *sub_props = json_create_object();
+    JsonValue *sub_task = json_create_object();
+    json_obj_add(sub_task, "type", json_create_string("string"));
+    json_obj_add(sub_task, "description", json_create_string("Clear task description for the subagent"));
+    json_obj_add(sub_props, "task", sub_task);
+    JsonValue *sub_inst = json_create_object();
+    json_obj_add(sub_inst, "type", json_create_string("string"));
+    json_obj_add(sub_inst, "description", json_create_string("Optional specialized instructions for the worker"));
+    json_obj_add(sub_props, "instructions", sub_inst);
+    JsonValue *sub_turns = json_create_object();
+    json_obj_add(sub_turns, "type", json_create_string("number"));
+    json_obj_add(sub_turns, "description", json_create_string("Max execution turns (default: 5)"));
+    json_obj_add(sub_props, "max_turns", sub_turns);
+    json_obj_add(sub_params, "properties", sub_props);
+    JsonValue *sub_req = json_create_array();
+    json_arr_add(sub_req, json_create_string("task"));
+    json_obj_add(sub_params, "required", sub_req);
+    c_harness_register_tool(h, "spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
 
     return h;
 }
@@ -565,9 +811,50 @@ void c_harness_register_tool(CHarness *h, const char *name, const char *desc, Js
     h->tools[h->tool_count].name = strdup(name);
     h->tools[h->tool_count].security = sec;
     h->tools[h->tool_count].callback = fn;
+    h->tools[h->tool_count].mcp_client = NULL;
     h->tool_count++;
 
     c_agent_register_schema(h->agent, name, desc, params);
+}
+
+bool c_harness_connect_mcp(CHarness *h, const char *server_cmd) {
+    if (!h || !server_cmd || h->mcp_server_count >= 8) return false;
+
+    printf("\033[1;36m[MCP] Connecting to server:\033[0m %s\n", server_cmd);
+    MCPClient *client = mcp_client_start(server_cmd);
+    if (!client || !client->connected) {
+        printf("\033[1;31m[MCP] Failed to connect to server.\033[0m\n");
+        return false;
+    }
+
+    h->mcp_servers[h->mcp_server_count++] = client;
+
+    JsonValue *tools = mcp_client_list_tools(client);
+    if (tools && tools->type == JSON_ARRAY) {
+        printf("\033[1;32m[MCP] Discovered %zu tools:\033[0m\n", tools->u.array.count);
+        for (size_t i = 0; i < tools->u.array.count; i++) {
+            JsonValue *t = tools->u.array.items[i];
+            const char *t_name = json_obj_get_str(t, "name");
+            const char *t_desc = json_obj_get_str(t, "description");
+            JsonValue *t_schema = json_obj_get(t, "inputSchema");
+
+            if (t_name && h->tool_count < 64) {
+                printf("  + \033[1;33m%s\033[0m: %s\n", t_name, t_desc ? t_desc : "");
+                h->tools[h->tool_count].name = strdup(t_name);
+                h->tools[h->tool_count].security = PERM_ASK_USER;
+                h->tools[h->tool_count].callback = NULL;
+                h->tools[h->tool_count].mcp_client = client;
+                h->tool_count++;
+
+                char *sch_str = t_schema ? json_serialize(t_schema) : strdup("{\"type\":\"object\"}");
+                JsonValue *sch_clone = json_parse(sch_str);
+                free(sch_str);
+                c_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
+            }
+        }
+        json_free(tools);
+    }
+    return true;
 }
 
 static bool harness_ask_permission(const char *name, const char *args) {
@@ -589,17 +876,19 @@ static void print_help(CHarness *h) {
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
     printf("Current CWD:     \033[1;33m%s\033[0m\n", h->cwd);
     printf("Context Size:    \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
-    printf("Streaming:       \033[1;33m%s\033[0m\n", h->agent->gateway->enable_streaming ? "Enabled (SSE Real-Time)" : "Disabled");
-    printf("FTS5 Memory:     \033[1;33m%s\033[0m\n\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Disabled (LIKE fallback)");
+    printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Disabled (LIKE fallback)");
+    printf("Streaming SSE:   \033[1;33m%s\033[0m\n", h->agent->gateway->streaming ? "Enabled (Real-time)" : "Disabled");
+    printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
     printf("\033[1;32mAvailable Slash Commands:\033[0m\n");
     printf("  /help            Show this help reference\n");
     printf("  /tools           List all registered tools and permissions\n");
+    printf("  /rules           View active repository guidelines (.agentrules)\n");
     printf("  /clear           Reset conversation history (preserves system prompt)\n");
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
     printf("  /memory [query]  Search SQLite persistent memory directly\n");
     printf("  /model <name>    Dynamically change the active AI model\n");
-    printf("  /stream <on|off> Toggle real-time SSE token streaming\n");
     printf("  /cwd [path]      View or change working directory\n");
+    printf("  /mcp <command>   Connect to an external MCP stdio server\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
@@ -615,96 +904,105 @@ static void list_tools(CHarness *h) {
             sec_str = "DENY";
             sec_color = "\033[1;31m";
         }
-        printf("  - \033[1;37m%-15s\033[0m [%s%s\033[0m] %s\n", 
-            h->tools[i].name, sec_color, sec_str, 
+        const char *origin = h->tools[i].mcp_client ? " [MCP]" : "";
+        printf("  - \033[1;37m%-16s\033[0m [%s%s\033[0m]%s %s\n", 
+            h->tools[i].name, sec_color, sec_str, origin,
             i < h->agent->schema_count ? h->agent->schemas[i].description : "");
     }
     printf("\n");
 }
 
-static void linenoise_completion_hook(const char *buf, linenoiseCompletions *lc) {
+static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == '/') {
-        if (strncmp(buf, "/h", 2) == 0) linenoiseAddCompletion(lc, "/help");
-        if (strncmp(buf, "/t", 2) == 0) linenoiseAddCompletion(lc, "/tools");
-        if (strncmp(buf, "/cl", 3) == 0) linenoiseAddCompletion(lc, "/clear");
-        if (strncmp(buf, "/co", 3) == 0) linenoiseAddCompletion(lc, "/compact");
-        if (strncmp(buf, "/me", 3) == 0) linenoiseAddCompletion(lc, "/memory");
-        if (strncmp(buf, "/mo", 3) == 0) linenoiseAddCompletion(lc, "/model");
-        if (strncmp(buf, "/st", 3) == 0) linenoiseAddCompletion(lc, "/stream");
-        if (strncmp(buf, "/cw", 3) == 0) linenoiseAddCompletion(lc, "/cwd");
+        const char *commands[] = {
+            "/help", "/tools", "/rules", "/clear", "/compact",
+            "/memory", "/model", "/cwd", "/mcp", NULL
+        };
+        for (int i = 0; commands[i]; i++) {
+            if (strncmp(buf, commands[i], strlen(buf)) == 0) {
+                linenoiseAddCompletion(lc, commands[i]);
+            }
+        }
     }
 }
 
 void c_harness_repl(CHarness *h) {
-    printf("\033[1;32m=== CHarness & CAgent System Activated ===\033[0m\n");
+    linenoiseHistorySetMaxLen(200);
+    linenoiseHistoryLoad(".charness_history");
+    linenoiseSetCompletionCallback(harness_completion_hook);
+
+    printf("\033[1;32m=== CHarness & CAgent Evolution System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
-    printf("Real-Time Streaming: \033[1;32m%s\033[0m | Line Editing: \033[1;32mLinenoise Enabled\033[0m\n", 
-        h->agent->gateway->enable_streaming ? "ON" : "OFF");
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
-    linenoiseSetCompletionCallback(linenoise_completion_hook);
-    linenoiseHistoryLoad(".charness_history");
-
     while (1) {
-        char prompt_buf[128];
-        snprintf(prompt_buf, sizeof(prompt_buf), "\033[1;35mcharness [%zu msgs]>\033[0m ", h->agent->msg_count);
+        char prompt[128];
+        snprintf(prompt, sizeof(prompt), "\033[1;35mcharness [%zu msgs]>\033[0m ", h->agent->msg_count);
 
-        char *line = linenoise(prompt_buf);
+        char *line = linenoise(prompt);
         if (!line) break;
 
-        line[strcspn(line, "\r\n")] = '\0';
-        if (strcmp(line, "exit") == 0) {
-            free(line);
-            break;
-        }
-        if (strlen(line) == 0) {
-            free(line);
-            continue;
-        }
+        char input_buf[4096];
+        strncpy(input_buf, line, sizeof(input_buf) - 1);
+        input_buf[sizeof(input_buf) - 1] = '\0';
+        input_buf[strcspn(input_buf, "\r\n")] = '\0';
 
-        linenoiseHistoryAdd(line);
-        linenoiseHistorySave(".charness_history");
+        if (strlen(input_buf) > 0) {
+            linenoiseHistoryAdd(input_buf);
+            linenoiseHistorySave(".charness_history");
+        }
+        linenoiseFree(line);
+
+        if (strcmp(input_buf, "exit") == 0) break;
+        if (strlen(input_buf) == 0) continue;
 
         // Handle Slash Commands
-        if (line[0] == '/') {
-            if (strcmp(line, "/help") == 0) {
+        if (input_buf[0] == '/') {
+            if (strcmp(input_buf, "/help") == 0) {
                 print_help(h);
-                free(line);
                 continue;
             }
-            if (strcmp(line, "/tools") == 0) {
+            if (strcmp(input_buf, "/tools") == 0) {
                 list_tools(h);
-                free(line);
                 continue;
             }
-            if (strcmp(line, "/clear") == 0) {
+            if (strcmp(input_buf, "/rules") == 0) {
+                printf("\n\033[1;36m=== Repository Guidelines ===\033[0m\n");
+                if (h->agent->msg_count > 0 && h->agent->messages[0].content) {
+                    const char *found = strstr(h->agent->messages[0].content, "=== Repository Guidelines");
+                    if (found) {
+                        printf("%s\n", found);
+                    } else {
+                        printf("No .agentrules, AGENT.md, or CLAUDE.md found in repository root.\n\n");
+                    }
+                }
+                continue;
+            }
+            if (strcmp(input_buf, "/clear") == 0) {
                 c_agent_clear_history(h->agent);
-                printf("\033[1;32mConversation context cleared (system message preserved).\033[0m\n\n");
-                free(line);
+                printf("\033[1;32mConversation context cleared (system prompt preserved).\033[0m\n\n");
                 continue;
             }
-            if (strncmp(line, "/compact", 8) == 0) {
+            if (strncmp(input_buf, "/compact", 8) == 0) {
                 size_t keep = 10;
-                if (strlen(line) > 8) {
-                    keep = (size_t)atoi(line + 8);
+                if (strlen(input_buf) > 8) {
+                    keep = (size_t)atoi(input_buf + 8);
                     if (keep == 0) keep = 10;
                 }
                 c_agent_compact_history(h->agent, keep);
                 printf("\033[1;32mContext compacted to %zu messages.\033[0m\n\n", h->agent->msg_count);
-                free(line);
                 continue;
             }
-            if (strncmp(line, "/memory", 7) == 0) {
-                const char *query = strlen(line) > 7 ? line + 7 : "";
+            if (strncmp(input_buf, "/memory", 7) == 0) {
+                const char *query = strlen(input_buf) > 7 ? input_buf + 7 : "";
                 while (*query == ' ') query++;
                 char *res = c_agent_search_memory(h->agent, strlen(query) > 0 ? query : "");
                 printf("\n\033[1;36m=== Memory Search: '%s' ===\033[0m\n%s\n", query, res ? res : "No results.");
                 if (res) free(res);
-                free(line);
                 continue;
             }
-            if (strncmp(line, "/model", 6) == 0) {
-                const char *new_m = strlen(line) > 6 ? line + 6 : "";
+            if (strncmp(input_buf, "/model", 6) == 0) {
+                const char *new_m = strlen(input_buf) > 6 ? input_buf + 6 : "";
                 while (*new_m == ' ') new_m++;
                 if (strlen(new_m) > 0) {
                     free(h->agent->gateway->model);
@@ -713,24 +1011,10 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("Current model: %s. Usage: /model <model_name>\n\n", h->agent->gateway->model);
                 }
-                free(line);
                 continue;
             }
-            if (strncmp(line, "/stream", 7) == 0) {
-                const char *opt = strlen(line) > 7 ? line + 7 : "";
-                while (*opt == ' ') opt++;
-                if (strcmp(opt, "off") == 0 || strcmp(opt, "0") == 0 || strcmp(opt, "false") == 0) {
-                    h->agent->gateway->enable_streaming = false;
-                    printf("\033[1;33mReal-time SSE streaming disabled.\033[0m\n\n");
-                } else {
-                    h->agent->gateway->enable_streaming = true;
-                    printf("\033[1;32mReal-time SSE streaming enabled.\033[0m\n\n");
-                }
-                free(line);
-                continue;
-            }
-            if (strncmp(line, "/cwd", 4) == 0) {
-                const char *new_d = strlen(line) > 4 ? line + 4 : "";
+            if (strncmp(input_buf, "/cwd", 4) == 0) {
+                const char *new_d = strlen(input_buf) > 4 ? input_buf + 4 : "";
                 while (*new_d == ' ') new_d++;
                 if (strlen(new_d) > 0) {
                     if (chdir(new_d) == 0 && getcwd(h->cwd, sizeof(h->cwd))) {
@@ -741,51 +1025,45 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("Current working directory: %s\n\n", h->cwd);
                 }
-                free(line);
                 continue;
             }
-            printf("\033[1;31mUnknown command: %s. Type /help for available commands.\033[0m\n\n", line);
-            free(line);
+            if (strncmp(input_buf, "/mcp", 4) == 0) {
+                const char *cmd = strlen(input_buf) > 4 ? input_buf + 4 : "";
+                while (*cmd == ' ') cmd++;
+                if (strlen(cmd) > 0) {
+                    c_harness_connect_mcp(h, cmd);
+                } else {
+                    printf("Usage: /mcp <server_command> (e.g. /mcp npx -y @modelcontextprotocol/server-filesystem .)\n\n");
+                }
+                continue;
+            }
+            printf("\033[1;31mUnknown command: %s. Type /help for available commands.\033[0m\n\n", input_buf);
             continue;
         }
 
-        c_agent_add_message(h->agent, "user", line);
-        free(line);
+        c_agent_add_message(h->agent, "user", input_buf);
 
         // Turn Execution Cycle
         bool turn_running = true;
         int max_steps = 10;
 
         while (turn_running && max_steps-- > 0) {
-            g_reasoning_header_printed = false;
-            g_content_header_printed = false;
-
-            if (h->agent->gateway->enable_streaming) {
-                model_gateway_set_streaming(h->agent->gateway, true, cli_stream_callback, NULL);
-            } else {
-                model_gateway_set_streaming(h->agent->gateway, false, NULL, NULL);
+            if (!h->agent->gateway->streaming) {
                 printf("\033[0;33m[Thinking...]\033[0m\n");
             }
-
             ModelGatewayResponse resp = c_agent_step(h->agent);
 
-            if (g_reasoning_header_printed) {
-                printf("\033[0m\n");
-            }
-
             if (!resp.has_tool_call) {
-                if (!g_content_header_printed) {
+                if (!h->agent->gateway->streaming) {
                     printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
                 } else {
                     printf("\n\n");
                 }
                 turn_running = false;
             } else {
-                if (g_content_header_printed) printf("\n");
-
                 for (size_t i = 0; i < resp.tool_call_count; i++) {
                     ModelParsedToolCall *tc = &resp.tool_calls[i];
-                    printf("\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
+                    printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
 
                     CHarnessRegisteredTool *matched = NULL;
                     for (size_t t = 0; t < h->tool_count; t++) {
@@ -810,12 +1088,17 @@ void c_harness_repl(CHarness *h) {
                     }
 
                     JsonValue *args_parsed = json_parse(tc->arguments_json);
-                    char *observation = matched->callback(h->agent, args_parsed);
+                    char *observation = NULL;
+                    if (matched->mcp_client) {
+                        observation = mcp_client_call_tool(matched->mcp_client, tc->name, args_parsed);
+                    } else if (matched->callback) {
+                        observation = matched->callback(h->agent, args_parsed);
+                    }
                     json_free(args_parsed);
 
                     printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
                     c_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
-                    free(observation);
+                    if (observation) free(observation);
                 }
             }
             model_gateway_response_free(&resp);
@@ -826,7 +1109,10 @@ void c_harness_repl(CHarness *h) {
 void c_harness_free(CHarness *h) {
     if (!h) return;
     for (size_t i = 0; i < h->tool_count; i++) {
-        free(h->tools[i].name);
+        if (h->tools[i].name) free(h->tools[i].name);
+    }
+    for (size_t s = 0; s < h->mcp_server_count; s++) {
+        mcp_client_close(h->mcp_servers[s]);
     }
     c_agent_free(h->agent);
     if (g_harness == h) g_harness = NULL;

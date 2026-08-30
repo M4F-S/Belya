@@ -4,116 +4,114 @@
 
 typedef struct {
     ModelGateway *gw;
-    DynString raw_body;
-    DynString line_buffer;
-    DynString accumulated_content;
-    DynString accumulated_reasoning;
+    DynString line_buf;
+    DynString accum_content;
+    DynString accum_reasoning;
+    DynString raw_fallback;
     ModelParsedToolCall *tool_calls;
-    DynString *tool_args;
     size_t tool_call_count;
     size_t tool_call_cap;
-    bool is_sse_stream;
-    bool received_done;
+    bool has_tool_call;
+    bool printed_reasoning_header;
+    bool printed_content_header;
 } StreamContext;
 
-static void stream_ctx_init(StreamContext *ctx, ModelGateway *gw) {
-    memset(ctx, 0, sizeof(StreamContext));
-    ctx->gw = gw;
-    ctx->raw_body = dyn_str_new();
-    ctx->line_buffer = dyn_str_new();
-    ctx->accumulated_content = dyn_str_new();
-    ctx->accumulated_reasoning = dyn_str_new();
-}
+static void stream_process_line(StreamContext *ctx, const char *line) {
+    if (!line || strlen(line) == 0) return;
+    if (strncmp(line, "data: [DONE]", 12) == 0) return;
+    if (strncmp(line, "data: ", 6) != 0) return;
 
-static void stream_ctx_free(StreamContext *ctx) {
-    dyn_str_free(&ctx->raw_body);
-    dyn_str_free(&ctx->line_buffer);
-    dyn_str_free(&ctx->accumulated_content);
-    dyn_str_free(&ctx->accumulated_reasoning);
-    for (size_t i = 0; i < ctx->tool_call_count; i++) {
-        dyn_str_free(&ctx->tool_args[i]);
-    }
-    if (ctx->tool_args) free(ctx->tool_args);
-    if (ctx->tool_calls) free(ctx->tool_calls);
-}
-
-static void stream_process_sse_line(StreamContext *ctx, const char *line) {
-    while (*line == ' ') line++;
-    if (strncmp(line, "data:", 5) != 0) return;
-    const char *data_str = line + 5;
-    while (*data_str == ' ') data_str++;
-    if (!*data_str) return;
-
-    if (strncmp(data_str, "[DONE]", 6) == 0) {
-        ctx->received_done = true;
-        return;
-    }
-
-    JsonValue *root = json_parse(data_str);
+    const char *json_payload = line + 6;
+    JsonValue *root = json_parse(json_payload);
     if (!root) return;
-
-    ctx->is_sse_stream = true;
 
     JsonValue *choices = json_obj_get(root, "choices");
     if (choices && choices->type == JSON_ARRAY && choices->u.array.count > 0) {
         JsonValue *choice = choices->u.array.items[0];
         JsonValue *delta = json_obj_get(choice, "delta");
         if (delta) {
-            // Text delta
-            const char *c_str = json_obj_get_str(delta, "content");
-            if (c_str && strlen(c_str) > 0) {
-                dyn_str_append(&ctx->accumulated_content, c_str);
-                if (ctx->gw->stream_callback) {
-                    ctx->gw->stream_callback(c_str, false, ctx->gw->stream_userdata);
+            // 1. Reasoning Tokens
+            const char *reasoning = json_obj_get_str(delta, "reasoning_content");
+            if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
+            if (reasoning && strlen(reasoning) > 0) {
+                dyn_str_append(&ctx->accum_reasoning, reasoning);
+                if (ctx->gw->stream_cb) {
+                    ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
+                } else {
+                    if (!ctx->printed_reasoning_header) {
+                        printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                        ctx->printed_reasoning_header = true;
+                    }
+                    printf("\033[0;36m%s\033[0m", reasoning);
+                    fflush(stdout);
                 }
             }
 
-            // Reasoning delta
-            const char *r_str = json_obj_get_str(delta, "reasoning_content");
-            if (!r_str) r_str = json_obj_get_str(delta, "thinking");
-            if (r_str && strlen(r_str) > 0) {
-                dyn_str_append(&ctx->accumulated_reasoning, r_str);
-                if (ctx->gw->stream_callback) {
-                    ctx->gw->stream_callback(r_str, true, ctx->gw->stream_userdata);
+            // 2. Content Tokens
+            const char *content = json_obj_get_str(delta, "content");
+            if (content && strlen(content) > 0) {
+                dyn_str_append(&ctx->accum_content, content);
+                if (ctx->gw->stream_cb) {
+                    ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
+                } else {
+                    if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
+                        printf("\n\n\033[1;34m[C Agent]\033[0m\n");
+                        ctx->printed_content_header = true;
+                    }
+                    printf("%s", content);
+                    fflush(stdout);
                 }
             }
 
-            // Tool call deltas
+            // 3. Tool Calls Delta
             JsonValue *tc_arr = json_obj_get(delta, "tool_calls");
             if (tc_arr && tc_arr->type == JSON_ARRAY) {
-                for (size_t k = 0; k < tc_arr->u.array.count; k++) {
-                    JsonValue *tc_item = tc_arr->u.array.items[k];
+                ctx->has_tool_call = true;
+                for (size_t i = 0; i < tc_arr->u.array.count; i++) {
+                    JsonValue *tc_item = tc_arr->u.array.items[i];
                     size_t idx = (size_t)json_obj_get_num(tc_item, "index", (double)ctx->tool_call_count);
-                    if (idx >= ctx->tool_call_count) {
-                        size_t needed = idx + 1;
-                        if (needed > ctx->tool_call_cap) {
-                            size_t new_cap = ctx->tool_call_cap == 0 ? 4 : ctx->tool_call_cap * 2;
-                            while (needed > new_cap) new_cap *= 2;
-                            ctx->tool_calls = realloc(ctx->tool_calls, sizeof(ModelParsedToolCall) * new_cap);
-                            ctx->tool_args = realloc(ctx->tool_args, sizeof(DynString) * new_cap);
-                            for (size_t j = ctx->tool_call_cap; j < new_cap; j++) {
-                                memset(&ctx->tool_calls[j], 0, sizeof(ModelParsedToolCall));
-                                ctx->tool_args[j] = dyn_str_new();
-                            }
-                            ctx->tool_call_cap = new_cap;
+                    
+                    if (idx >= ctx->tool_call_cap) {
+                        size_t new_cap = idx + 4;
+                        ctx->tool_calls = realloc(ctx->tool_calls, sizeof(ModelParsedToolCall) * new_cap);
+                        for (size_t k = ctx->tool_call_cap; k < new_cap; k++) {
+                            memset(&ctx->tool_calls[k], 0, sizeof(ModelParsedToolCall));
                         }
-                        ctx->tool_call_count = needed;
+                        ctx->tool_call_cap = new_cap;
+                    }
+                    if (idx >= ctx->tool_call_count) {
+                        ctx->tool_call_count = idx + 1;
                     }
 
-                    const char *id_str = json_obj_get_str(tc_item, "id");
-                    if (id_str && !ctx->tool_calls[idx].id) {
-                        ctx->tool_calls[idx].id = strdup(id_str);
+                    const char *t_id = json_obj_get_str(tc_item, "id");
+                    if (t_id) {
+                        if (ctx->tool_calls[idx].id) free(ctx->tool_calls[idx].id);
+                        ctx->tool_calls[idx].id = strdup(t_id);
+                    } else if (!ctx->tool_calls[idx].id) {
+                        ctx->tool_calls[idx].id = strdup("call_default");
                     }
 
                     JsonValue *fn = json_obj_get(tc_item, "function");
                     if (fn) {
-                        const char *name_str = json_obj_get_str(fn, "name");
-                        if (name_str && !ctx->tool_calls[idx].name) {
-                            ctx->tool_calls[idx].name = strdup(name_str);
+                        const char *f_name = json_obj_get_str(fn, "name");
+                        if (f_name) {
+                            if (!ctx->tool_calls[idx].name) {
+                                ctx->tool_calls[idx].name = strdup(f_name);
+                            } else {
+                                size_t nlen = strlen(ctx->tool_calls[idx].name) + strlen(f_name) + 1;
+                                ctx->tool_calls[idx].name = realloc(ctx->tool_calls[idx].name, nlen);
+                                strcat(ctx->tool_calls[idx].name, f_name);
+                            }
                         }
-                        const char *arg_chunk = json_obj_get_str(fn, "arguments");
-                        if (arg_chunk && strlen(arg_chunk) > 0) {
-                            dyn_str_append(&ctx->tool_args[idx], arg_chunk);
+                        const char *f_args = json_obj_get_str(fn, "arguments");
+                        if (f_args) {
+                            if (!ctx->tool_calls[idx].arguments_json) {
+                                ctx->tool_calls[idx].arguments_json = strdup(f_args);
+                            } else {
+                                size_t alen = strlen(ctx->tool_calls[idx].arguments_json) + strlen(f_args) + 1;
+                                ctx->tool_calls[idx].arguments_json = realloc(ctx->tool_calls[idx].arguments_json, alen);
+                                strcat(ctx->tool_calls[idx].arguments_json, f_args);
+                            }
                         }
                     }
                 }
@@ -124,27 +122,29 @@ static void stream_process_sse_line(StreamContext *ctx, const char *line) {
     json_free(root);
 }
 
-static size_t curl_sink_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+static size_t curl_stream_sink_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total = size * nmemb;
     StreamContext *ctx = (StreamContext *)userdata;
-    dyn_str_append_len(&ctx->raw_body, (const char *)ptr, total);
+    const char *p = (const char *)ptr;
+    dyn_str_append_len(&ctx->raw_fallback, p, total);
 
-    if (ctx->gw->enable_streaming) {
-        dyn_str_append_len(&ctx->line_buffer, (const char *)ptr, total);
-        char *start = ctx->line_buffer.data;
-        char *nl;
-        while ((nl = strchr(start, '\n')) != NULL) {
-            *nl = '\0';
-            stream_process_sse_line(ctx, start);
-            start = nl + 1;
-        }
-        if (start != ctx->line_buffer.data) {
-            size_t remaining = strlen(start);
-            memmove(ctx->line_buffer.data, start, remaining);
-            ctx->line_buffer.data[remaining] = '\0';
-            ctx->line_buffer.len = remaining;
+    for (size_t i = 0; i < total; i++) {
+        char c = p[i];
+        if (c == '\n') {
+            stream_process_line(ctx, ctx->line_buf.data);
+            dyn_str_clear(&ctx->line_buf);
+        } else if (c != '\r') {
+            char tmp[2] = {c, '\0'};
+            dyn_str_append(&ctx->line_buf, tmp);
         }
     }
+    return total;
+}
+
+static size_t curl_sink_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t total = size * nmemb;
+    DynString *ds = (DynString *)userdata;
+    dyn_str_append_len(ds, (const char *)ptr, total);
     return total;
 }
 
@@ -154,12 +154,12 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
     JsonValue *payload = json_create_object();
     json_obj_add(payload, "model", json_create_string(self->model));
     json_obj_add(payload, "messages", (JsonValue *)messages_json); // Shared reference
-    if (self->enable_streaming) {
-        json_obj_add(payload, "stream", json_create_bool(true));
-    }
     if (tools_schema && tools_schema->type == JSON_ARRAY && tools_schema->u.array.count > 0) {
         json_obj_add(payload, "tools", (JsonValue *)tools_schema);
         json_obj_add(payload, "tool_choice", json_create_string("auto"));
+    }
+    if (self->streaming) {
+        json_obj_add(payload, "stream", json_create_bool(true));
     }
 
     char *json_body = json_serialize(payload);
@@ -185,14 +185,8 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             return res;
         }
 
-        StreamContext stream_ctx;
-        stream_ctx_init(&stream_ctx, self);
-
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "Content-Type: application/json");
-        if (self->enable_streaming) {
-            headers = curl_slist_append(headers, "Accept: text/event-stream");
-        }
 
         char auth_header[512];
         if (self->api_key && strlen(self->api_key) > 0 && strcmp(self->api_key, "none") != 0) {
@@ -204,9 +198,25 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sink_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream_ctx);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+
+        StreamContext stream_ctx;
+        memset(&stream_ctx, 0, sizeof(StreamContext));
+        stream_ctx.gw = self;
+        stream_ctx.line_buf = dyn_str_new();
+        stream_ctx.accum_content = dyn_str_new();
+        stream_ctx.accum_reasoning = dyn_str_new();
+        stream_ctx.raw_fallback = dyn_str_new();
+
+        DynString non_stream_body = dyn_str_new();
+
+        if (self->streaming) {
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_stream_sink_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream_ctx);
+        } else {
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sink_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &non_stream_body);
+        }
 
         CURLcode code = curl_easy_perform(curl);
         long http_code = 0;
@@ -216,8 +226,13 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         curl_easy_cleanup(curl);
 
         if (code != CURLE_OK) {
+            dyn_str_free(&stream_ctx.line_buf);
+            dyn_str_free(&stream_ctx.accum_content);
+            dyn_str_free(&stream_ctx.accum_reasoning);
+            dyn_str_free(&stream_ctx.raw_fallback);
+            dyn_str_free(&non_stream_body);
+
             if (attempt < max_attempts - 1 && (code == CURLE_OPERATION_TIMEDOUT || code == CURLE_COULDNT_CONNECT)) {
-                stream_ctx_free(&stream_ctx);
                 sleep(sleep_sec);
                 sleep_sec *= 2;
                 continue;
@@ -225,68 +240,81 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             DynString err_ds = dyn_str_new();
             dyn_str_appendf(&err_ds, "Network Error: %s", curl_easy_strerror(code));
             res.content = err_ds.data;
-            stream_ctx_free(&stream_ctx);
             free(json_body);
             return res;
         }
 
-        // Retry on 429 or 5xx
         if ((http_code == 429 || http_code >= 500) && attempt < max_attempts - 1) {
-            stream_ctx_free(&stream_ctx);
+            dyn_str_free(&stream_ctx.line_buf);
+            dyn_str_free(&stream_ctx.accum_content);
+            dyn_str_free(&stream_ctx.accum_reasoning);
+            dyn_str_free(&stream_ctx.raw_fallback);
+            dyn_str_free(&non_stream_body);
             sleep(sleep_sec);
             sleep_sec *= 2;
             continue;
         }
 
-        // Check if stream mode captured data
-        if (stream_ctx.is_sse_stream) {
-            if (stream_ctx.accumulated_content.len > 0) {
-                res.content = strdup(stream_ctx.accumulated_content.data);
+        // Process Streaming Output
+        if (self->streaming) {
+            // Process any leftover trailing line
+            if (stream_ctx.line_buf.len > 0) {
+                stream_process_line(&stream_ctx, stream_ctx.line_buf.data);
             }
-            if (stream_ctx.accumulated_reasoning.len > 0) {
-                res.reasoning_content = strdup(stream_ctx.accumulated_reasoning.data);
+            dyn_str_free(&stream_ctx.line_buf);
+
+            // Ensure non-null name and args on tool calls
+            for (size_t k = 0; k < stream_ctx.tool_call_count; k++) {
+                if (!stream_ctx.tool_calls[k].name) stream_ctx.tool_calls[k].name = strdup("");
+                if (!stream_ctx.tool_calls[k].arguments_json) stream_ctx.tool_calls[k].arguments_json = strdup("{}");
             }
-            if (stream_ctx.tool_call_count > 0) {
-                res.has_tool_call = true;
-                res.tool_call_count = stream_ctx.tool_call_count;
-                res.tool_calls = calloc(res.tool_call_count, sizeof(ModelParsedToolCall));
-                for (size_t i = 0; i < res.tool_call_count; i++) {
-                    res.tool_calls[i].id = stream_ctx.tool_calls[i].id ? strdup(stream_ctx.tool_calls[i].id) : strdup("call_default");
-                    res.tool_calls[i].name = stream_ctx.tool_calls[i].name ? strdup(stream_ctx.tool_calls[i].name) : strdup("unknown");
-                    res.tool_calls[i].arguments_json = stream_ctx.tool_args[i].len > 0 ? strdup(stream_ctx.tool_args[i].data) : strdup("{}");
-                    if (stream_ctx.tool_calls[i].id) free(stream_ctx.tool_calls[i].id);
-                    if (stream_ctx.tool_calls[i].name) free(stream_ctx.tool_calls[i].name);
+
+            res.content = stream_ctx.accum_content.len > 0 ? stream_ctx.accum_content.data : NULL;
+            res.reasoning_content = stream_ctx.accum_reasoning.len > 0 ? stream_ctx.accum_reasoning.data : NULL;
+            res.tool_calls = stream_ctx.tool_calls;
+            res.tool_call_count = stream_ctx.tool_call_count;
+            res.has_tool_call = stream_ctx.has_tool_call;
+
+            if (!res.content && !res.has_tool_call) {
+                // If stream was empty, check if raw_fallback was an error json
+                JsonValue *err_root = json_parse(stream_ctx.raw_fallback.data);
+                if (err_root) {
+                    JsonValue *err_obj = json_obj_get(err_root, "error");
+                    if (err_obj) {
+                        const char *m = json_obj_get_str(err_obj, "message");
+                        DynString err_ds = dyn_str_new();
+                        dyn_str_appendf(&err_ds, "API Error (HTTP %ld): %s", http_code, m ? m : "Unknown error");
+                        res.content = err_ds.data;
+                    }
+                    json_free(err_root);
+                }
+                if (!res.content) {
+                    DynString empty_ds = dyn_str_new();
+                    dyn_str_appendf(&empty_ds, "Empty response from stream (HTTP %ld).", http_code);
+                    res.content = empty_ds.data;
                 }
             }
-            if (!res.content && !res.has_tool_call) {
-                res.content = strdup("Completed streaming response.");
-            }
-            stream_ctx_free(&stream_ctx);
+            dyn_str_free(&stream_ctx.raw_fallback);
             free(json_body);
             return res;
         }
 
-        // Fallback: Non-streaming / error JSON parsing
-        JsonValue *root = json_parse(stream_ctx.raw_body.data);
+        // Non-streaming processing
+        JsonValue *root = json_parse(non_stream_body.data);
+        dyn_str_free(&non_stream_body);
         if (!root) {
-            DynString err_ds = dyn_str_new();
-            dyn_str_appendf(&err_ds, "Error: Failed to parse upstream model JSON (HTTP %ld).", http_code);
-            res.content = err_ds.data;
-            stream_ctx_free(&stream_ctx);
+            res.content = strdup("Error: Failed to parse upstream model JSON response.");
             free(json_body);
             return res;
         }
 
-        // Check for API Error object
         JsonValue *err_obj = json_obj_get(root, "error");
         if (err_obj) {
             const char *err_msg = json_obj_get_str(err_obj, "message");
-            if (!err_msg) err_msg = json_obj_get_str(root, "message");
             DynString err_ds = dyn_str_new();
             dyn_str_appendf(&err_ds, "API Error (HTTP %ld): %s", http_code, err_msg ? err_msg : "Unknown error");
             res.content = err_ds.data;
             json_free(root);
-            stream_ctx_free(&stream_ctx);
             free(json_body);
             return res;
         }
@@ -332,7 +360,6 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         }
 
         json_free(root);
-        stream_ctx_free(&stream_ctx);
         free(json_body);
         return res;
     }
@@ -349,16 +376,9 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->model = strdup(model ? model : "hermes-3");
     gw->timeout_sec = 120;
     gw->max_retries = 3;
-    gw->enable_streaming = true;
+    gw->streaming = true;
     gw->chat_complete = openai_chat_complete;
     return gw;
-}
-
-void model_gateway_set_streaming(ModelGateway *gw, bool enable, TokenStreamCallback cb, void *userdata) {
-    if (!gw) return;
-    gw->enable_streaming = enable;
-    gw->stream_callback = cb;
-    gw->stream_userdata = userdata;
 }
 
 void model_gateway_free(ModelGateway *gw) {
@@ -374,9 +394,9 @@ void model_gateway_response_free(ModelGatewayResponse *resp) {
     if (resp->content) free(resp->content);
     if (resp->reasoning_content) free(resp->reasoning_content);
     for (size_t i = 0; i < resp->tool_call_count; i++) {
-        free(resp->tool_calls[i].id);
-        free(resp->tool_calls[i].name);
-        free(resp->tool_calls[i].arguments_json);
+        if (resp->tool_calls[i].id) free(resp->tool_calls[i].id);
+        if (resp->tool_calls[i].name) free(resp->tool_calls[i].name);
+        if (resp->tool_calls[i].arguments_json) free(resp->tool_calls[i].arguments_json);
     }
     if (resp->tool_calls) free(resp->tool_calls);
     memset(resp, 0, sizeof(ModelGatewayResponse));

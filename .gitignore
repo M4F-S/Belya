@@ -7,6 +7,7 @@ test_runner
 *.sqlite
 *.sqlite-journal
 test_sample.txt
+.charness_history
 
 # OS / Editor Artifacts
 .DS_Store

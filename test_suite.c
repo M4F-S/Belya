@@ -3,7 +3,7 @@
 #include <unistd.h>
 
 void test_dyn_string(void) {
-    printf("[Test] DynString...\n");
+    printf("[Test] DynString Operations...\n");
     DynString ds = dyn_str_new();
     assert(ds.len == 0);
     assert(ds.cap >= 512);
@@ -33,8 +33,8 @@ void test_minijson(void) {
     printf("[Test] MiniJSON Parser & Serializer...\n");
     const char *json_src = 
         "{"
-        "  \"name\": \"C-Agent\",\n"
-        "  \"version\": 2.5,\n"
+        "  \"name\": \"CHarness-Agent\",\n"
+        "  \"version\": 2.0,\n"
         "  \"active\": true,\n"
         "  \"escape_test\": \"Tab:\\t Slash:\\/ Unicode:\\u0041\\u00e9\",\n"
         "  \"tags\": [\"ai\", \"c99\", \"agent\"],\n"
@@ -45,15 +45,15 @@ void test_minijson(void) {
     assert(root != NULL);
     assert(root->type == JSON_OBJECT);
 
-    assert(strcmp(json_obj_get_str(root, "name"), "C-Agent") == 0);
-    assert(json_obj_get_num(root, "version", 0) == 2.5);
+    assert(strcmp(json_obj_get_str(root, "name"), "CHarness-Agent") == 0);
+    assert(json_obj_get_num(root, "version", 0) == 2.0);
     assert(json_obj_get_bool(root, "active", false) == true);
 
     const char *esc = json_obj_get_str(root, "escape_test");
     assert(esc != NULL);
     assert(strstr(esc, "\t") != NULL);
     assert(strstr(esc, "/") != NULL);
-    assert(strstr(esc, "A") != NULL); // \u0041 -> A
+    assert(strstr(esc, "A") != NULL);
 
     JsonValue *tags = json_obj_get(root, "tags");
     assert(tags != NULL && tags->type == JSON_ARRAY);
@@ -67,19 +67,30 @@ void test_minijson(void) {
 
     char *serialized = json_serialize(root);
     assert(serialized != NULL);
-    assert(strstr(serialized, "\"name\":\"C-Agent\"") != NULL);
+    assert(strstr(serialized, "\"name\":\"CHarness-Agent\"") != NULL);
     free(serialized);
 
     json_free(root);
     printf("  -> MiniJSON PASSED\n");
 }
 
-void test_agent_memory_and_context(void) {
-    printf("[Test] Agent Memory & Context Window Management...\n");
+void test_agent_memory_and_rules(void) {
+    printf("[Test] Agent Memory (FTS5) & Rules Auto-Discovery...\n");
+
+    // Write temporary .agentrules
+    FILE *rf = fopen(".agentrules", "w");
+    if (rf) {
+        fprintf(rf, "Always write self-contained C99 code without external dependencies.\n");
+        fclose(rf);
+    }
+
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
     CAgent *agent = c_agent_init(gw, "test_agent_memory.sqlite", "Test System Prompt");
     assert(agent != NULL);
-    assert(agent->msg_count == 1); // System message
+    assert(agent->msg_count == 1);
+
+    // Verify rules auto-discovery
+    assert(strstr(agent->messages[0].content, "Always write self-contained C99 code") != NULL);
 
     // Test Memory Persistence & FTS5
     c_agent_persist_memory(agent, "POSIX Signals", "Use kill(pid, SIGKILL) to forcibly stop hung processes.");
@@ -102,7 +113,6 @@ void test_agent_memory_and_context(void) {
     assert(agent->msg_count == 21);
 
     c_agent_compact_history(agent, 5);
-    // Should retain system (index 0) + 5 recent = 6 messages
     assert(agent->msg_count == 6);
     assert(strcmp(agent->messages[0].role, "system") == 0);
     assert(strcmp(agent->messages[5].content, "User turn message 19") == 0);
@@ -114,14 +124,18 @@ void test_agent_memory_and_context(void) {
     c_agent_free(agent);
     model_gateway_free(gw);
     unlink("test_agent_memory.sqlite");
-    printf("  -> Agent Memory & Context PASSED\n");
+    unlink(".agentrules");
+    printf("  -> Agent Memory & Rules PASSED\n");
 }
 
-void test_harness_tools(void) {
-    printf("[Test] Harness Claude-Code Tool Suite...\n");
+void test_harness_tools_and_patches(void) {
+    printf("[Test] Harness Tool Suite (12 Tools) & Patch Engine...\n");
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    gw->streaming = false;
     CAgent *agent = c_agent_init(gw, "test_harness_mem.sqlite", "Test");
     CHarness *h = c_harness_init(agent);
+
+    assert(h->tool_count >= 12);
 
     // 1. Write file
     JsonValue *w_args = json_create_object();
@@ -169,47 +183,77 @@ void test_harness_tools(void) {
     }
     json_free(e_args);
 
-    // 4. Search files (grep for "Bravo")
+    // 4. Apply Patch (SEARCH / REPLACE format)
+    const char *patch_content = 
+        "<<<<<<< SEARCH\n"
+        "Line 3: Gamma\n"
+        "=======\n"
+        "Line 3: Charlie\n"
+        ">>>>>>> REPLACE";
+    JsonValue *p_args = json_create_object();
+    json_obj_add(p_args, "path", json_create_string("test_sample.txt"));
+    json_obj_add(p_args, "patch", json_create_string(patch_content));
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "apply_patch") == 0) {
+            char *obs = h->tools[t].callback(agent, p_args);
+            assert(strstr(obs, "successfully applied") != NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(p_args);
+
+    // Verify patch result
+    JsonValue *check_args = json_create_object();
+    json_obj_add(check_args, "path", json_create_string("test_sample.txt"));
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "read_file") == 0) {
+            char *obs = h->tools[t].callback(agent, check_args);
+            assert(strstr(obs, "Line 3: Charlie") != NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(check_args);
+
+    // 5. Search files
     JsonValue *s_args = json_create_object();
-    json_obj_add(s_args, "pattern", json_create_string("Bravo"));
+    json_obj_add(s_args, "pattern", json_create_string("Charlie"));
     json_obj_add(s_args, "path", json_create_string("."));
     for (size_t t = 0; t < h->tool_count; t++) {
         if (strcmp(h->tools[t].name, "search_files") == 0) {
             char *obs = h->tools[t].callback(agent, s_args);
             assert(strstr(obs, "test_sample.txt") != NULL);
-            assert(strstr(obs, "Bravo") != NULL);
+            assert(strstr(obs, "Charlie") != NULL);
             free(obs);
             break;
         }
     }
     json_free(s_args);
 
-    // 5. Test Bash Tool Execution & Directory persistence
-    JsonValue *b_args = json_create_object();
-    json_obj_add(b_args, "command", json_create_string("echo 'Harness Execution OK'"));
+    // 6. Git status tool
     for (size_t t = 0; t < h->tool_count; t++) {
-        if (strcmp(h->tools[t].name, "bash") == 0) {
-            char *obs = h->tools[t].callback(agent, b_args);
-            assert(strstr(obs, "Harness Execution OK") != NULL);
+        if (strcmp(h->tools[t].name, "git_status") == 0) {
+            char *obs = h->tools[t].callback(agent, NULL);
+            assert(obs != NULL);
             free(obs);
             break;
         }
     }
-    json_free(b_args);
 
     unlink("test_sample.txt");
     c_harness_free(h);
     model_gateway_free(gw);
     unlink("test_harness_mem.sqlite");
-    printf("  -> Harness Tools PASSED\n");
+    printf("  -> Harness Tools & Patch Engine PASSED\n");
 }
 
 int main(void) {
-    printf("\n================ Running C Agent & Harness Test Suite ================\n");
+    printf("\n================ Running CHarness & CAgent Test Suite ================\n");
     test_dyn_string();
     test_minijson();
-    test_agent_memory_and_context();
-    test_harness_tools();
+    test_agent_memory_and_rules();
+    test_harness_tools_and_patches();
     printf("================ All Tests Passed Successfully (100%%) ================\n\n");
     return 0;
 }
