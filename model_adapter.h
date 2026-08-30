@@ -18,16 +18,22 @@ typedef struct {
     bool has_tool_call;
 } ModelGatewayResponse;
 
+typedef void (*TokenStreamCallback)(const char *token_chunk, bool is_reasoning, void *userdata);
+
 typedef struct ModelGateway {
     char *endpoint;
     char *api_key;
     char *model;
     int timeout_sec;
     int max_retries;
+    bool enable_streaming;
+    TokenStreamCallback stream_callback;
+    void *stream_userdata;
     ModelGatewayResponse (*chat_complete)(struct ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema);
 } ModelGateway;
 
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model);
+void model_gateway_set_streaming(ModelGateway *gw, bool enable, TokenStreamCallback cb, void *userdata);
 void model_gateway_free(ModelGateway *gw);
 void model_gateway_response_free(ModelGatewayResponse *resp);
 

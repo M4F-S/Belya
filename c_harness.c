@@ -1,4 +1,5 @@
 #include "c_harness.h"
+#include "linenoise.h"
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -10,6 +11,30 @@
 #include <fnmatch.h>
 
 static CHarness *g_harness = NULL;
+static bool g_reasoning_header_printed = false;
+static bool g_content_header_printed = false;
+
+static void cli_stream_callback(const char *chunk, bool is_reasoning, void *userdata) {
+    (void)userdata;
+    if (is_reasoning) {
+        if (!g_reasoning_header_printed) {
+            printf("\n\033[0;36m[Thinking / Reasoning]:\033[0m\n\033[0;90m");
+            g_reasoning_header_printed = true;
+        }
+        printf("%s", chunk);
+        fflush(stdout);
+    } else {
+        if (g_reasoning_header_printed && !g_content_header_printed) {
+            printf("\033[0m\n\n\033[1;34m[C Agent]:\033[0m\n");
+            g_content_header_printed = true;
+        } else if (!g_content_header_printed) {
+            printf("\n\033[1;34m[C Agent]:\033[0m\n");
+            g_content_header_printed = true;
+        }
+        printf("%s", chunk);
+        fflush(stdout);
+    }
+}
 
 // Built-in Native Tools
 
@@ -560,10 +585,11 @@ static bool harness_ask_permission(const char *name, const char *args) {
 }
 
 static void print_help(CHarness *h) {
-    printf("\n\033[1;36m=== C Harness & C Agent Help ===\033[0m\n");
+    printf("\n\033[1;36m=== CHarness & CAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
     printf("Current CWD:     \033[1;33m%s\033[0m\n", h->cwd);
     printf("Context Size:    \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
+    printf("Streaming:       \033[1;33m%s\033[0m\n", h->agent->gateway->enable_streaming ? "Enabled (SSE Real-Time)" : "Disabled");
     printf("FTS5 Memory:     \033[1;33m%s\033[0m\n\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Disabled (LIKE fallback)");
     printf("\033[1;32mAvailable Slash Commands:\033[0m\n");
     printf("  /help            Show this help reference\n");
@@ -572,6 +598,7 @@ static void print_help(CHarness *h) {
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
     printf("  /memory [query]  Search SQLite persistent memory directly\n");
     printf("  /model <name>    Dynamically change the active AI model\n");
+    printf("  /stream <on|off> Toggle real-time SSE token streaming\n");
     printf("  /cwd [path]      View or change working directory\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
@@ -595,56 +622,89 @@ static void list_tools(CHarness *h) {
     printf("\n");
 }
 
+static void linenoise_completion_hook(const char *buf, linenoiseCompletions *lc) {
+    if (buf[0] == '/') {
+        if (strncmp(buf, "/h", 2) == 0) linenoiseAddCompletion(lc, "/help");
+        if (strncmp(buf, "/t", 2) == 0) linenoiseAddCompletion(lc, "/tools");
+        if (strncmp(buf, "/cl", 3) == 0) linenoiseAddCompletion(lc, "/clear");
+        if (strncmp(buf, "/co", 3) == 0) linenoiseAddCompletion(lc, "/compact");
+        if (strncmp(buf, "/me", 3) == 0) linenoiseAddCompletion(lc, "/memory");
+        if (strncmp(buf, "/mo", 3) == 0) linenoiseAddCompletion(lc, "/model");
+        if (strncmp(buf, "/st", 3) == 0) linenoiseAddCompletion(lc, "/stream");
+        if (strncmp(buf, "/cw", 3) == 0) linenoiseAddCompletion(lc, "/cwd");
+    }
+}
+
 void c_harness_repl(CHarness *h) {
-    char input_buf[4096];
-    printf("\033[1;32m=== C Harness & C Agent System Activated ===\033[0m\n");
+    printf("\033[1;32m=== CHarness & CAgent System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
+    printf("Real-Time Streaming: \033[1;32m%s\033[0m | Line Editing: \033[1;32mLinenoise Enabled\033[0m\n", 
+        h->agent->gateway->enable_streaming ? "ON" : "OFF");
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
-    while (1) {
-        printf("\033[1;35mc-harness [%zu msgs]>\033[0m ", h->agent->msg_count);
-        fflush(stdout);
+    linenoiseSetCompletionCallback(linenoise_completion_hook);
+    linenoiseHistoryLoad(".charness_history");
 
-        if (!fgets(input_buf, sizeof(input_buf), stdin)) break;
-        input_buf[strcspn(input_buf, "\r\n")] = '\0';
-        if (strcmp(input_buf, "exit") == 0) break;
-        if (strlen(input_buf) == 0) continue;
+    while (1) {
+        char prompt_buf[128];
+        snprintf(prompt_buf, sizeof(prompt_buf), "\033[1;35mcharness [%zu msgs]>\033[0m ", h->agent->msg_count);
+
+        char *line = linenoise(prompt_buf);
+        if (!line) break;
+
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strcmp(line, "exit") == 0) {
+            free(line);
+            break;
+        }
+        if (strlen(line) == 0) {
+            free(line);
+            continue;
+        }
+
+        linenoiseHistoryAdd(line);
+        linenoiseHistorySave(".charness_history");
 
         // Handle Slash Commands
-        if (input_buf[0] == '/') {
-            if (strcmp(input_buf, "/help") == 0) {
+        if (line[0] == '/') {
+            if (strcmp(line, "/help") == 0) {
                 print_help(h);
+                free(line);
                 continue;
             }
-            if (strcmp(input_buf, "/tools") == 0) {
+            if (strcmp(line, "/tools") == 0) {
                 list_tools(h);
+                free(line);
                 continue;
             }
-            if (strcmp(input_buf, "/clear") == 0) {
+            if (strcmp(line, "/clear") == 0) {
                 c_agent_clear_history(h->agent);
                 printf("\033[1;32mConversation context cleared (system message preserved).\033[0m\n\n");
+                free(line);
                 continue;
             }
-            if (strncmp(input_buf, "/compact", 8) == 0) {
+            if (strncmp(line, "/compact", 8) == 0) {
                 size_t keep = 10;
-                if (strlen(input_buf) > 8) {
-                    keep = (size_t)atoi(input_buf + 8);
+                if (strlen(line) > 8) {
+                    keep = (size_t)atoi(line + 8);
                     if (keep == 0) keep = 10;
                 }
                 c_agent_compact_history(h->agent, keep);
                 printf("\033[1;32mContext compacted to %zu messages.\033[0m\n\n", h->agent->msg_count);
+                free(line);
                 continue;
             }
-            if (strncmp(input_buf, "/memory", 7) == 0) {
-                const char *query = strlen(input_buf) > 7 ? input_buf + 7 : "";
+            if (strncmp(line, "/memory", 7) == 0) {
+                const char *query = strlen(line) > 7 ? line + 7 : "";
                 while (*query == ' ') query++;
                 char *res = c_agent_search_memory(h->agent, strlen(query) > 0 ? query : "");
                 printf("\n\033[1;36m=== Memory Search: '%s' ===\033[0m\n%s\n", query, res ? res : "No results.");
                 if (res) free(res);
+                free(line);
                 continue;
             }
-            if (strncmp(input_buf, "/model", 6) == 0) {
-                const char *new_m = strlen(input_buf) > 6 ? input_buf + 6 : "";
+            if (strncmp(line, "/model", 6) == 0) {
+                const char *new_m = strlen(line) > 6 ? line + 6 : "";
                 while (*new_m == ' ') new_m++;
                 if (strlen(new_m) > 0) {
                     free(h->agent->gateway->model);
@@ -653,10 +713,24 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("Current model: %s. Usage: /model <model_name>\n\n", h->agent->gateway->model);
                 }
+                free(line);
                 continue;
             }
-            if (strncmp(input_buf, "/cwd", 4) == 0) {
-                const char *new_d = strlen(input_buf) > 4 ? input_buf + 4 : "";
+            if (strncmp(line, "/stream", 7) == 0) {
+                const char *opt = strlen(line) > 7 ? line + 7 : "";
+                while (*opt == ' ') opt++;
+                if (strcmp(opt, "off") == 0 || strcmp(opt, "0") == 0 || strcmp(opt, "false") == 0) {
+                    h->agent->gateway->enable_streaming = false;
+                    printf("\033[1;33mReal-time SSE streaming disabled.\033[0m\n\n");
+                } else {
+                    h->agent->gateway->enable_streaming = true;
+                    printf("\033[1;32mReal-time SSE streaming enabled.\033[0m\n\n");
+                }
+                free(line);
+                continue;
+            }
+            if (strncmp(line, "/cwd", 4) == 0) {
+                const char *new_d = strlen(line) > 4 ? line + 4 : "";
                 while (*new_d == ' ') new_d++;
                 if (strlen(new_d) > 0) {
                     if (chdir(new_d) == 0 && getcwd(h->cwd, sizeof(h->cwd))) {
@@ -667,30 +741,48 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("Current working directory: %s\n\n", h->cwd);
                 }
+                free(line);
                 continue;
             }
-            printf("\033[1;31mUnknown command: %s. Type /help for available commands.\033[0m\n\n", input_buf);
+            printf("\033[1;31mUnknown command: %s. Type /help for available commands.\033[0m\n\n", line);
+            free(line);
             continue;
         }
 
-        c_agent_add_message(h->agent, "user", input_buf);
+        c_agent_add_message(h->agent, "user", line);
+        free(line);
 
         // Turn Execution Cycle
         bool turn_running = true;
         int max_steps = 10;
 
         while (turn_running && max_steps-- > 0) {
-            printf("\033[0;33m[Thinking...]\033[0m\n");
+            g_reasoning_header_printed = false;
+            g_content_header_printed = false;
+
+            if (h->agent->gateway->enable_streaming) {
+                model_gateway_set_streaming(h->agent->gateway, true, cli_stream_callback, NULL);
+            } else {
+                model_gateway_set_streaming(h->agent->gateway, false, NULL, NULL);
+                printf("\033[0;33m[Thinking...]\033[0m\n");
+            }
+
             ModelGatewayResponse resp = c_agent_step(h->agent);
 
-            if (resp.reasoning_content && strlen(resp.reasoning_content) > 0) {
-                printf("\n\033[0;36m[Reasoning]:\033[0m\n%s\n", resp.reasoning_content);
+            if (g_reasoning_header_printed) {
+                printf("\033[0m\n");
             }
 
             if (!resp.has_tool_call) {
-                printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
+                if (!g_content_header_printed) {
+                    printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
+                } else {
+                    printf("\n\n");
+                }
                 turn_running = false;
             } else {
+                if (g_content_header_printed) printf("\n");
+
                 for (size_t i = 0; i < resp.tool_call_count; i++) {
                     ModelParsedToolCall *tc = &resp.tool_calls[i];
                     printf("\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
