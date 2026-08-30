@@ -13,6 +13,10 @@ typedef enum {
 
 typedef char *(*ToolCallback)(CAgent *agent, const JsonValue *args);
 
+typedef struct CHarness CHarness;
+
+typedef bool (*PermissionPromptFn)(CHarness *h, const char *tool_name, const char *args_json, void *userdata);
+
 typedef struct {
     char *name;
     SecurityLevel security;
@@ -20,14 +24,16 @@ typedef struct {
     MCPClient *mcp_client;
 } CHarnessRegisteredTool;
 
-typedef struct CHarness {
+struct CHarness {
     CAgent *agent;
     CHarnessRegisteredTool tools[64];
     size_t tool_count;
     char cwd[4096];
     MCPClient *mcp_servers[8];
     size_t mcp_server_count;
-} CHarness;
+    PermissionPromptFn permission_prompt_fn;
+    void *permission_userdata;
+};
 
 CHarness *c_harness_init(CAgent *agent);
 void c_harness_register_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, ToolCallback fn);

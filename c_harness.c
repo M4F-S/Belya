@@ -915,7 +915,7 @@ static void list_tools(CHarness *h) {
 static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == '/') {
         const char *commands[] = {
-            "/help", "/tools", "/rules", "/clear", "/compact",
+            "/help", "/tools", "/status", "/rules", "/clear", "/compact",
             "/memory", "/model", "/cwd", "/mcp", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -976,6 +976,16 @@ void c_harness_repl(CHarness *h) {
                         printf("No .agentrules, AGENT.md, or CLAUDE.md found in repository root.\n\n");
                     }
                 }
+                continue;
+            }
+            if (strcmp(input_buf, "/status") == 0) {
+                printf("\n\033[1;36m=== CHarness System Status ===\033[0m\n");
+                printf("Active Model:    \033[1;33m%s\033[0m\n", h->agent->gateway->model);
+                printf("Endpoint:        \033[1;33m%s\033[0m\n", h->agent->gateway->endpoint);
+                printf("Working Dir:     \033[1;33m%s\033[0m\n", h->cwd);
+                printf("Message History: \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
+                printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
+                printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
                 continue;
             }
             if (strcmp(input_buf, "/clear") == 0) {
@@ -1080,7 +1090,13 @@ void c_harness_repl(CHarness *h) {
                     }
 
                     if (matched->security == PERM_ASK_USER) {
-                        if (!harness_ask_permission(tc->name, tc->arguments_json)) {
+                        bool permitted = false;
+                        if (h->permission_prompt_fn) {
+                            permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);
+                        } else {
+                            permitted = harness_ask_permission(tc->name, tc->arguments_json);
+                        }
+                        if (!permitted) {
                             printf("\033[1;31m[Rejected]: Operation cancelled by operator.\033[0m\n");
                             c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
                             continue;
