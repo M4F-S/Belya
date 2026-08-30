@@ -11,24 +11,24 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
 
 ## Architectural Overview
 
-CHarness and CAgent are designed with a clean **Brain & Body (Sandbox)** separation, allowing you to use them **together as a complete autonomous software engineer** or **use CHarness alone as a standalone security execution runtime**.
+CHarness and CAgent feature a clean **Brain & Sandbox** separation. You can run them **together as an autonomous software engineer** or use **CHarness alone as a standalone security execution runtime** for any external agent or application.
 
 ```mermaid
 graph TD
     subgraph "Mode A: Full Agent System (CAgent + CHarness)"
-        User[Operator / Telegram / Terminal] --> H[CHarness Runtime & Sandbox]
-        H --> A[CAgent Reasoning Brain]
-        A --> GW[Model Gateway (Ollama / vLLM / OpenAI / Anthropic)]
-        A --> DB[(SQLite FTS5 Memory & Sessions)]
-        A --> SUB[spawn_subagent (Child Sandboxes)]
+        User["Operator (Terminal CLI / Telegram)"] --> H["CHarness Runtime & Security Sandbox"]
+        H --> A["CAgent Reasoning Core (ReAct Loop)"]
+        A --> GW["Model Gateway (Ollama / vLLM / OpenAI / Anthropic)"]
+        A --> DB[("SQLite FTS5 Memory & Sessions")]
+        A --> SUB["spawn_subagent (Isolated Worker Sandboxes)"]
     end
 
     subgraph "Mode B: Standalone Harness (CHarness Alone)"
-        Ext[External Agent / Python / Node / Custom App] --> H2[CHarness Sandboxed Execution Engine]
-        H2 --> SEC[Tiered Security Policy (ALLOW / ASK_USER / DENY)]
-        SEC --> T1[13 Native Tools (bash, edit_file, apply_patch, git, etc.)]
-        SEC --> T2[Dynamic Custom Tools (.charness/tools/)]
-        SEC --> T3[MCP Client (JSON-RPC stdio servers)]
+        Ext["External App / Python / Node / Custom Agent"] --> H2["CHarness Sandboxed Execution Engine"]
+        H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
+        SEC --> T1["13 Native Tools (bash, edit_file, apply_patch, git, etc.)"]
+        SEC --> T2["Dynamic Custom Tools (.charness/tools/)"]
+        SEC --> T3["MCP Client (JSON-RPC stdio servers)"]
     end
 ```
 
@@ -36,64 +36,177 @@ graph TD
 
 ## Key Capabilities
 
-- **Zero Heavy Dependencies:** Pure C99, standard POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
+- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
 - **Micro Footprint & Instant Startup:** Self-contained ~110KB binary with instant (<2ms) startup and minimal RAM footprint (<8MB).
 - **Dynamic Self-Tooling (`define_tool`):** Enables the agent to invent, script, persist (`.charness/tools/`), and register new executable tools on the fly.
-- **Session Checkpointing & Full Resumption:** Persistent conversation trees in SQLite (`/sessions`, `/save <id>`, `/resume <id>`, or CLI flag `./c_agent_system --resume <id>`).
-- **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone via Telegram.
-  - **Zero-Trust Security Gate:** Only authorized Telegram Chat IDs can interact or run actions on your VPS.
-  - **Interactive Inline Permission Buttons:** Tap `[ ✅ Approve ]` or `[ ❌ Deny ]` directly on your phone when the agent attempts sensitive operations (`bash`, `write_file`, `apply_patch`, `define_tool`).
-  - **Long Polling Transport:** Outbound connection only—no open inbound ports or public domain/SSL required.
-- **Model Agnostic with Real-Time SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and cyan reasoning display. Works with OpenAI, Groq, OpenRouter, Anthropic, or local offline LLMs (Ollama, vLLM, llama.cpp).
-- **Fast BPE Token Budgeting:** Real-time token utilization estimation and proactive threshold compaction.
-- **Skill Auto-Distillation (`/reflect`):** Post-task reflection and automatic extraction of reusable workflows into SQLite FTS5.
-- **Prompt Caching Support:** Anthropic `cache_control` breakpoints (`PROMPT_CACHING=true`) and OpenAI prefix caching optimization.
-- **Model Context Protocol (MCP) Client:** Built-in stdio JSON-RPC 2.0 client to connect external MCP tool servers dynamically.
+- **Session Checkpointing & Resumption:** Persistent conversation trees in SQLite (`/sessions`, `/save <id>`, `/resume <id>`, or `--resume <id>`).
+- **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted) and **Interactive Inline Approval Buttons** (`[ ✅ Approve ]` / `[ ❌ Deny ]`).
+- **Model Agnostic with Real-Time SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and cyan reasoning display across local offline LLMs (Ollama, vLLM) and Cloud APIs (OpenAI, Groq, OpenRouter, Anthropic).
+- **Accurate BPE Token Budgeting:** Subword token estimation and live context budget tracking.
+- **Skill Auto-Distillation (`/reflect`):** Post-task trajectory summarization into SQLite FTS5.
+- **Prompt Caching Support:** Anthropic `cache_control` breakpoints (`PROMPT_CACHING=true`) and OpenAI prefix caching.
+- **Model Context Protocol (MCP) Client:** Stdio JSON-RPC 2.0 client to connect external MCP tool servers dynamically.
 
 ---
 
-## Modes of Usage
+## Step-by-Step Beginner's Guide
 
-### Mode 1: Using CAgent Together with CHarness (Full Autonomous Agent)
+### Prerequisites & Quick Build
 
-In this mode, `CAgent` drives the ReAct reasoning loop while `CHarness` enforces permissions, runs tools in sandboxes, and handles UI/Telegram interaction.
+#### 1. Install System Dependencies
+- **Ubuntu / Debian:**
+  ```bash
+  sudo apt-get update && sudo apt-get install -y build-essential libcurl4-openssl-dev libsqlite3-dev
+  ```
+- **macOS:**
+  ```bash
+  brew install curl sqlite3
+  ```
 
+#### 2. Clone & Build
 ```bash
-# Set your LLM backend
+git clone https://github.com/M4F-S/CHarness.git
+cd CHarness
+make
+```
+This builds the single self-contained executable: `./c_agent_system`.
+
+---
+
+### Mode 1: Full Autonomous AI Agent (Terminal CLI)
+
+Use this mode for local interactive coding and development in your terminal.
+
+#### Step 1: Set Your LLM Backend
+
+**Option A — Local Offline LLM (Ollama / vLLM / llama.cpp):**
+```bash
 export MODEL_ENDPOINT="http://localhost:11434/v1/chat/completions"
 export MODEL_NAME="hermes-3"
+export MODEL_API_KEY="none"
+```
 
-# Launch interactive CLI
+**Option B — Cloud Provider (OpenAI / Groq / OpenRouter):**
+```bash
+export MODEL_ENDPOINT="https://api.openai.com/v1/chat/completions"
+export MODEL_NAME="gpt-4o"
+export MODEL_API_KEY="sk-your-api-key-here"
+```
+
+#### Step 2: Start the Agent
+```bash
 ./c_agent_system
+```
+
+#### Step 3: Interact with the Agent
+Type your request in plain English. The agent will autonomously read files, execute shell commands, edit code, and verify its work:
+```
+charness [1 msgs | 67 toks]> Inspect the Makefile and optimize compiler flags for C99
+```
+
+**Helpful Slash Commands in CLI:**
+- `/help` — Show command reference
+- `/status` — View active model, endpoint, token usage, and working directory
+- `/tools` — List all registered tools and permissions
+- `/save my_work` — Checkpoint your current conversation to SQLite
+- `/sessions` — List all saved sessions
+- `/resume my_work` — Resume a saved session
+- `/reflect` — Distill recent task steps into persistent memory
+
+---
+
+### Mode 2: 24/7 VPS Telegram Bot (Remote AI Engineer)
+
+Use this mode to run the agent as a continuous daemon on your VPS, allowing you to command it and approve sensitive actions directly from your phone.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as You (on Telegram Mobile)
+    participant Bot as CHarness Daemon (VPS)
+    participant Tools as VPS Host Tools
+
+    User->>Bot: "Check disk usage and restart nginx"
+    Bot->>Bot: Verify Chat ID against TELEGRAM_CHAT_ID (Zero-Trust)
+    Bot->>User: Inline Prompt: [✅ Approve] [❌ Deny] bash("systemctl restart nginx")
+    User->>Bot: Tap [✅ Approve]
+    Bot->>Tools: Execute command in sandbox (15s timeout)
+    Tools-->>Bot: Observation output
+    Bot-->>User: "Nginx restarted successfully. Memory usage: 38%."
+```
+
+#### Step 1: Create a Telegram Bot & Get Your Chat ID
+1. Open Telegram and message [@BotFather](https://t.me/botfather). Send `/newbot` to get your **`TELEGRAM_BOT_TOKEN`**.
+2. Message [@userinfobot](https://t.me/userinfobot) to get your personal numeric **`TELEGRAM_CHAT_ID`** (e.g. `987654321`).
+
+#### Step 2: Configure `.env`
+```bash
+cp .env.example .env
+nano .env
+```
+Fill in your configuration:
+```env
+MODEL_ENDPOINT=http://localhost:11434/v1/chat/completions
+MODEL_NAME=hermes-3
+MODEL_API_KEY=none
+
+TELEGRAM_BOT_TOKEN=123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ
+TELEGRAM_CHAT_ID=987654321
+```
+
+#### Step 3: Run Interactive or as a 24/7 Background Service
+
+- **Run in Foreground:**
+  ```bash
+  source .env && ./c_agent_system --telegram
+  ```
+
+- **Run as a 24/7 Systemd Service (Auto-restart on boot):**
+  ```bash
+  sudo mkdir -p /opt/charness
+  sudo cp -r . /opt/charness/
+  sudo cp charness.service /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now charness
+  ```
+
+Check status anytime:
+```bash
+sudo systemctl status charness
+sudo journalctl -u charness -f
 ```
 
 ---
 
-### Mode 2: Using CHarness Alone (Standalone Security Execution Sandbox)
+### Mode 3: Standalone Security Execution Sandbox (CHarness Alone)
 
-You can embed `CHarness` directly into any external C application, Python extension, or custom runtime to serve purely as a **secure tool execution sandbox**.
+Use `CHarness` purely as an embedded C99 execution sandbox for external agents, scripts, or custom applications.
 
-#### Embedding Example (`standalone_harness.c`):
+`CHarness` provides:
+- Non-blocking subprocess execution with **15-second execution timeouts** (kills hung processes automatically).
+- Persistent working directory (`cwd`) tracking.
+- Multi-hunk structured patch application (`apply_patch`).
+- Tiered security policies (`PERM_ALLOW`, `PERM_ASK_USER`, `PERM_DENY`).
+- Dynamic MCP stdio proxying.
+
+#### Example C Code (`standalone_example.c`):
 ```c
 #include "c_harness.h"
 
 int main(void) {
-    // 1. Initialize standalone harness without an active LLM gateway
+    // 1. Initialize standalone harness without an active LLM
     CHarness *h = c_harness_init(NULL);
 
-    // 2. Connect external MCP tool servers if desired
-    c_harness_connect_mcp(h, "npx -y @modelcontextprotocol/server-filesystem /tmp");
-
-    // 3. Execute sandboxed tools programmatically with permission gates
+    // 2. Prepare tool arguments
     JsonValue *args = json_create_object();
     json_obj_add(args, "command", json_create_string("git status -s"));
 
-    // Find and execute the 'bash' tool (enforces 15s timeout and CWD tracking)
+    // 3. Execute 'bash' tool inside the security sandbox
     for (size_t i = 0; i < h->tool_count; i++) {
         if (strcmp(h->tools[i].name, "bash") == 0) {
-            char *output = h->tools[i].callback(NULL, args);
-            printf("Execution Observation:\n%s\n", output);
-            free(output);
+            char *result = h->tools[i].callback(NULL, args);
+            printf("Sandbox Output:\n%s\n", result);
+            free(result);
             break;
         }
     }
@@ -104,164 +217,85 @@ int main(void) {
 }
 ```
 
----
-
-## Native Tool Suite (13 Tools)
-
-| Tool Name | Permission Level | Description |
-|:---|:---|:---|
-| **`bash`** | `ASK_USER` | Executes shell commands with persistent CWD tracking and 15s timeout protection |
-| **`read_file`** | `ALLOW` | Reads file contents with optional line-range slicing (`offset` & `limit`) |
-| **`write_file`** | `ASK_USER` | Writes text content directly to disk |
-| **`edit_file`** | `ASK_USER` | Exact search-and-replace snippet modifications |
-| **`apply_patch`** | `ASK_USER` | Multi-hunk structured replacement patch engine (`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE`) |
-| **`list_dir`** | `ALLOW` | Inspects directory contents |
-| **`search_files`** | `ALLOW` | Recursively searches text patterns across codebase files (grep-like) |
-| **`git_status`** | `ALLOW` | Inspects Git working copy status |
-| **`git_diff`** | `ALLOW` | Inspects staged or unstaged Git diffs |
-| **`save_memory`** | `ALLOW` | Stores verified knowledge and skills into SQLite persistent memory |
-| **`recall_memory`** | `ALLOW` | Searches SQLite memory using FTS5 BM25 ranking |
-| **`spawn_subagent`**| `ALLOW` | Spawns a child autonomous agent worker in an isolated sandbox context |
-| **`define_tool`** | `ASK_USER` | **Dynamically creates, scripts, persists, and registers a new tool for self-evolution** |
-
----
-
-## Project Structure
-
-```
-.
-├── common.h            # Dynamic string buffers, token estimator, & memory management
-├── linenoise.h         # Single-file zero-dependency line editor header
-├── linenoise.c         # Terminal raw mode, ANSI escape codes, & tab completion
-├── minijson.h          # Lightweight JSON AST parser & serializer header
-├── minijson.c          # Zero-dependency JSON AST engine
-├── mcp_client.h        # Stdio JSON-RPC 2.0 Model Context Protocol client header
-├── mcp_client.c        # Bidirectional pipe transport & tool discovery
-├── model_adapter.h     # Transport interface, prompt caching, & SSE streaming
-├── model_adapter.c     # libcurl client with exponential backoff & SSE parser
-├── c_agent.h           # Hermes-style Agent reasoning core & SQLite memory/sessions
-├── c_agent.c           # ReAct loop, session persistence, FTS5 search, & reflection
-├── c_harness.h         # Terminal harness, security gates, & custom tool management
-├── c_harness.c         # POSIX sandboxing, 13 native tools, subagents, and REPL
-├── telegram_adapter.h  # Telegram bot API & long-polling transport header
-├── telegram_adapter.c  # Telegram daemon with inline button permissions
-├── main.c              # Entry point (CLI REPL, --resume, & Telegram modes)
-├── test_suite.c        # Comprehensive unit and integration test suite
-├── Makefile            # Build configuration
-├── charness.service    # Systemd service unit file for VPS deployment
-├── .env.example        # Environment template
-├── LICENSE             # Apache License 2.0
-└── README.md           # Documentation
-```
-
----
-
-## Build & Test
-
-### Prerequisites
-- **Debian / Ubuntu:** `sudo apt-get install build-essential libcurl4-openssl-dev libsqlite3-dev`
-- **macOS:** `brew install curl sqlite3`
-
-### Compile
+Compile and run:
 ```bash
-make
+gcc -Wall -O2 standalone_example.c linenoise.c minijson.c mcp_client.c model_adapter.c c_agent.c c_harness.c telegram_adapter.c -lcurl -lsqlite3 -o standalone_example
+./standalone_example
 ```
 
-### Run Test Suite
+---
+
+## Native Tool Suite Reference (13 Tools)
+
+| Tool Name | Security Gate | Parameters | Description |
+|:---|:---|:---|:---|
+| **`bash`** | `ASK_USER` | `command` (string) | Executes shell commands with persistent CWD tracking & 15s timeout protection |
+| **`read_file`** | `ALLOW` | `path` (string), `offset` (num), `limit` (num) | Reads file contents with optional line-range slicing |
+| **`write_file`** | `ASK_USER` | `path` (string), `content` (string) | Writes text content directly to disk |
+| **`edit_file`** | `ASK_USER` | `path`, `old_text`, `new_text` | Exact search-and-replace snippet modifications |
+| **`apply_patch`** | `ASK_USER` | `path`, `patch` | Multi-hunk structured replacement patch engine (`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE`) |
+| **`list_dir`** | `ALLOW` | `path` (string) | Inspects directory contents |
+| **`search_files`** | `ALLOW` | `pattern`, `path`, `file_glob` | Recursively searches text patterns across codebase files (grep-like) |
+| **`git_status`** | `ALLOW` | *(none)* | Inspects Git working copy status |
+| **`git_diff`** | `ALLOW` | `staged` (bool), `path` (string) | Inspects staged or unstaged Git diffs |
+| **`save_memory`** | `ALLOW` | `topic`, `content` | Stores verified knowledge into SQLite persistent memory |
+| **`recall_memory`** | `ALLOW` | `query` (string) | Searches SQLite memory using FTS5 BM25 ranking |
+| **`spawn_subagent`**| `ALLOW` | `task`, `instructions`, `max_turns` | Spawns child autonomous agent in an isolated context |
+| **`define_tool`** | `ASK_USER` | `name`, `description`, `parameters`, `script_body` | **Dynamically creates, scripts, persists, and registers a new tool for self-evolution** |
+
+---
+
+## Commands & Slash Controls Reference
+
+| Command | Environment | Description |
+|:---|:---|:---|
+| `/help` | CLI & Telegram | Display command reference and system status |
+| `/status` | CLI & Telegram | View active model, endpoint, token usage, CWD, and session count |
+| `/tools` | CLI & Telegram | Show registered tools (including dynamic MCP & custom tools) |
+| `/rules` | CLI & Telegram | View active repository guidelines (`.agentrules` / `AGENT.md`) |
+| `/sessions` | CLI & Telegram | List all checkpointed conversation sessions in SQLite |
+| `/save [id]` | CLI & Telegram | Checkpoint current conversation tree to database |
+| `/resume <id>` | CLI & Telegram | Restore past conversation session by ID |
+| `/reflect` | CLI & Telegram | Distill recent trajectory into a reusable SQLite FTS5 skill |
+| `/clear` | CLI & Telegram | Reset conversation history (preserves system instructions) |
+| `/compact [N]` | CLI & Telegram | Prune older messages, keeping `N` recent turns |
+| `/memory [q]` | CLI & Telegram | Query SQLite persistent memory directly |
+| `/model <m>` | CLI & Telegram | Switch active AI model dynamically |
+| `/cwd [path]` | CLI & Telegram | View or change current working directory |
+| `/mcp <cmd>` | CLI & Telegram | Connect to an external stdio MCP server |
+| `exit` | CLI | Terminate the interactive REPL |
+
+---
+
+## Testing & Verification
+
+Run the automated test suite to verify memory safety, tool behavior, session persistence, and token estimation:
+
 ```bash
 make test
 ```
 
----
-
-## Deployment on VPS (Telegram Bot Mode)
-
-Run CHarness as a 24/7 background service on your VPS and interact with it from your Telegram app.
-
-### 1. Setup Environment
-```bash
-cp .env.example .env
-nano .env
+**Expected Output:**
 ```
-Fill in:
-```env
-# 1. LLM Model Configuration
-MODEL_ENDPOINT=http://localhost:11434/v1/chat/completions
-MODEL_NAME=hermes-3
-MODEL_API_KEY=none
-
-# 2. Telegram Bot Token (from @BotFather)
-TELEGRAM_BOT_TOKEN=123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ
-
-# 3. Your Telegram User ID (from @userinfobot)
-# CRITICAL: CHarness will block any user whose Chat ID does not match this!
-TELEGRAM_CHAT_ID=987654321
+================ Running CHarness & CAgent Evolution 2.0 Test Suite ================
+[Test] DynString Operations...
+  -> DynString PASSED
+[Test] MiniJSON Parser & Serializer...
+  -> MiniJSON PASSED
+[Test] BPE-calibrated Token Estimator...
+  -> Token Estimator PASSED (Total: 67 tokens)
+[Test] Agent Memory (FTS5) & Rules Auto-Discovery...
+  -> Agent Memory & Rules PASSED
+[Test] Session Checkpointing & Resumption...
+  -> Session Checkpointing & Resumption PASSED
+[Test] Dynamic Self-Tooling (define_tool & Custom Script Execution)...
+  -> Dynamic Self-Tooling PASSED
+[Test] Harness Tool Suite (13 Tools) & Patch Engine...
+  -> Harness Tools & Patch Engine PASSED
+[Test] Telegram Bot Adapter Security & Setup...
+  -> Telegram Adapter PASSED
+================ All Tests Passed Successfully (100%) ================
 ```
-
-### 2. Run Directly
-```bash
-source .env && ./c_agent_system --telegram
-```
-
-### 3. Install as a 24/7 Systemd Service (Always On)
-```bash
-sudo mkdir -p /opt/charness
-sudo cp -r . /opt/charness/
-sudo cp charness.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now charness
-```
-
-Check status and logs:
-```bash
-sudo systemctl status charness
-sudo journalctl -u charness -f
-```
-
----
-
-## Interactive Terminal CLI Mode
-
-### 1. Local Offline (Ollama / vLLM / llama.cpp)
-```bash
-export MODEL_ENDPOINT="http://localhost:11434/v1/chat/completions"
-export MODEL_NAME="hermes-3"
-export MODEL_API_KEY="none"
-./c_agent_system
-```
-
-### 2. Cloud Providers (OpenAI / Groq / OpenRouter)
-```bash
-export MODEL_ENDPOINT="https://api.openai.com/v1/chat/completions"
-export MODEL_NAME="gpt-4o"
-export MODEL_API_KEY="sk-..."
-./c_agent_system
-```
-
-### 3. Resume Previous Session
-```bash
-./c_agent_system --resume my_session_id
-```
-
----
-
-## Commands & Slash Controls (CLI & Telegram)
-
-- `/help` — Display system status and command reference
-- `/status` — View active model, endpoint, token usage, CWD, and session count
-- `/tools` — Show registered tools (including dynamic MCP & custom tools)
-- `/rules` — View active repository guidelines (`.agentrules`)
-- `/sessions` — List all checkpointed conversation sessions in SQLite
-- `/save [id]` — Checkpoint current conversation tree to database
-- `/resume <id>` — Restore past conversation session by ID
-- `/reflect` — Distill recent trajectory into a reusable SQLite FTS5 skill
-- `/clear` — Reset conversation history (preserves system instructions)
-- `/compact [N]` — Prune older messages, keeping `N` recent turns
-- `/memory [query]` — Query SQLite persistent memory directly
-- `/model <name>` — Switch active AI model dynamically
-- `/cwd [path]` — View or change current working directory
-- `/mcp <command>` — Connect to an external stdio MCP server
-- `exit` — Terminate the REPL
 
 ---
 
