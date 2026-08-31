@@ -34,15 +34,18 @@ graph TD
 
 ---
 
-## Key Capabilities
+## Key Capabilities & Evolution 3.0 Innovations
 
 - **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
 - **Micro Footprint & Instant Startup:** Self-contained ~120KB binary with instant (<2ms) startup and minimal RAM footprint (<8MB).
-- **Pre-Flight Compiler Watchdog (Auto-Healing):** `tool_write_file`, `tool_edit_file`, and `tool_apply_patch` automatically run pre-flight syntax checks on C/C++ files (`gcc -fsyntax-only`), returning compiler warnings directly to the model for immediate self-correction.
-- **Gomaa Memory Architecture:** SQLite-backed memory with Wing & Room hierarchical scoping (`wing/room: topic`), dynamic salience scoring with access-frequency recency boosts, and persistent timeline logging (`/timeline`).
-- **Native Web Retrieval (`fetch_url`):** Built-in HTTP GET client leveraging libcurl directly with automatic redirect following and 100KB buffer protection.
+- **Pre-Flight Compiler Watchdog (Auto-Healing Loop):** `write_file`, `edit_file`, and `apply_patch` automatically run pre-flight syntax checks on C/C++ files (`gcc -fsyntax-only`), returning compiler warnings directly to the model for immediate self-correction.
+- **Gomaa Memory Architecture (Slim C99 Paradigm):**
+  - **Wing & Room Scoping:** SQLite-backed memory with domain isolation (`wing/room: topic`), e.g. `backend/auth`, `devops/ci`, `infra/database`.
+  - **Salience Scoring & Recency Boost:** Recalled memories automatically have their salience increased (`salience += 0.1`) and access frequency updated to prioritize relevant knowledge.
+  - **Persistent Timeline Logging:** Chronological event timeline recording tool executions, memory writes, compactions, and session checkpoints queryable via `/timeline [N]`.
+- **Native Web Content Retrieval (`fetch_url`):** Built-in HTTP GET client leveraging libcurl directly with automatic redirect following, custom headers, and 100KB buffer protection.
 - **Dynamic Self-Tooling (`define_tool`):** Enables the agent to invent, script, persist (`.charness/tools/`), and register new executable tools on the fly.
-- **Token Budget Auto-Compaction Watchdog:** Automatically monitors BPE token utilization and proactively compacts context at 80% threshold to prevent context overflow errors.
+- **Token Budget Auto-Compaction Watchdog:** Proactively monitors BPE token utilization and compacts context automatically at 80% threshold to prevent context overflow errors.
 - **Session Checkpointing & Resumption:** Persistent conversation trees in SQLite (`/sessions`, `/save <id>`, `/resume <id>`, or `--resume <id>`).
 - **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted) and **Interactive Inline Approval Buttons** (`[ ✅ Approve ]` / `[ ❌ Deny ]`).
 - **Model Agnostic with Real-Time SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and cyan reasoning display across local offline LLMs (Ollama, vLLM) and Cloud APIs (OpenAI, Groq, OpenRouter, Anthropic).
@@ -88,7 +91,7 @@ export MODEL_NAME="hermes-3"
 export MODEL_API_KEY="none"
 ```
 
-**Option B — Cloud Provider (OpenAI / Groq / OpenRouter):**
+**Option B — Cloud Provider (OpenAI / Groq / OpenRouter / DeepSeek):**
 ```bash
 export MODEL_ENDPOINT="https://api.openai.com/v1/chat/completions"
 export MODEL_NAME="gpt-4o"
@@ -110,12 +113,13 @@ charness [1 msgs | 67 toks]> Inspect the Makefile and optimize compiler flags fo
 - `/help` — Show command reference
 - `/status` — View active model, endpoint, token usage, and working directory
 - `/tools` — List all registered tools and permissions
-- `/timeline` — View recent Gomaa timeline event log
+- `/timeline [N]` — View recent Gomaa timeline event log
 - `/save my_work` — Checkpoint your current conversation to SQLite
 - `/sessions` — List all saved sessions
 - `/resume my_work` — Resume a saved session
 - `/reflect` — Distill recent task steps into persistent memory
-- `/compact` — Prune older conversation turns to conserve token budget
+- `/compact [N]` — Prune older conversation turns to conserve token budget
+- `/memory [query]` — Query SQLite persistent memory directly
 
 ---
 
@@ -150,9 +154,9 @@ nano .env
 ```
 Fill in your configuration:
 ```env
-MODEL_ENDPOINT=http://localhost:11434/v1/chat/completions
-MODEL_NAME=hermes-3
-MODEL_API_KEY=none
+MODEL_ENDPOINT=https://api.deepseek.com/v1/chat/completions
+MODEL_NAME=deepseek-chat
+MODEL_API_KEY=sk-your-api-key-here
 
 TELEGRAM_BOT_TOKEN=123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ
 TELEGRAM_CHAT_ID=987654321
@@ -187,9 +191,10 @@ sudo journalctl -u charness -f
 Use `CHarness` purely as an embedded C99 execution sandbox for external agents, scripts, or custom applications.
 
 `CHarness` provides:
-- Non-blocking subprocess execution with **15-second execution timeouts** (kills hung processes automatically).
+- Non-blocking subprocess execution with **configurable timeouts** (`BASH_TIMEOUT`, default: 30s) and automatic hung process termination.
 - Persistent working directory (`cwd`) tracking.
 - Multi-hunk structured patch application (`apply_patch`).
+- Automated pre-flight syntax verification (`gcc -fsyntax-only`).
 - Tiered security policies (`PERM_ALLOW`, `PERM_ASK_USER`, `PERM_DENY`).
 - Dynamic MCP stdio proxying.
 
@@ -229,21 +234,22 @@ gcc -Wall -O2 standalone_example.c linenoise.c minijson.c mcp_client.c model_ada
 
 ---
 
-## Native Tool Suite Reference (13 Tools)
+## Native Tool Suite Reference (14 Tools)
 
 | Tool Name | Security Gate | Parameters | Description |
 |:---|:---|:---|:---|
-| **`bash`** | `ASK_USER` | `command` (string) | Executes shell commands with persistent CWD tracking & 15s timeout protection |
+| **`bash`** | `ASK_USER` | `command` (string) | Executes shell commands with persistent CWD tracking & timeout protection |
 | **`read_file`** | `ALLOW` | `path` (string), `offset` (num), `limit` (num) | Reads file contents with optional line-range slicing |
-| **`write_file`** | `ASK_USER` | `path` (string), `content` (string) | Writes text content directly to disk |
-| **`edit_file`** | `ASK_USER` | `path`, `old_text`, `new_text` | Exact search-and-replace snippet modifications |
+| **`write_file`** | `ASK_USER` | `path` (string), `content` (string) | Writes text content directly to disk with pre-flight compiler check |
+| **`edit_file`** | `ASK_USER` | `path`, `old_text`, `new_text` | Exact search-and-replace snippet modifications with auto-healing check |
 | **`apply_patch`** | `ASK_USER` | `path`, `patch` | Multi-hunk structured replacement patch engine (`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE`) |
+| **`fetch_url`** | `ALLOW` | `url` (string) | Direct HTTP GET web retrieval with automatic redirects and buffer protection |
 | **`list_dir`** | `ALLOW` | `path` (string) | Inspects directory contents |
 | **`search_files`** | `ALLOW` | `pattern`, `path`, `file_glob` | Recursively searches text patterns across codebase files (grep-like) |
 | **`git_status`** | `ALLOW` | *(none)* | Inspects Git working copy status |
 | **`git_diff`** | `ALLOW` | `staged` (bool), `path` (string) | Inspects staged or unstaged Git diffs |
-| **`save_memory`** | `ALLOW` | `topic`, `content` | Stores verified knowledge into SQLite persistent memory |
-| **`recall_memory`** | `ALLOW` | `query` (string) | Searches SQLite memory using FTS5 BM25 ranking |
+| **`save_memory`** | `ALLOW` | `topic`, `content` | Stores verified knowledge into SQLite persistent memory with wing/room scoping |
+| **`recall_memory`** | `ALLOW` | `query` (string) | Searches SQLite memory using FTS5 BM25 ranking and boosts salience |
 | **`spawn_subagent`**| `ALLOW` | `task`, `instructions`, `max_turns` | Spawns child autonomous agent in an isolated context |
 | **`define_tool`** | `ASK_USER` | `name`, `description`, `parameters`, `script_body` | **Dynamically creates, scripts, persists, and registers a new tool for self-evolution** |
 
@@ -256,6 +262,7 @@ gcc -Wall -O2 standalone_example.c linenoise.c minijson.c mcp_client.c model_ada
 | `/help` | CLI & Telegram | Display command reference and system status |
 | `/status` | CLI & Telegram | View active model, endpoint, token usage, CWD, and session count |
 | `/tools` | CLI & Telegram | Show registered tools (including dynamic MCP & custom tools) |
+| `/timeline [N]` | CLI & Telegram | View recent Gomaa chronological timeline event log |
 | `/rules` | CLI & Telegram | View active repository guidelines (`.agentrules` / `AGENT.md`) |
 | `/sessions` | CLI & Telegram | List all checkpointed conversation sessions in SQLite |
 | `/save [id]` | CLI & Telegram | Checkpoint current conversation tree to database |
@@ -273,15 +280,15 @@ gcc -Wall -O2 standalone_example.c linenoise.c minijson.c mcp_client.c model_ada
 
 ## Testing & Verification
 
-Run the automated test suite to verify memory safety, tool behavior, session persistence, and token estimation:
+Run the automated test suite to verify memory safety, tool behavior, session persistence, pre-flight compiler auto-healing, and Gomaa memory scoping:
 
 ```bash
 make test
 ```
 
-**Expected Output:**
+**Test Output:**
 ```
-================ Running CHarness & CAgent Evolution 2.0 Test Suite ================
+================ Running CHarness & CAgent Evolution 3.0 Test Suite ================
 [Test] DynString Operations...
   -> DynString PASSED
 [Test] MiniJSON Parser & Serializer...
@@ -298,6 +305,12 @@ make test
   -> Harness Tools & Patch Engine PASSED
 [Test] Telegram Bot Adapter Security & Setup...
   -> Telegram Adapter PASSED
+[Test] Pre-Flight Compiler Watchdog (Auto-Healing Feedback Loop)...
+  -> Pre-Flight Compiler Watchdog PASSED
+[Test] Native Web Content Retrieval (fetch_url)...
+  -> fetch_url Tool PASSED
+[Test] Gomaa Memory Paradigm (Wing/Room Scoping, Salience & Timeline)...
+  -> Gomaa Memory & Timeline PASSED
 ================ All Tests Passed Successfully (100%) ================
 ```
 
