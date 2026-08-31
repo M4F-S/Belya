@@ -27,6 +27,7 @@ typedef struct CAgent {
     AgentToolSchema *schemas;
     size_t schema_count;
     size_t max_context_messages;
+    size_t max_context_tokens;
     bool has_fts5;
 } CAgent;
 
@@ -35,12 +36,17 @@ void c_agent_register_schema(CAgent *agent, const char *name, const char *desc, 
 void c_agent_add_message(CAgent *agent, const char *role, const char *content);
 void c_agent_add_tool_result(CAgent *agent, const char *tool_call_id, const char *name, const char *result);
 void c_agent_persist_memory(CAgent *agent, const char *topic, const char *content);
+void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char *content, const char *wing, const char *room);
 char *c_agent_search_memory(CAgent *agent, const char *query);
 void c_agent_compact_history(CAgent *agent, size_t keep_recent);
 void c_agent_clear_history(CAgent *agent);
 
 // Token Budgeting & Estimation
 size_t c_agent_total_tokens(const CAgent *agent);
+
+// Gomaa Memory Timeline
+void c_agent_log_timeline(CAgent *agent, const char *event_type, const char *summary);
+char *c_agent_get_timeline(CAgent *agent, int limit);
 
 // Session Management
 bool c_agent_save_session(CAgent *agent, const char *session_id, const char *title);

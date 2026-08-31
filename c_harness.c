@@ -9,8 +9,48 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <curl/curl.h>
 
 static CHarness *g_harness = NULL;
+
+static void safe_pipe_write(int fd, const char *data, size_t len) {
+    while (len > 0) {
+        ssize_t w = write(fd, data, len);
+        if (w <= 0) break;
+        data += w;
+        len -= (size_t)w;
+    }
+}
+
+static char *preflight_syntax_check(const char *path) {
+    if (!path) return NULL;
+    const char *ext = strrchr(path, '.');
+    if (!ext) return NULL;
+    if (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0 &&
+        strcmp(ext, ".cpp") != 0 && strcmp(ext, ".cc") != 0) {
+        return NULL;
+    }
+
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "gcc -fsyntax-only -std=c99 -Wall \"%s\" 2>&1", path);
+
+    FILE *p = popen(cmd, "r");
+    if (!p) return NULL;
+
+    DynString out = dyn_str_new();
+    char buf[512];
+    while (fgets(buf, sizeof(buf), p)) {
+        dyn_str_append(&out, buf);
+        if (out.len > 8000) break;
+    }
+    int status = pclose(p);
+
+    if (status == 0 || out.len == 0) {
+        dyn_str_free(&out);
+        return NULL;
+    }
+    return out.data;
+}
 
 // Built-in Native Tools
 
@@ -29,17 +69,16 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
         char clean_path[4096];
         size_t tlen = strlen(target);
         if (tlen >= 2 && ((target[0] == '\"' && target[tlen-1] == '\"') || (target[0] == '\'' && target[tlen-1] == '\''))) {
-            strncpy(clean_path, target + 1, tlen - 2);
-            clean_path[tlen - 2] = '\0';
+            size_t copy_len = (tlen - 2 < sizeof(clean_path) - 1) ? (tlen - 2) : (sizeof(clean_path) - 1);
+            memcpy(clean_path, target + 1, copy_len);
+            clean_path[copy_len] = '\0';
         } else {
-            strncpy(clean_path, target, sizeof(clean_path) - 1);
-            clean_path[sizeof(clean_path) - 1] = '\0';
+            snprintf(clean_path, sizeof(clean_path), "%s", target);
         }
 
         char resolved[4096];
         if (clean_path[0] == '/' || !g_harness) {
-            strncpy(resolved, clean_path, sizeof(resolved) - 1);
-            resolved[sizeof(resolved) - 1] = '\0';
+            snprintf(resolved, sizeof(resolved), "%s", clean_path);
         } else {
             snprintf(resolved, sizeof(resolved), "%s/%s", g_harness->cwd, clean_path);
         }
@@ -101,6 +140,9 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
     gettimeofday(&start, NULL);
     bool timed_out = false;
 
+    const char *to_env = getenv("BASH_TIMEOUT");
+    double max_timeout = (to_env && atof(to_env) > 0) ? atof(to_env) : 30.0;
+
     while (1) {
         char buf[512];
         ssize_t bytes = read(pipefd[0], buf, sizeof(buf) - 1);
@@ -126,7 +168,7 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
 
         gettimeofday(&now, NULL);
         double elapsed = (now.tv_sec - start.tv_sec) + (now.tv_usec - start.tv_usec) / 1000000.0;
-        if (elapsed > 15.0) {
+        if (elapsed > max_timeout) {
             kill(pid, SIGKILL);
             waitpid(pid, NULL, 0);
             timed_out = true;
@@ -139,7 +181,7 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
     close(pipefd[0]);
 
     if (timed_out) {
-        dyn_str_append(&out, "\n[Process killed: Execution exceeded 15s timeout]");
+        dyn_str_appendf(&out, "\n[Process killed: Execution exceeded %.0fs timeout]", max_timeout);
     }
 
     if (out.len == 0) dyn_str_append(&out, "Command executed with no output.");
@@ -229,7 +271,16 @@ static char *tool_write_file(CAgent *agent, const JsonValue *args) {
     size_t clen = strlen(content);
     fwrite(content, 1, clen, f);
     fclose(f);
-    return strdup("File successfully written to disk.");
+
+    DynString msg = dyn_str_new();
+    dyn_str_append(&msg, "File successfully written to disk.");
+    char *diag = preflight_syntax_check(path);
+    if (diag) {
+        dyn_str_append(&msg, "\n\n⚠️ COMPILER WARNING/ERROR after write:\n");
+        dyn_str_append(&msg, diag);
+        free(diag);
+    }
+    return msg.data;
 }
 
 static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
@@ -293,6 +344,12 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
 
     DynString msg = dyn_str_new();
     dyn_str_appendf(&msg, "File '%s' successfully edited (replaced %zu bytes with %zu bytes).", path, old_len, new_len);
+    char *diag = preflight_syntax_check(path);
+    if (diag) {
+        dyn_str_append(&msg, "\n\n⚠️ COMPILER WARNING/ERROR after edit:\n");
+        dyn_str_append(&msg, diag);
+        free(diag);
+    }
     return msg.data;
 }
 
@@ -379,7 +436,16 @@ static char *tool_apply_patch(CAgent *agent, const JsonValue *args) {
         fclose(out_f);
         if (cur_doc != orig) free(cur_doc);
         free(orig);
-        return strdup("Patch successfully applied to file.");
+
+        DynString msg = dyn_str_new();
+        dyn_str_append(&msg, "Patch successfully applied to file.");
+        char *diag = preflight_syntax_check(path);
+        if (diag) {
+            dyn_str_append(&msg, "\n\n⚠️ COMPILER WARNING/ERROR after patch:\n");
+            dyn_str_append(&msg, diag);
+            free(diag);
+        }
+        return msg.data;
     }
 
     free(orig);
@@ -621,6 +687,60 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     return result_summary.data;
 }
 
+static size_t fetch_url_curl_sink(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t total = size * nmemb;
+    DynString *ds = (DynString *)userdata;
+    dyn_str_append_len(ds, (const char *)ptr, total);
+    return total;
+}
+
+static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *url = json_obj_get_str(args, "url");
+    if (!url || strlen(url) == 0) return strdup("Error: Missing url argument.");
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return strdup("Error: Failed to initialize HTTP client.");
+
+    DynString body = dyn_str_new();
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "User-Agent: CAgent/3.0 (Autonomous C99 Engine)");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_url_curl_sink);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
+
+    CURLcode code = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (code != CURLE_OK) {
+        dyn_str_free(&body);
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error fetching URL: %s", curl_easy_strerror(code));
+        return err.data;
+    }
+
+    if (body.len > 100000) {
+        body.data[100000] = '\0';
+        body.len = 100000;
+        dyn_str_append(&body, "\n[Content truncated by C Harness (100KB buffer limit)]");
+    }
+
+    if (body.len == 0) {
+        dyn_str_appendf(&body, "URL returned empty response (HTTP %ld).", http_code);
+    }
+
+    return body.data;
+}
+
 // Dynamic Custom Tool Execution Runner
 static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
     (void)agent;
@@ -675,8 +795,8 @@ static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
     close(in_pipe[0]);
     close(out_pipe[1]);
 
-    write(in_pipe[1], args_str, strlen(args_str));
-    write(in_pipe[1], "\n", 1);
+    safe_pipe_write(in_pipe[1], args_str, strlen(args_str));
+    safe_pipe_write(in_pipe[1], "\n", 1);
     close(in_pipe[1]);
     free(args_str);
 
@@ -1098,6 +1218,10 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(def_params, "required", d_req);
     c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool for self-evolution", def_params, PERM_ALLOW, tool_define_tool);
 
+    // 14. fetch_url (Native Web Content Retrieval)
+    c_harness_register_tool(h, "fetch_url", "Fetch content from a web URL via HTTP GET",
+        build_string_param_schema("url", "The full web URL to fetch"), PERM_ALLOW, tool_fetch_url);
+
     // Load any previously defined custom tools
     c_harness_load_custom_tools(h);
 
@@ -1188,6 +1312,7 @@ static void print_help(CHarness *h) {
     printf("  /status          View active system status and token utilization\n");
     printf("  /tools           List all registered tools and permissions\n");
     printf("  /rules           View active repository guidelines (.agentrules)\n");
+    printf("  /timeline [N]    View recent Gomaa timeline event log\n");
     printf("  /sessions        List all checkpointed conversation sessions\n");
     printf("  /save [id]       Checkpoint conversation tree to SQLite\n");
     printf("  /resume <id>     Restore conversation session by ID\n");
@@ -1224,9 +1349,9 @@ static void list_tools(CHarness *h) {
 static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == '/') {
         const char *commands[] = {
-            "/help", "/status", "/tools", "/rules", "/sessions",
-            "/save", "/resume", "/reflect", "/clear", "/compact",
-            "/memory", "/model", "/cwd", "/mcp", NULL
+            "/help", "/status", "/tools", "/rules", "/timeline",
+            "/sessions", "/save", "/resume", "/reflect", "/clear",
+            "/compact", "/memory", "/model", "/cwd", "/mcp", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -1241,7 +1366,7 @@ void c_harness_repl(CHarness *h) {
     linenoiseHistoryLoad(".charness_history");
     linenoiseSetCompletionCallback(harness_completion_hook);
 
-    printf("\033[1;32m=== CHarness & CAgent Evolution 2.0 System Activated ===\033[0m\n");
+    printf("\033[1;32m=== CHarness & CAgent Evolution 3.0 System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
@@ -1299,6 +1424,17 @@ void c_harness_repl(CHarness *h) {
                         printf("No .agentrules, AGENT.md, or CLAUDE.md found in repository root.\n\n");
                     }
                 }
+                continue;
+            }
+            if (strncmp(input_buf, "/timeline", 9) == 0) {
+                int limit = 15;
+                if (strlen(input_buf) > 9) {
+                    limit = atoi(input_buf + 9);
+                    if (limit <= 0) limit = 15;
+                }
+                char *tl = c_agent_get_timeline(h->agent, limit);
+                printf("\n%s\n", tl);
+                free(tl);
                 continue;
             }
             if (strcmp(input_buf, "/sessions") == 0) {

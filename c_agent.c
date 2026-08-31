@@ -23,6 +23,9 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     agent->msg_cap = 64;
     agent->messages = calloc(agent->msg_cap, sizeof(AgentMessage));
     agent->max_context_messages = 50;
+    
+    const char *tok_budget_env = getenv("MAX_CONTEXT_TOKENS");
+    agent->max_context_tokens = (tok_budget_env && atoi(tok_budget_env) > 0) ? (size_t)atoi(tok_budget_env) : 128000;
 
     // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
@@ -34,6 +37,17 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  topic TEXT NOT NULL,"
             "  content TEXT NOT NULL,"
+            "  wing TEXT DEFAULT 'default',"
+            "  room TEXT DEFAULT 'general',"
+            "  salience REAL DEFAULT 1.0,"
+            "  access_count INTEGER DEFAULT 0,"
+            "  last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS agent_timeline ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  event_type TEXT NOT NULL,"
+            "  summary TEXT NOT NULL,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");"
             "CREATE TABLE IF NOT EXISTS sessions ("
@@ -55,10 +69,29 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
             ");";
         sqlite3_exec(agent->db, schema_sql, 0, 0, 0);
 
+        // Safe column migration for existing databases
+        const char *migrations[] = {
+            "ALTER TABLE agent_memory ADD COLUMN wing TEXT DEFAULT 'default';",
+            "ALTER TABLE agent_memory ADD COLUMN room TEXT DEFAULT 'general';",
+            "ALTER TABLE agent_memory ADD COLUMN salience REAL DEFAULT 1.0;",
+            "ALTER TABLE agent_memory ADD COLUMN access_count INTEGER DEFAULT 0;",
+            "ALTER TABLE agent_memory ADD COLUMN last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP;",
+            NULL
+        };
+        for (int mi = 0; migrations[mi]; mi++) {
+            sqlite3_exec(agent->db, migrations[mi], 0, 0, 0);
+        }
+
         // Check if FTS5 is available
-        const char *fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(topic, content);";
+        const char *fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(topic, content, wing, room);";
         if (sqlite3_exec(agent->db, fts_sql, 0, 0, 0) == SQLITE_OK) {
             agent->has_fts5 = true;
+        } else {
+            // Fallback to basic 2-column FTS5
+            const char *fts_sql2 = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(topic, content);";
+            if (sqlite3_exec(agent->db, fts_sql2, 0, 0, 0) == SQLITE_OK) {
+                agent->has_fts5 = true;
+            }
         }
     }
 
@@ -146,13 +179,58 @@ void c_agent_add_tool_result(CAgent *agent, const char *tool_call_id, const char
     m->content = strdup(result ? result : "");
 }
 
-void c_agent_persist_memory(CAgent *agent, const char *topic, const char *content) {
-    if (!agent->db) return;
+void c_agent_log_timeline(CAgent *agent, const char *event_type, const char *summary) {
+    if (!agent || !agent->db || !event_type || !summary) return;
     sqlite3_stmt *stmt;
-    const char *sql = "INSERT INTO agent_memory (topic, content) VALUES (?, ?);";
+    const char *sql = "INSERT INTO agent_timeline (event_type, summary) VALUES (?, ?);";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, event_type, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, summary, -1, SQLITE_STATIC);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+}
+
+char *c_agent_get_timeline(CAgent *agent, int limit) {
+    if (!agent || !agent->db) return strdup("Timeline database not active.");
+    if (limit <= 0) limit = 15;
+
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT event_type, summary, created_at FROM agent_timeline ORDER BY id DESC LIMIT ?;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return strdup("Failed to query agent timeline.");
+    }
+
+    sqlite3_bind_int(stmt, 1, limit);
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Agent Timeline Log ===\n");
+    size_t count = 0;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *ev = (const char *)sqlite3_column_text(stmt, 0);
+        const char *sum = (const char *)sqlite3_column_text(stmt, 1);
+        const char *ts = (const char *)sqlite3_column_text(stmt, 2);
+        dyn_str_appendf(&ds, "[%s] \033[1;36m%-16s\033[0m: %s\n", ts ? ts : "", ev ? ev : "", sum ? sum : "");
+        count++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) dyn_str_append(&ds, "No timeline events recorded yet.");
+    return ds.data;
+}
+
+void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char *content, const char *wing, const char *room) {
+    if (!agent || !agent->db || !topic || !content) return;
+    const char *w = (wing && strlen(wing) > 0) ? wing : "default";
+    const char *r = (room && strlen(room) > 0) ? room : "general";
+
+    sqlite3_stmt *stmt;
+    const char *sql = "INSERT INTO agent_memory (topic, content, wing, room, salience, access_count) VALUES (?, ?, ?, ?, 1.0, 0);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, topic, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, content, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, w, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 4, r, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
@@ -166,6 +244,35 @@ void c_agent_persist_memory(CAgent *agent, const char *topic, const char *conten
             sqlite3_finalize(stmt);
         }
     }
+
+    char log_summary[256];
+    snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, topic);
+    c_agent_log_timeline(agent, "memory_persisted", log_summary);
+}
+
+void c_agent_persist_memory(CAgent *agent, const char *topic, const char *content) {
+    if (!topic || !content) return;
+
+    char wing[64] = "default";
+    char room[64] = "general";
+    const char *actual_topic = topic;
+
+    // Check for wing/room prefix: "wing/room: topic" or "wing:room:topic"
+    const char *colon = strchr(topic, ':');
+    const char *slash = strchr(topic, '/');
+
+    if (slash && colon && slash < colon) {
+        size_t wlen = slash - topic;
+        size_t rlen = colon - (slash + 1);
+        if (wlen < sizeof(wing) && rlen < sizeof(room)) {
+            strncpy(wing, topic, wlen); wing[wlen] = '\0';
+            strncpy(room, slash + 1, rlen); room[rlen] = '\0';
+            actual_topic = colon + 1;
+            while (*actual_topic == ' ') actual_topic++;
+        }
+    }
+
+    c_agent_persist_memory_scoped(agent, actual_topic, content, wing, room);
 }
 
 char *c_agent_search_memory(CAgent *agent, const char *query) {
@@ -174,17 +281,36 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
 
     if (agent->has_fts5 && query && strlen(query) > 0) {
         sqlite3_stmt *stmt;
-        const char *sql = "SELECT topic, content FROM agent_memory_fts WHERE agent_memory_fts MATCH ? ORDER BY rank LIMIT 5;";
+        const char *sql = 
+            "SELECT m.id, m.topic, m.content, m.wing, m.room, m.salience, m.access_count "
+            "FROM agent_memory m "
+            "JOIN agent_memory_fts f ON m.rowid = f.rowid "
+            "WHERE agent_memory_fts MATCH ? "
+            "ORDER BY (m.salience * 1.5 - rank) DESC LIMIT 5;";
+        
         if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, query, -1, SQLITE_STATIC);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const char *top = (const char *)sqlite3_column_text(stmt, 0);
-                const char *txt = (const char *)sqlite3_column_text(stmt, 1);
-                dyn_str_append(&out, "=== Skill/Memory Entry (FTS5 Match) ===\nTopic: ");
-                dyn_str_append(&out, top ? top : "");
-                dyn_str_append(&out, "\nKnowledge: ");
-                dyn_str_append(&out, txt ? txt : "");
-                dyn_str_append(&out, "\n\n");
+                int mid = sqlite3_column_int(stmt, 0);
+                const char *top = (const char *)sqlite3_column_text(stmt, 1);
+                const char *txt = (const char *)sqlite3_column_text(stmt, 2);
+                const char *w = (const char *)sqlite3_column_text(stmt, 3);
+                const char *r = (const char *)sqlite3_column_text(stmt, 4);
+                double sal = sqlite3_column_double(stmt, 5);
+                int acc = sqlite3_column_int(stmt, 6);
+
+                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: %s\n\n",
+                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "", txt ? txt : "");
+
+                // Update recency & salience boost
+                sqlite3_stmt *up_stmt;
+                const char *up_sql = "UPDATE agent_memory SET access_count = access_count + 1, "
+                                     "salience = MIN(salience + 0.1, 5.0), last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?;";
+                if (sqlite3_prepare_v2(agent->db, up_sql, -1, &up_stmt, NULL) == SQLITE_OK) {
+                    sqlite3_bind_int(up_stmt, 1, mid);
+                    sqlite3_step(up_stmt);
+                    sqlite3_finalize(up_stmt);
+                }
             }
             sqlite3_finalize(stmt);
         }
@@ -192,21 +318,38 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
 
     if (out.len == 0) {
         sqlite3_stmt *stmt;
-        const char *sql = "SELECT topic, content FROM agent_memory WHERE topic LIKE ? OR content LIKE ? LIMIT 5;";
+        const char *sql = "SELECT id, topic, content, wing, room, salience, access_count "
+                          "FROM agent_memory WHERE topic LIKE ? OR content LIKE ? OR wing LIKE ? OR room LIKE ? "
+                          "ORDER BY salience DESC, id DESC LIMIT 5;";
         if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             char pattern[256];
             snprintf(pattern, sizeof(pattern), "%%%s%%", query ? query : "");
             sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 2, pattern, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 3, pattern, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 4, pattern, -1, SQLITE_STATIC);
 
             while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const char *top = (const char *)sqlite3_column_text(stmt, 0);
-                const char *txt = (const char *)sqlite3_column_text(stmt, 1);
-                dyn_str_append(&out, "=== Skill/Memory Entry ===\nTopic: ");
-                dyn_str_append(&out, top ? top : "");
-                dyn_str_append(&out, "\nKnowledge: ");
-                dyn_str_append(&out, txt ? txt : "");
-                dyn_str_append(&out, "\n\n");
+                int mid = sqlite3_column_int(stmt, 0);
+                const char *top = (const char *)sqlite3_column_text(stmt, 1);
+                const char *txt = (const char *)sqlite3_column_text(stmt, 2);
+                const char *w = (const char *)sqlite3_column_text(stmt, 3);
+                const char *r = (const char *)sqlite3_column_text(stmt, 4);
+                double sal = sqlite3_column_double(stmt, 5);
+                int acc = sqlite3_column_int(stmt, 6);
+
+                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: %s\n\n",
+                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "", txt ? txt : "");
+
+                // Update recency
+                sqlite3_stmt *up_stmt;
+                const char *up_sql = "UPDATE agent_memory SET access_count = access_count + 1, "
+                                     "salience = MIN(salience + 0.1, 5.0), last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?;";
+                if (sqlite3_prepare_v2(agent->db, up_sql, -1, &up_stmt, NULL) == SQLITE_OK) {
+                    sqlite3_bind_int(up_stmt, 1, mid);
+                    sqlite3_step(up_stmt);
+                    sqlite3_finalize(up_stmt);
+                }
             }
             sqlite3_finalize(stmt);
         }
@@ -311,6 +454,11 @@ bool c_agent_save_session(CAgent *agent, const char *session_id, const char *tit
             if (tc_json) free(tc_json);
         }
     }
+
+    char save_summary[256];
+    snprintf(save_summary, sizeof(save_summary), "Session '%s' saved (%zu messages)", session_id, agent->msg_count);
+    c_agent_log_timeline(agent, "session_saved", save_summary);
+
     return true;
 }
 
@@ -381,6 +529,11 @@ bool c_agent_load_session(CAgent *agent, const char *session_id) {
     agent->messages = loaded;
     agent->msg_count = count;
     agent->msg_cap = cap;
+
+    char load_summary[256];
+    snprintf(load_summary, sizeof(load_summary), "Session '%s' restored (%zu messages)", session_id, count);
+    c_agent_log_timeline(agent, "session_loaded", load_summary);
+
     return true;
 }
 
@@ -449,16 +602,26 @@ char *c_agent_reflect_and_distill(CAgent *agent) {
     c_agent_persist_memory(agent, topic, skill.data);
     dyn_str_free(&skill);
 
+    c_agent_log_timeline(agent, "skill_distilled", topic);
+
     DynString res = dyn_str_new();
     dyn_str_appendf(&res, "Successfully distilled and indexed skill into SQLite FTS5 memory under topic: '%s'", topic);
     return res.data;
 }
 
 ModelGatewayResponse c_agent_step(CAgent *agent) {
-    // Check if context window auto-pruning is needed
-    if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages) {
-        size_t keep = agent->max_context_messages > 20 ? 20 : agent->max_context_messages / 2;
-        c_agent_compact_history(agent, keep);
+    // Check if context window auto-pruning or token budget compaction is needed
+    if (agent->msg_count > 1) {
+        if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages) {
+            size_t keep = agent->max_context_messages > 20 ? 20 : agent->max_context_messages / 2;
+            c_agent_compact_history(agent, keep);
+        }
+        size_t est_tokens = c_agent_total_tokens(agent);
+        size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
+        if (est_tokens > (budget * 80 / 100) && agent->msg_count > 10) {
+            c_agent_compact_history(agent, 10);
+            c_agent_log_timeline(agent, "auto_compaction", "Compacted context to 10 messages (80% token budget reached)");
+        }
     }
 
     // 1. Build messages array
@@ -470,6 +633,14 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
         if (agent->messages[i].tool_call_id) {
             json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
         }
+
+        // Prompt Caching breakpoint on system instruction
+        if (i == 0 && agent->gateway && agent->gateway->prompt_caching) {
+            JsonValue *cc = json_create_object();
+            json_obj_add(cc, "type", json_create_string("ephemeral"));
+            json_obj_add(m, "cache_control", cc);
+        }
+
         if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
             JsonValue *tcs = json_create_array();
             for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
@@ -497,6 +668,14 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
         json_obj_add(fn, "description", json_create_string(agent->schemas[i].description));
         json_obj_add(fn, "parameters", agent->schemas[i].parameters_schema);
         json_obj_add(t, "function", fn);
+
+        // Prompt Caching breakpoint on last tool schema
+        if (i == agent->schema_count - 1 && agent->gateway && agent->gateway->prompt_caching) {
+            JsonValue *cc = json_create_object();
+            json_obj_add(cc, "type", json_create_string("ephemeral"));
+            json_obj_add(t, "cache_control", cc);
+        }
+
         json_arr_add(tools_arr, t);
     }
 
@@ -546,7 +725,10 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
 
 void c_agent_free(CAgent *agent) {
     if (!agent) return;
-    if (agent->db) { sqlite3_exec(agent->db, "PRAGMA wal_checkpoint(TRUNCATE);", 0, 0, 0); sqlite3_close(agent->db); }
+    if (agent->db) {
+        sqlite3_wal_checkpoint_v2(agent->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+        sqlite3_close(agent->db);
+    }
     for (size_t i = 0; i < agent->msg_count; i++) {
         free_single_message(&agent->messages[i]);
     }

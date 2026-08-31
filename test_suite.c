@@ -348,8 +348,127 @@ void test_telegram_adapter(void) {
     printf("  -> Telegram Adapter PASSED\n");
 }
 
+void test_preflight_compiler_watchdog(void) {
+    printf("[Test] Pre-Flight Compiler Watchdog (Auto-Healing Feedback Loop)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, ":memory:", "Test");
+    CHarness *h = c_harness_init(agent);
+
+    // 1. Write broken C file
+    JsonValue *w_broken = json_create_object();
+    json_obj_add(w_broken, "path", json_create_string("test_broken.c"));
+    json_obj_add(w_broken, "content", json_create_string("int main(void) { int x = ; return 0; }\n"));
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "write_file") == 0) {
+            char *obs = h->tools[t].callback(agent, w_broken);
+            assert(obs != NULL);
+            assert(strstr(obs, "COMPILER WARNING/ERROR") != NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(w_broken);
+
+    // 2. Fix the file using edit_file
+    JsonValue *e_fix = json_create_object();
+    json_obj_add(e_fix, "path", json_create_string("test_broken.c"));
+    json_obj_add(e_fix, "old_text", json_create_string("int x = ;"));
+    json_obj_add(e_fix, "new_text", json_create_string("int x = 42;"));
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "edit_file") == 0) {
+            char *obs = h->tools[t].callback(agent, e_fix);
+            assert(obs != NULL);
+            assert(strstr(obs, "COMPILER WARNING/ERROR") == NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(e_fix);
+
+    unlink("test_broken.c");
+    c_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> Pre-Flight Compiler Watchdog PASSED\n");
+}
+
+void test_fetch_url_tool(void) {
+    printf("[Test] Native Web Content Retrieval (fetch_url)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, ":memory:", "Test");
+    CHarness *h = c_harness_init(agent);
+
+    assert(h->tool_count >= 14);
+
+    // 1. Test missing url handling
+    JsonValue *empty_args = json_create_object();
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "fetch_url") == 0) {
+            char *obs = h->tools[t].callback(agent, empty_args);
+            assert(obs != NULL);
+            assert(strstr(obs, "Missing url") != NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(empty_args);
+
+    // 2. Test invalid protocol scheme (instant return without network timeout)
+    JsonValue *u_args = json_create_object();
+    json_obj_add(u_args, "url", json_create_string("invalid_proto://test.local"));
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "fetch_url") == 0) {
+            char *obs = h->tools[t].callback(agent, u_args);
+            assert(obs != NULL);
+            assert(strstr(obs, "Error") != NULL);
+            free(obs);
+            break;
+        }
+    }
+    json_free(u_args);
+
+    c_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> fetch_url Tool PASSED\n");
+}
+
+void test_gomaa_scoped_memory_and_timeline(void) {
+    printf("[Test] Gomaa Memory Paradigm (Wing/Room Scoping, Salience & Timeline)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_gomaa_mem.sqlite", "Test System");
+
+    // 1. Scoped memory persistence
+    c_agent_persist_memory(agent, "backend/auth: JWT Refresh Tokens", "Use RS256 with 15min expiry for access tokens.");
+    c_agent_persist_memory_scoped(agent, "Database Scaling", "Enable SQLite WAL mode for concurrent readers.", "infra", "database");
+
+    // 2. Scoped memory search & verification
+    char *auth_res = c_agent_search_memory(agent, "JWT");
+    assert(strstr(auth_res, "Wing: backend") != NULL);
+    assert(strstr(auth_res, "Room: auth") != NULL);
+    assert(strstr(auth_res, "Salience:") != NULL);
+    free(auth_res);
+
+    char *db_res = c_agent_search_memory(agent, "Scaling");
+    assert(strstr(db_res, "Wing: infra") != NULL);
+    assert(strstr(db_res, "Room: database") != NULL);
+    free(db_res);
+
+    // 3. Timeline logging & verification
+    char *timeline = c_agent_get_timeline(agent, 10);
+    assert(strstr(timeline, "=== Agent Timeline Log ===") != NULL);
+    assert(strstr(timeline, "memory_persisted") != NULL);
+    assert(strstr(timeline, "backend/auth") != NULL);
+    free(timeline);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_gomaa_mem.sqlite");
+    printf("  -> Gomaa Memory & Timeline PASSED\n");
+}
+
 int main(void) {
-    printf("\n================ Running CHarness & CAgent Evolution 2.0 Test Suite ================\n");
+    printf("\n================ Running CHarness & CAgent Evolution 3.0 Test Suite ================\n");
     test_dyn_string();
     test_minijson();
     test_token_estimator();
@@ -358,6 +477,9 @@ int main(void) {
     test_self_tooling_define_tool();
     test_harness_tools_and_patches();
     test_telegram_adapter();
+    test_preflight_compiler_watchdog();
+    test_fetch_url_tool();
+    test_gomaa_scoped_memory_and_timeline();
     printf("================ All Tests Passed Successfully (100%%) ================\n\n");
     return 0;
 }

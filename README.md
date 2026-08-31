@@ -1,11 +1,11 @@
 # CHarness & CAgent — High-Performance Autonomous C Agent & Security Execution Sandbox
 
-[![Release](https://img.shields.io/badge/Release-v2.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v2.0.0)
+[![Release](https://img.shields.io/badge/Release-v3.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v3.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-100%25_Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-11%2F11_Passed_(100%25)-brightgreen.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
@@ -19,14 +19,14 @@ graph TD
         User["Operator (Terminal CLI / Telegram)"] --> H["CHarness Runtime & Security Sandbox"]
         H --> A["CAgent Reasoning Core (ReAct Loop)"]
         A --> GW["Model Gateway (Ollama / vLLM / OpenAI / Anthropic)"]
-        A --> DB[("SQLite FTS5 Memory & Sessions")]
+        A --> DB[("SQLite FTS5 + Gomaa Memory & Sessions")]
         A --> SUB["spawn_subagent (Isolated Worker Sandboxes)"]
     end
 
     subgraph "Mode B: Standalone Harness (CHarness Alone)"
         Ext["External App / Python / Node / Custom Agent"] --> H2["CHarness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
-        SEC --> T1["13 Native Tools (bash, edit_file, apply_patch, git, etc.)"]
+        SEC --> T1["14 Native Tools (bash, edit_file, apply_patch, fetch_url, git, etc.)"]
         SEC --> T2["Dynamic Custom Tools (.charness/tools/)"]
         SEC --> T3["MCP Client (JSON-RPC stdio servers)"]
     end
@@ -37,14 +37,16 @@ graph TD
 ## Key Capabilities
 
 - **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
-- **Micro Footprint & Instant Startup:** Self-contained ~110KB binary with instant (<2ms) startup and minimal RAM footprint (<8MB).
+- **Micro Footprint & Instant Startup:** Self-contained ~120KB binary with instant (<2ms) startup and minimal RAM footprint (<8MB).
+- **Pre-Flight Compiler Watchdog (Auto-Healing):** `tool_write_file`, `tool_edit_file`, and `tool_apply_patch` automatically run pre-flight syntax checks on C/C++ files (`gcc -fsyntax-only`), returning compiler warnings directly to the model for immediate self-correction.
+- **Gomaa Memory Architecture:** SQLite-backed memory with Wing & Room hierarchical scoping (`wing/room: topic`), dynamic salience scoring with access-frequency recency boosts, and persistent timeline logging (`/timeline`).
+- **Native Web Retrieval (`fetch_url`):** Built-in HTTP GET client leveraging libcurl directly with automatic redirect following and 100KB buffer protection.
 - **Dynamic Self-Tooling (`define_tool`):** Enables the agent to invent, script, persist (`.charness/tools/`), and register new executable tools on the fly.
+- **Token Budget Auto-Compaction Watchdog:** Automatically monitors BPE token utilization and proactively compacts context at 80% threshold to prevent context overflow errors.
 - **Session Checkpointing & Resumption:** Persistent conversation trees in SQLite (`/sessions`, `/save <id>`, `/resume <id>`, or `--resume <id>`).
 - **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted) and **Interactive Inline Approval Buttons** (`[ ✅ Approve ]` / `[ ❌ Deny ]`).
 - **Model Agnostic with Real-Time SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and cyan reasoning display across local offline LLMs (Ollama, vLLM) and Cloud APIs (OpenAI, Groq, OpenRouter, Anthropic).
-- **Accurate BPE Token Budgeting:** Subword token estimation and live context budget tracking.
-- **Skill Auto-Distillation (`/reflect`):** Post-task trajectory summarization into SQLite FTS5.
-- **Prompt Caching Support:** Anthropic `cache_control` breakpoints (`PROMPT_CACHING=true`) and OpenAI prefix caching.
+- **Prompt Caching Breakpoints:** Automatic Anthropic `cache_control: {"type": "ephemeral"}` breakpoint injection on system prompt and tool definitions for 90%+ prompt cache hit rates.
 - **Model Context Protocol (MCP) Client:** Stdio JSON-RPC 2.0 client to connect external MCP tool servers dynamically.
 
 ---
@@ -108,10 +110,12 @@ charness [1 msgs | 67 toks]> Inspect the Makefile and optimize compiler flags fo
 - `/help` — Show command reference
 - `/status` — View active model, endpoint, token usage, and working directory
 - `/tools` — List all registered tools and permissions
+- `/timeline` — View recent Gomaa timeline event log
 - `/save my_work` — Checkpoint your current conversation to SQLite
 - `/sessions` — List all saved sessions
 - `/resume my_work` — Resume a saved session
 - `/reflect` — Distill recent task steps into persistent memory
+- `/compact` — Prune older conversation turns to conserve token budget
 
 ---
 

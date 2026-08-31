@@ -6,8 +6,12 @@ test_runner
 # SQLite Databases & Test Artifacts
 *.sqlite
 *.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
 test_sample.txt
+test_broken.c
 .charness_history
+.charness/tools/
 
 # OS / Editor Artifacts
 .DS_Store

@@ -144,7 +144,7 @@ static bool telegram_permission_prompt_callback(CHarness *h, const char *name, c
     TelegramPromptContext *ctx = (TelegramPromptContext *)userdata;
     if (!ctx || !ctx->bot || strlen(ctx->current_chat_id) == 0) return false;
 
-    char prompt_text[1024];
+    char prompt_text[4096];
     snprintf(prompt_text, sizeof(prompt_text),
         "🛡️ <b>Security Gate: Authorization Required</b>\n\n"
         "<b>Tool:</b> <code>%s</code>\n"
@@ -242,7 +242,7 @@ static bool telegram_permission_prompt_callback(CHarness *h, const char *name, c
 
     // Edit message with decision result
     if (msg_id > 0) {
-        char edit_text[1024];
+        char edit_text[4096];
         snprintf(edit_text, sizeof(edit_text),
             "🛡️ <b>Security Gate:</b> %s\n"
             "<b>Tool:</b> <code>%s</code>\n"
@@ -278,7 +278,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
     harness->permission_prompt_fn = telegram_permission_prompt_callback;
     harness->permission_userdata = &prompt_ctx;
 
-    printf("\033[1;32m=== CHarness Telegram Bot Daemon Online ===\033[0m\n");
+    printf("\033[1;32m=== CHarness Telegram Bot Daemon Online (Evolution 3.0) ===\033[0m\n");
     printf("Allowed Chat ID: \033[1;36m%s\033[0m\n", strlen(bot->allowed_chat_id) > 0 ? bot->allowed_chat_id : "[None - Zero Trust Mode]");
     printf("Model:           \033[1;33m%s\033[0m\n", harness->agent->gateway->model);
     printf("Listening for Telegram updates via long polling...\n\n");
@@ -331,38 +331,48 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                 // Handle Telegram Commands
                 if (strcmp(text, "/start") == 0 || strcmp(text, "/help") == 0) {
-                    char welcome[1024];
+                    char welcome[4096];
                     snprintf(welcome, sizeof(welcome),
-                        "🤖 <b>CHarness Autonomous VPS Agent Online</b>\n\n"
+                        "🤖 <b>CHarness Autonomous VPS Agent Online (Evolution 3.0)</b>\n\n"
                         "<b>Active Model:</b> <code>%s</code>\n"
                         "<b>CWD:</b> <code>%s</code>\n"
-                        "<b>Context Messages:</b> <code>%zu</code>\n\n"
+                        "<b>Context Messages:</b> <code>%zu (%zu estimated tokens)</code>\n\n"
                         "<b>Commands:</b>\n"
-                        "/status - System status & RAM usage\n"
+                        "/status - System status & token budget\n"
                         "/tools - List registered VPS tools\n"
-                        "/rules - Active .agentrules\n"
+                        "/timeline - Recent Gomaa timeline events\n"
+                        "/sessions - Checkpointed sessions\n"
+                        "/rules - Active repository rules\n"
                         "/clear - Clear conversation history\n"
                         "/compact - Compact older turns\n\n"
                         "Send any instructions directly to start autonomous execution!",
-                        harness->agent->gateway->model, harness->cwd, harness->agent->msg_count);
+                        harness->agent->gateway->model, harness->cwd,
+                        harness->agent->msg_count, c_agent_total_tokens(harness->agent));
                     telegram_bot_send_message(bot, chat_id_str, welcome);
                     continue;
                 }
 
                 if (strcmp(text, "/status") == 0) {
-                    char status_msg[512];
+                    char status_msg[4096];
                     snprintf(status_msg, sizeof(status_msg),
-                        "📊 <b>System Status</b>\n"
+                        "📊 <b>System Status (Evolution 3.0)</b>\n"
                         "• Model: <code>%s</code>\n"
                         "• CWD: <code>%s</code>\n"
                         "• Memory Table: <code>%s</code>\n"
                         "• Context: <code>%zu messages (%zu estimated tokens)</code>\n"
                         "• Prompt Caching: <code>%s</code>",
                         harness->agent->gateway->model, harness->cwd,
-                        harness->agent->has_fts5 ? "SQLite FTS5 (BM25)" : "Standard SQLite",
+                        harness->agent->has_fts5 ? "SQLite FTS5 + Salience Ranking" : "Standard SQLite",
                         harness->agent->msg_count, c_agent_total_tokens(harness->agent),
                         harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
                     telegram_bot_send_message(bot, chat_id_str, status_msg);
+                    continue;
+                }
+
+                if (strcmp(text, "/timeline") == 0) {
+                    char *tl = c_agent_get_timeline(harness->agent, 10);
+                    telegram_bot_send_chunks(bot, chat_id_str, tl);
+                    free(tl);
                     continue;
                 }
 

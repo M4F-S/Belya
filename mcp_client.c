@@ -38,6 +38,15 @@ static char *read_line_timeout(int fd, int timeout_sec) {
     return ds.data;
 }
 
+static void safe_write(int fd, const char *data, size_t len) {
+    while (len > 0) {
+        ssize_t w = write(fd, data, len);
+        if (w <= 0) break;
+        data += w;
+        len -= (size_t)w;
+    }
+}
+
 MCPClient *mcp_client_start(const char *command_line) {
     if (!command_line || strlen(command_line) == 0) return NULL;
 
@@ -96,8 +105,8 @@ MCPClient *mcp_client_start(const char *command_line) {
     char *req_str = json_serialize(init_req);
     json_free(init_req);
 
-    write(client->stdin_fd, req_str, strlen(req_str));
-    write(client->stdin_fd, "\n", 1);
+    safe_write(client->stdin_fd, req_str, strlen(req_str));
+    safe_write(client->stdin_fd, "\n", 1);
     free(req_str);
 
     // Read initialize response
@@ -117,7 +126,7 @@ MCPClient *mcp_client_start(const char *command_line) {
 
     // Send initialized notification
     const char *notif = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
-    write(client->stdin_fd, notif, strlen(notif));
+    safe_write(client->stdin_fd, notif, strlen(notif));
 
     client->connected = true;
     return client;
@@ -137,8 +146,8 @@ JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *
     char *req_str = json_serialize(req);
     json_free(req);
 
-    write(client->stdin_fd, req_str, strlen(req_str));
-    write(client->stdin_fd, "\n", 1);
+    safe_write(client->stdin_fd, req_str, strlen(req_str));
+    safe_write(client->stdin_fd, "\n", 1);
     free(req_str);
 
     char *resp_str = read_line_timeout(client->stdout_fd, 15);
