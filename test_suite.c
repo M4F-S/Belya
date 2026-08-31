@@ -414,9 +414,9 @@ void test_fetch_url_tool(void) {
     }
     json_free(empty_args);
 
-    // 2. Test invalid protocol scheme (instant return without network timeout)
+    // 2. Test unsupported protocol handling (instant curl error without network socket)
     JsonValue *u_args = json_create_object();
-    json_obj_add(u_args, "url", json_create_string("invalid_proto://test.local"));
+    json_obj_add(u_args, "url", json_create_string("invalid_scheme://empty"));
     for (size_t t = 0; t < h->tool_count; t++) {
         if (strcmp(h->tools[t].name, "fetch_url") == 0) {
             char *obs = h->tools[t].callback(agent, u_args);

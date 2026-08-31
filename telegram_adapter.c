@@ -327,11 +327,11 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     continue;
                 }
 
-                strncpy(prompt_ctx.current_chat_id, chat_id_str, sizeof(prompt_ctx.current_chat_id) - 1);
+                snprintf(prompt_ctx.current_chat_id, sizeof(prompt_ctx.current_chat_id), "%s", chat_id_str);
 
                 // Handle Telegram Commands
                 if (strcmp(text, "/start") == 0 || strcmp(text, "/help") == 0) {
-                    char welcome[4096];
+                    char welcome[8192];
                     snprintf(welcome, sizeof(welcome),
                         "🤖 <b>CHarness Autonomous VPS Agent Online (Evolution 3.0)</b>\n\n"
                         "<b>Active Model:</b> <code>%s</code>\n"
@@ -353,7 +353,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 }
 
                 if (strcmp(text, "/status") == 0) {
-                    char status_msg[4096];
+                    char status_msg[8192];
                     snprintf(status_msg, sizeof(status_msg),
                         "📊 <b>System Status (Evolution 3.0)</b>\n"
                         "• Model: <code>%s</code>\n"

@@ -76,7 +76,7 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
             snprintf(clean_path, sizeof(clean_path), "%s", target);
         }
 
-        char resolved[4096];
+        char resolved[8192];
         if (clean_path[0] == '/' || !g_harness) {
             snprintf(resolved, sizeof(resolved), "%s", clean_path);
         } else {
