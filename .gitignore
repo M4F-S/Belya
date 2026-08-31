@@ -1,0 +1,14 @@
+# Binaries & Object files
+*.o
+c_agent_system
+test_runner
+
+# SQLite Databases & Test Artifacts
+*.sqlite
+*.sqlite-journal
+test_sample.txt
+.charness_history
+
+# OS / Editor Artifacts
+.DS_Store
+*.dSYM/

@@ -1,0 +1,20 @@
+[Unit]
+Description=CHarness Autonomous AI Agent & Telegram Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/charness
+EnvironmentFile=/opt/charness/.env
+ExecStart=/opt/charness/c_agent_system --telegram
+Restart=always
+RestartSec=5s
+
+# Resource and security boundaries
+LimitNOFILE=65536
+KillMode=process
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
