@@ -512,7 +512,21 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     }
                     model_gateway_response_free(&resp);
                 }
+
+                // After max_steps exhausted, get one final model response
+                if (max_steps == 0 && turn_running) {
+                    ModelGatewayResponse final_resp = c_agent_step(harness->agent);
+                    if (final_resp.content && strlen(final_resp.content) > 0) {
+                        telegram_bot_send_chunks(bot, chat_id_str, final_resp.content);
+                    } else if (!final_resp.has_tool_call) {
+                        telegram_bot_send_message(bot, chat_id_str, "Action completed (max steps reached).");
+                    }
+                    model_gateway_response_free(&final_resp);
+                    turn_running = false;
+                }
+
             }
+
         }
         json_free(resp);
     }
