@@ -100,10 +100,27 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
         }
     }
 
-    // Set Hermes System Core
+    // Set Strategic Executioner System Core
     DynString sys = dyn_str_new();
-    dyn_str_append(&sys, system_instructions);
-    dyn_str_append(&sys, "\nYou are C Agent, an autonomous software engine. Use your tools sequentially to solve tasks.");
+    if (system_instructions && strlen(system_instructions) > 0) {
+        dyn_str_append(&sys, system_instructions);
+        dyn_str_append(&sys, "\n\nYou are CAgent, an autonomous software engine. Use your tools sequentially to solve tasks.");
+    } else {
+        dyn_str_append(&sys,
+            "Role & Objective:\n"
+            "Act as an expert researcher and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+            "Core Rules:\n"
+            "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
+            "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
+            "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n\n"
+            "Execution Protocol:\n"
+            "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
+            "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
+            "3. Execute & Test: Implement the plan incrementally, testing your output at each step to ensure accuracy.\n"
+            "4. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.\n\n"
+            "You are CAgent, an autonomous software engine. Use your tools sequentially to solve tasks."
+        );
+    }
 
     // Check for repository guidelines (.agentrules / AGENT.md / CLAUDE.md)
     const char *rules_files[] = {".agentrules", "AGENT.md", "CLAUDE.md", NULL};

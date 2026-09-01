@@ -43,13 +43,21 @@ int main(int argc, char **argv) {
         gateway->streaming = false;
     }
 
-    // 2. Initialize C Agent with persistent SQLite memory
-    CAgent *agent = c_agent_init(
-        gateway,
-        "c_agent_memory.sqlite",
-        "You are an expert autonomous software engineer operating inside CHarness on a VPS. "
-        "Always inspect files and verify system status before coming to conclusions."
-    );
+    // 2. Initialize C Agent with persistent SQLite memory & Strategic Execution Directives
+    const char *default_system_prompt =
+        "Role & Objective:\n"
+        "Act as an expert researcher and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+        "Core Rules:\n"
+        "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
+        "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
+        "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n\n"
+        "Execution Protocol:\n"
+        "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
+        "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
+        "3. Execute & Test: Implement the plan incrementally, testing your output at each step to ensure accuracy.\n"
+        "4. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.";
+
+    CAgent *agent = c_agent_init(gateway, "c_agent_memory.sqlite", default_system_prompt);
 
     // If resume flag is provided, restore session
     if (resume_session_id) {
