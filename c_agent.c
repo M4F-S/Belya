@@ -1,4 +1,5 @@
 #include "c_agent.h"
+#include <time.h>
 
 static void free_single_message(AgentMessage *m) {
     if (!m) return;
@@ -26,6 +27,10 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     
     const char *tok_budget_env = getenv("MAX_CONTEXT_TOKENS");
     agent->max_context_tokens = (tok_budget_env && atoi(tok_budget_env) > 0) ? (size_t)atoi(tok_budget_env) : 128000;
+
+    agent->auto_save_interval = 5;
+    agent->turn_count = 0;
+    agent->turns_since_save = 0;
 
     // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
@@ -610,6 +615,48 @@ char *c_agent_reflect_and_distill(CAgent *agent) {
 }
 
 ModelGatewayResponse c_agent_step(CAgent *agent) {
+    // Auto-save: save before compaction drops messages, and on turn interval
+    if (agent->auto_save_interval > 0 && agent->db) {
+        bool should_save = false;
+        if (agent->msg_count > 1) {
+            if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages)
+                should_save = true;
+            size_t est_tokens = c_agent_total_tokens(agent);
+            size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
+            if (est_tokens > (budget * 80 / 100) && agent->msg_count > 10)
+                should_save = true;
+        }
+        if (agent->turns_since_save >= agent->auto_save_interval)
+            should_save = true;
+        if (should_save) {
+            time_t now = time(NULL);
+            struct tm *tm = gmtime(&now);
+            char sid[96];
+            strftime(sid, sizeof(sid), "auto_%Y%m%d_%H%M%S", tm);
+            const char *title = NULL;
+            for (size_t i = 1; i < agent->msg_count; i++) {
+                if (agent->messages[i].role && strcmp(agent->messages[i].role, "user") == 0 &&
+                    agent->messages[i].content && strlen(agent->messages[i].content) > 0) {
+                    title = agent->messages[i].content;
+                    break;
+                }
+            }
+            char short_title[128];
+            if (title) {
+                size_t tlen = strlen(title);
+                if (tlen > 100) { memcpy(short_title, title, 97); short_title[97] = '.'; short_title[98] = '.'; short_title[99] = '.'; short_title[100] = '\0'; }
+                else { snprintf(short_title, sizeof(short_title), "%s", title); }
+            } else {
+                snprintf(short_title, sizeof(short_title), "Auto-save turn %zu", agent->turn_count);
+            }
+            if (c_agent_save_session(agent, sid, short_title)) {
+                char auto_msg[96];
+                snprintf(auto_msg, sizeof(auto_msg), "Session auto-saved (turn %zu)", agent->turn_count);
+                c_agent_log_timeline(agent, "auto_save", auto_msg);
+            }
+            agent->turns_since_save = 0;
+        }
+    }
     // Check if context window auto-pruning or token budget compaction is needed
     if (agent->msg_count > 1) {
         if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages) {
@@ -720,7 +767,17 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
         }
     }
 
+    agent->turn_count++;
+    agent->turns_since_save++;
+
     return resp;
+}
+
+void c_agent_set_auto_save_interval(CAgent *agent, size_t interval) {
+    if (agent) {
+        agent->auto_save_interval = interval;
+        agent->turns_since_save = 0;
+    }
 }
 
 void c_agent_free(CAgent *agent) {

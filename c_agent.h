@@ -29,6 +29,9 @@ typedef struct CAgent {
     size_t max_context_messages;
     size_t max_context_tokens;
     bool has_fts5;
+    size_t turn_count;          /* Total steps taken */
+    size_t auto_save_interval;  /* Auto-save every N turns (0=disabled) */
+    size_t turns_since_save;    /* Turns since last auto-save */
 } CAgent;
 
 CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions);
@@ -47,6 +50,9 @@ size_t c_agent_total_tokens(const CAgent *agent);
 // Gomaa Memory Timeline
 void c_agent_log_timeline(CAgent *agent, const char *event_type, const char *summary);
 char *c_agent_get_timeline(CAgent *agent, int limit);
+
+// Auto-Save Configuration
+void c_agent_set_auto_save_interval(CAgent *agent, size_t interval);
 
 // Session Management
 bool c_agent_save_session(CAgent *agent, const char *session_id, const char *title);
