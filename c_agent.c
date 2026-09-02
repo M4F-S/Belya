@@ -271,6 +271,17 @@ void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char 
     const char *w = (wing && strlen(wing) > 0) ? wing : "default";
     const char *r = (room && strlen(room) > 0) ? room : "general";
 
+    // Delete existing duplicate with identical topic, wing, and room to prevent pollution
+    sqlite3_stmt *del_stmt;
+    const char *del_sql = "DELETE FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?;";
+    if (sqlite3_prepare_v2(agent->db, del_sql, -1, &del_stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(del_stmt, 1, topic, -1, SQLITE_STATIC);
+        sqlite3_bind_text(del_stmt, 2, w, -1, SQLITE_STATIC);
+        sqlite3_bind_text(del_stmt, 3, r, -1, SQLITE_STATIC);
+        sqlite3_step(del_stmt);
+        sqlite3_finalize(del_stmt);
+    }
+
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO agent_memory (topic, content, wing, room, salience, access_count) VALUES (?, ?, ?, ?, 1.0, 0);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
