@@ -1007,6 +1007,48 @@ bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char
     return true;
 }
 
+char *c_agent_search_conversations(CAgent *agent, const char *query) {
+    if (!agent || !agent->db) return strdup("Database not available for conversation history search.");
+    if (!query || strlen(query) == 0) return strdup("Error: Missing query string for conversation search.");
+
+    DynString out = dyn_str_new();
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT s.id, s.title, s.created_at, m.role, m.content "
+                      "FROM session_messages m JOIN sessions s ON m.session_id = s.id "
+                      "WHERE m.content LIKE ? AND m.role IN ('user', 'assistant') "
+                      "ORDER BY m.id DESC LIMIT 10;";
+
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        char pattern[512];
+        snprintf(pattern, sizeof(pattern), "%%%s%%", query);
+        sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_STATIC);
+
+        dyn_str_appendf(&out, "=== Historical Conversation Search Results for '%s' ===\n\n", query);
+        int matches = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            matches++;
+            const char *sid = (const char *)sqlite3_column_text(stmt, 0);
+            const char *title = (const char *)sqlite3_column_text(stmt, 1);
+            const char *ts = (const char *)sqlite3_column_text(stmt, 2);
+            const char *role = (const char *)sqlite3_column_text(stmt, 3);
+            const char *content = (const char *)sqlite3_column_text(stmt, 4);
+
+            dyn_str_appendf(&out, "[Session: %s (%s) | %s]\n%s: %s\n\n",
+                sid ? sid : "unknown", title ? title : "session", ts ? ts : "",
+                role ? role : "msg", content ? content : "");
+        }
+        sqlite3_finalize(stmt);
+
+        if (matches == 0) {
+            dyn_str_append(&out, "No matching past conversations found for query.");
+        }
+    } else {
+        dyn_str_append(&out, "Error querying past conversation messages.");
+    }
+
+    return out.data;
+}
+
 ModelGatewayResponse c_agent_step(CAgent *agent) {
     // Auto-save: save before compaction drops messages, and on turn interval
     if (agent->auto_save_interval > 0 && agent->db) {

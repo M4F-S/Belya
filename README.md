@@ -3,9 +3,9 @@
 [![Release](https://img.shields.io/badge/Release-v4.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v4.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-15%2F15_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-16%2F16_Passed_(100%25)-brightgreen.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
@@ -27,7 +27,7 @@ graph TD
     subgraph "Mode B: Standalone Harness (CHarness Alone)"
         Ext["External App / Python / Node / Custom Agent"] --> H2["CHarness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
-        H2 --> T1["16 Native Tools (bash, edit_file, save_skill, recall_skill, fetch_url, git, etc.)"]
+        H2 --> T1["17 Native Tools (bash, edit_file, save_skill, recall_skill, recall_conversation, fetch_url, git, etc.)"]
         H2 --> T2["Dynamic Custom Tools (.charness/tools/)"]
         H2 --> T3["MCP Client (JSON-RPC stdio servers)"]
     end

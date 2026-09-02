@@ -81,6 +81,9 @@ char *c_agent_list_checkpoints(CAgent *agent);
 // Trajectory Exporter (OpenAI Fine-Tune JSONL Format)
 bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char *out_path);
 
+// Historical Conversation Memory Search
+char *c_agent_search_conversations(CAgent *agent, const char *query);
+
 ModelGatewayResponse c_agent_step(CAgent *agent);
 void c_agent_free(CAgent *agent);
 

@@ -654,6 +654,34 @@ void test_trajectory_exporter(void) {
     printf("  -> Trajectory Exporter PASSED\n");
 }
 
+void test_historical_conversation_search(void) {
+    printf("[Test] Historical Conversation Search & Multi-Method REST Retrieval...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_conv_hist.sqlite", "Test System");
+
+    // 1. Create a session and persist messages
+    c_agent_add_message(agent, "user", "Deploy my neural microservice to Kubernetes cluster production");
+    c_agent_add_message(agent, "assistant", "Kubernetes deployment YAML created with 3 replicas and ingress route.");
+    c_agent_save_session(agent, "k8s_deploy_01", "Production Kubernetes Deployment");
+
+    // 2. Search conversation history across historical sessions
+    char *res = c_agent_search_conversations(agent, "Kubernetes");
+    assert(res != NULL);
+    assert(strstr(res, "Production Kubernetes Deployment") != NULL);
+    assert(strstr(res, "neural microservice") != NULL);
+    free(res);
+
+    char *miss = c_agent_search_conversations(agent, "nonexistent_keyword_xyz");
+    assert(miss != NULL);
+    assert(strstr(miss, "No matching past conversations found") != NULL);
+    free(miss);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_conv_hist.sqlite");
+    printf("  -> Historical Conversation Search PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running CHarness & CAgent Evolution 4.0 Test Suite ================\n");
     test_dyn_string();
@@ -671,6 +699,7 @@ int main(void) {
     test_skills_curation_and_recall();
     test_git_checkpoint_and_rollback();
     test_trajectory_exporter();
-    printf("================ All Tests Passed Successfully (15/15 - 100%%) ================\n\n");
+    test_historical_conversation_search();
+    printf("================ All Tests Passed Successfully (16/16 - 100%%) ================\n\n");
     return 0;
 }

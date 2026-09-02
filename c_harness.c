@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <strings.h>
 #include <curl/curl.h>
 
 static CHarness *g_harness = NULL;
@@ -722,20 +723,54 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
     const char *url = json_obj_get_str(args, "url");
     if (!url || strlen(url) == 0) return strdup("Error: Missing url argument.");
 
+    const char *method = json_obj_get_str(args, "method");
+    const char *req_body = json_obj_get_str(args, "body");
+    if (!req_body) req_body = json_obj_get_str(args, "data");
+
     CURL *curl = curl_easy_init();
     if (!curl) return strdup("Error: Failed to initialize HTTP client.");
 
     DynString body = dyn_str_new();
     struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "User-Agent: CAgent/3.0 (Autonomous C99 Engine)");
+    headers = curl_slist_append(headers, "User-Agent: CAgent/4.0 (Autonomous C99 Engine)");
+
+    // Custom headers
+    JsonValue *hdrs_val = json_obj_get(args, "headers");
+    if (hdrs_val) {
+        if (hdrs_val->type == JSON_OBJECT) {
+            for (size_t i = 0; i < hdrs_val->u.object.count; i++) {
+                if (hdrs_val->u.object.members[i].value && hdrs_val->u.object.members[i].value->type == JSON_STRING) {
+                    char hbuf[1024];
+                    snprintf(hbuf, sizeof(hbuf), "%s: %s",
+                             hdrs_val->u.object.members[i].key,
+                             hdrs_val->u.object.members[i].value->u.string);
+                    headers = curl_slist_append(headers, hbuf);
+                }
+            }
+        } else if (hdrs_val->type == JSON_ARRAY) {
+            for (size_t i = 0; i < hdrs_val->u.array.count; i++) {
+                if (hdrs_val->u.array.items[i] && hdrs_val->u.array.items[i]->type == JSON_STRING) {
+                    headers = curl_slist_append(headers, hdrs_val->u.array.items[i]->u.string);
+                }
+            }
+        }
+    }
+
+    if (method && (strcasecmp(method, "POST") == 0 || strcasecmp(method, "PUT") == 0 ||
+                   strcasecmp(method, "PATCH") == 0 || strcasecmp(method, "DELETE") == 0)) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+        if (req_body) {
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+        }
+    }
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_url_curl_sink);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
 
     CURLcode code = curl_easy_perform(curl);
     long http_code = 0;
@@ -747,7 +782,7 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
     if (code != CURLE_OK) {
         dyn_str_free(&body);
         DynString err = dyn_str_new();
-        dyn_str_appendf(&err, "Error fetching URL: %s", curl_easy_strerror(code));
+        dyn_str_appendf(&err, "Error fetching URL (%s): %s", method ? method : "GET", curl_easy_strerror(code));
         return err.data;
     }
 
@@ -782,6 +817,11 @@ static char *tool_save_skill(CAgent *agent, const JsonValue *args) {
 static char *tool_recall_skill(CAgent *agent, const JsonValue *args) {
     const char *query = json_obj_get_str(args, "query");
     return c_agent_search_skills(agent, query ? query : "");
+}
+
+static char *tool_recall_conversation(CAgent *agent, const JsonValue *args) {
+    const char *query = json_obj_get_str(args, "query");
+    return c_agent_search_conversations(agent, query ? query : "");
 }
 
 // Dynamic Custom Tool Execution Runner
@@ -1275,9 +1315,31 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(def_params, "required", d_req);
     c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool for self-evolution", def_params, PERM_ALLOW, tool_define_tool);
 
-    // 14. fetch_url (Native Web Content Retrieval)
-    c_harness_register_tool(h, "fetch_url", "Fetch content from a web URL via HTTP GET",
-        build_string_param_schema("url", "The full web URL to fetch"), PERM_ALLOW, tool_fetch_url);
+    // 14. fetch_url (Native REST Web Client: GET, POST, PUT, DELETE, PATCH, Headers, Body)
+    JsonValue *http_params = json_create_object();
+    json_obj_add(http_params, "type", json_create_string("object"));
+    JsonValue *hp_props = json_create_object();
+    JsonValue *hp_url = json_create_object();
+    json_obj_add(hp_url, "type", json_create_string("string"));
+    json_obj_add(hp_url, "description", json_create_string("Target web URL or API endpoint"));
+    json_obj_add(hp_props, "url", hp_url);
+    JsonValue *hp_mth = json_create_object();
+    json_obj_add(hp_mth, "type", json_create_string("string"));
+    json_obj_add(hp_mth, "description", json_create_string("HTTP method: GET, POST, PUT, DELETE, PATCH, HEAD (default: GET)"));
+    json_obj_add(hp_props, "method", hp_mth);
+    JsonValue *hp_body = json_create_object();
+    json_obj_add(hp_body, "type", json_create_string("string"));
+    json_obj_add(hp_body, "description", json_create_string("Request body or JSON payload for POST/PUT/PATCH"));
+    json_obj_add(hp_props, "body", hp_body);
+    JsonValue *hp_hdrs = json_create_object();
+    json_obj_add(hp_hdrs, "type", json_create_string("object"));
+    json_obj_add(hp_hdrs, "description", json_create_string("Custom HTTP headers (e.g. {\"Authorization\": \"Bearer ...\", \"Content-Type\": \"application/json\"})"));
+    json_obj_add(hp_props, "headers", hp_hdrs);
+    json_obj_add(http_params, "properties", hp_props);
+    JsonValue *hp_req = json_create_array();
+    json_arr_add(hp_req, json_create_string("url"));
+    json_obj_add(http_params, "required", hp_req);
+    c_harness_register_tool(h, "fetch_url", "Send HTTP/REST requests (GET, POST, PUT, DELETE) with headers and payload", http_params, PERM_ALLOW, tool_fetch_url);
 
     // 15. save_skill (Procedural Skill Curation)
     JsonValue *sk_params = json_create_object();
@@ -1309,6 +1371,10 @@ CHarness *c_harness_init(CAgent *agent) {
     // 16. recall_skill
     c_harness_register_tool(h, "recall_skill", "Search and inspect saved procedural skills from memory",
         build_string_param_schema("query", "Search term or trigger keyword"), PERM_ALLOW, tool_recall_skill);
+
+    // 17. recall_conversation (Historical Cross-Session Memory)
+    c_harness_register_tool(h, "recall_conversation", "Search past conversation messages and history across all historical sessions",
+        build_string_param_schema("query", "Keywords or topics from past conversations"), PERM_ALLOW, tool_recall_conversation);
 
     // Load any previously defined custom tools
     c_harness_load_custom_tools(h);
