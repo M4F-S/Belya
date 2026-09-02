@@ -1695,9 +1695,9 @@ void c_harness_repl(CHarness *h) {
                 free(ref);
                 continue;
             }
-            if (strcmp(input_buf, "/clear") == 0) {
+            if (strcmp(input_buf, "/clear") == 0 || strcmp(input_buf, "/reset") == 0 || strcmp(input_buf, "/new") == 0) {
                 c_agent_clear_history(h->agent);
-                printf("\033[1;32mConversation context cleared (system prompt preserved).\033[0m\n\n");
+                printf("\033[1;32mSession reset. Conversation context cleared (system prompt and persistent SQLite memory preserved).\033[0m\n\n");
                 continue;
             }
             if (strncmp(input_buf, "/compact", 8) == 0) {

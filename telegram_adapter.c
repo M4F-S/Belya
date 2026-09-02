@@ -508,9 +508,9 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     continue;
                 }
 
-                if (strcmp(text, "/clear") == 0) {
+                if (strcmp(text, "/clear") == 0 || strcmp(text, "/reset") == 0 || strcmp(text, "/new") == 0) {
                     c_agent_clear_history(harness->agent);
-                    telegram_bot_send_message(bot, chat_id_str, "🧹 Conversation history cleared. System prompt preserved.");
+                    telegram_bot_send_message(bot, chat_id_str, "🧹 Session reset. Conversation history cleared (system prompt and persistent SQLite memory preserved).");
                     continue;
                 }
 
