@@ -278,7 +278,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
     harness->permission_prompt_fn = telegram_permission_prompt_callback;
     harness->permission_userdata = &prompt_ctx;
 
-    printf("\033[1;32m=== CHarness Telegram Bot Daemon Online (Evolution 3.0) ===\033[0m\n");
+    printf("\033[1;32m=== CHarness Telegram Bot Daemon Online (Evolution 4.0) ===\033[0m\n");
     printf("Allowed Chat ID: \033[1;36m%s\033[0m\n", strlen(bot->allowed_chat_id) > 0 ? bot->allowed_chat_id : "[None - Zero Trust Mode]");
     printf("Model:           \033[1;33m%s\033[0m\n", harness->agent->gateway->model);
     printf("Listening for Telegram updates via long polling...\n\n");

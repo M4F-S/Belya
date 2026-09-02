@@ -1445,7 +1445,7 @@ void c_harness_repl(CHarness *h) {
     linenoiseHistoryLoad(".charness_history");
     linenoiseSetCompletionCallback(harness_completion_hook);
 
-    printf("\033[1;32m=== CHarness & CAgent Evolution 3.0 System Activated ===\033[0m\n");
+    printf("\033[1;32m=== CHarness & CAgent Evolution 4.0 System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
