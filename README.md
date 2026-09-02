@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/badge/Release-v4.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v4.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-16%2F16_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-20%2F20_Passed_(100%25)-brightgreen.svg)]()
 
 A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, and 24/7 VPS Telegram Bot remote control.
 
