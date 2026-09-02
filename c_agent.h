@@ -34,6 +34,9 @@ typedef struct CAgent {
     size_t turns_since_save;    /* Turns since last auto-save */
     size_t compaction_percent;  /* Token budget % that triggers compaction (default 80) */
     size_t compaction_keep;     /* Messages to keep after compaction (default 10) */
+    size_t total_prompt_tokens;
+    size_t total_completion_tokens;
+    size_t total_cached_tokens;
 } CAgent;
 
 CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions);
@@ -63,6 +66,20 @@ char *c_agent_list_sessions(CAgent *agent);
 
 // Skill Auto-Distillation & Trajectory Reflection
 char *c_agent_reflect_and_distill(CAgent *agent);
+
+// Skill Curation & Progressive Disclosure (Procedural Memory)
+bool c_agent_save_skill(CAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions);
+char *c_agent_search_skills(CAgent *agent, const char *query);
+char *c_agent_get_skills_manifest(CAgent *agent);
+char *c_agent_match_skill_for_prompt(CAgent *agent, const char *user_prompt);
+
+// Git Checkpointing & Instant Rollback
+bool c_agent_create_checkpoint(CAgent *agent, const char *label);
+bool c_agent_rollback_to_checkpoint(CAgent *agent, const char *checkpoint_id);
+char *c_agent_list_checkpoints(CAgent *agent);
+
+// Trajectory Exporter (OpenAI Fine-Tune JSONL Format)
+bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char *out_path);
 
 ModelGatewayResponse c_agent_step(CAgent *agent);
 void c_agent_free(CAgent *agent);

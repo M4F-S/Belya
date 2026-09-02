@@ -136,4 +136,45 @@ static inline size_t count_estimated_tokens(const char *text) {
     return (tokens > char_based) ? tokens : char_based;
 }
 
+static inline char *extract_json_object(const char *text, size_t *out_next_offset) {
+    if (!text) return NULL;
+    const char *start_ptr = strchr(text, '{');
+    if (!start_ptr) return NULL;
+
+    int depth = 0;
+    bool in_string = false;
+    bool escape = false;
+    const char *p = start_ptr;
+
+    while (*p) {
+        char c = *p;
+        if (escape) {
+            escape = false;
+        } else if (c == '\\' && in_string) {
+            escape = true;
+        } else if (c == '"') {
+            in_string = !in_string;
+        } else if (!in_string) {
+            if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    size_t len = (size_t)(p - start_ptr) + 1;
+                    char *res = malloc(len + 1);
+                    if (!res) return NULL;
+                    memcpy(res, start_ptr, len);
+                    res[len] = '\0';
+                    if (out_next_offset) {
+                        *out_next_offset = (size_t)((p + 1) - text);
+                    }
+                    return res;
+                }
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
 #endif

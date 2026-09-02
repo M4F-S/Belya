@@ -12,6 +12,9 @@ typedef struct {
     size_t tool_call_count;
     size_t tool_call_cap;
     bool has_tool_call;
+    size_t prompt_tokens;
+    size_t completion_tokens;
+    size_t cached_tokens;
     bool printed_reasoning_header;
     bool printed_content_header;
 } StreamContext;
@@ -24,6 +27,16 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
     const char *json_payload = line + 6;
     JsonValue *root = json_parse(json_payload);
     if (!root) return;
+
+    JsonValue *usage = json_obj_get(root, "usage");
+    if (usage) {
+        ctx->prompt_tokens = (size_t)json_obj_get_num(usage, "prompt_tokens", (double)ctx->prompt_tokens);
+        ctx->completion_tokens = (size_t)json_obj_get_num(usage, "completion_tokens", (double)ctx->completion_tokens);
+        JsonValue *ptd = json_obj_get(usage, "prompt_tokens_details");
+        if (ptd) {
+            ctx->cached_tokens = (size_t)json_obj_get_num(ptd, "cached_tokens", (double)ctx->cached_tokens);
+        }
+    }
 
     JsonValue *choices = json_obj_get(root, "choices");
     if (choices && choices->type == JSON_ARRAY && choices->u.array.count > 0) {
@@ -281,6 +294,9 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             res.tool_calls = stream_ctx.tool_calls;
             res.tool_call_count = stream_ctx.tool_call_count;
             res.has_tool_call = stream_ctx.has_tool_call;
+            res.prompt_tokens = stream_ctx.prompt_tokens;
+            res.completion_tokens = stream_ctx.completion_tokens;
+            res.cached_tokens = stream_ctx.cached_tokens;
 
             if (!res.content && !res.has_tool_call) {
                 // If stream was empty, check if raw_fallback was an error json
@@ -324,6 +340,16 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             json_free(root);
             free(json_body);
             return res;
+        }
+
+        JsonValue *usage = json_obj_get(root, "usage");
+        if (usage) {
+            res.prompt_tokens = (size_t)json_obj_get_num(usage, "prompt_tokens", 0);
+            res.completion_tokens = (size_t)json_obj_get_num(usage, "completion_tokens", 0);
+            JsonValue *ptd = json_obj_get(usage, "prompt_tokens_details");
+            if (ptd) {
+                res.cached_tokens = (size_t)json_obj_get_num(ptd, "cached_tokens", 0);
+            }
         }
 
         JsonValue *choices = json_obj_get(root, "choices");
@@ -374,6 +400,131 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
     free(json_body);
     res.content = strdup("Error: Maximum retry attempts exceeded.");
     return res;
+}
+
+static bool is_known_tool(const char *name, const char *const *known, size_t count) {
+    if (!name || strlen(name) == 0) return false;
+    if (!known || count == 0) return true;
+    for (size_t i = 0; i < count; i++) {
+        if (known[i] && strcmp(known[i], name) == 0) return true;
+    }
+    return false;
+}
+
+static void try_add_scavenged_call(const char *json_str, const char *const *known_tools, size_t known_count,
+                                   ModelParsedToolCall **out_calls, size_t *count, size_t *cap) {
+    if (!json_str) return;
+    JsonValue *root = json_parse(json_str);
+    if (!root) return;
+
+    if (root->type == JSON_OBJECT) {
+        const char *tname = json_obj_get_str(root, "name");
+        if (!tname) tname = json_obj_get_str(root, "tool");
+        if (!tname) tname = json_obj_get_str(root, "action");
+
+        if (tname && is_known_tool(tname, known_tools, known_count)) {
+            JsonValue *args_val = json_obj_get(root, "arguments");
+            if (!args_val) args_val = json_obj_get(root, "parameters");
+            if (!args_val) args_val = json_obj_get(root, "args");
+            if (!args_val) args_val = json_obj_get(root, "action_input");
+
+            char *args_json = NULL;
+            if (args_val) {
+                if (args_val->type == JSON_STRING) {
+                    args_json = strdup(args_val->u.string);
+                } else {
+                    args_json = json_serialize(args_val);
+                }
+            } else {
+                args_json = strdup("{}");
+            }
+
+            if (*count >= *cap) {
+                *cap = (*cap == 0) ? 4 : (*cap * 2);
+                *out_calls = realloc(*out_calls, sizeof(ModelParsedToolCall) * (*cap));
+            }
+
+            char id_buf[64];
+            snprintf(id_buf, sizeof(id_buf), "scavenged_%zu", *count + 1);
+            (*out_calls)[*count].id = strdup(id_buf);
+            (*out_calls)[*count].name = strdup(tname);
+            (*out_calls)[*count].arguments_json = args_json ? args_json : strdup("{}");
+            (*count)++;
+        }
+    }
+    json_free(root);
+}
+
+size_t model_gateway_scavenge_tool_calls(const char *content, const char *reasoning,
+                                         const char *const *known_tool_names, size_t known_count,
+                                         ModelParsedToolCall **out_calls) {
+    if (!out_calls) return 0;
+    *out_calls = NULL;
+    size_t count = 0;
+    size_t cap = 0;
+
+    const char *sources[2] = {reasoning, content};
+    for (int s = 0; s < 2; s++) {
+        const char *src = sources[s];
+        if (!src || strlen(src) == 0) continue;
+        size_t initial_count = count;
+
+        // 1. Check for <tool_call> ... </tool_call> tags
+        const char *p = src;
+        while ((p = strstr(p, "<tool_call>")) != NULL) {
+            p += strlen("<tool_call>");
+            const char *end_tag = strstr(p, "</tool_call>");
+            if (!end_tag) break;
+            size_t tag_len = (size_t)(end_tag - p);
+            char *sub = malloc(tag_len + 1);
+            if (sub) {
+                memcpy(sub, p, tag_len);
+                sub[tag_len] = '\0';
+
+                size_t offset = 0;
+                char *json_obj_str = extract_json_object(sub, &offset);
+                if (json_obj_str) {
+                    try_add_scavenged_call(json_obj_str, known_tool_names, known_count, out_calls, &count, &cap);
+                    free(json_obj_str);
+                } else {
+                    try_add_scavenged_call(sub, known_tool_names, known_count, out_calls, &count, &cap);
+                }
+                free(sub);
+            }
+            p = end_tag + strlen("</tool_call>");
+        }
+
+        // 2. If no <tool_call> tags were found in this source, scan for raw JSON objects
+        if (count == initial_count) {
+            p = src;
+            while (*p) {
+                const char *cand1 = strstr(p, "{\"name\"");
+                const char *cand2 = strstr(p, "{\"tool\"");
+                const char *cand3 = strstr(p, "{\"action\"");
+                const char *cand4 = strstr(p, "{ \"name\"");
+                const char *cand = NULL;
+
+                if (cand1 && (!cand || cand1 < cand)) cand = cand1;
+                if (cand2 && (!cand || cand2 < cand)) cand = cand2;
+                if (cand3 && (!cand || cand3 < cand)) cand = cand3;
+                if (cand4 && (!cand || cand4 < cand)) cand = cand4;
+
+                if (!cand) break;
+
+                size_t next_off = 0;
+                char *json_obj_str = extract_json_object(cand, &next_off);
+                if (json_obj_str && next_off > 0) {
+                    try_add_scavenged_call(json_obj_str, known_tool_names, known_count, out_calls, &count, &cap);
+                    free(json_obj_str);
+                    p = cand + next_off;
+                } else {
+                    p = cand + 7;
+                }
+            }
+        }
+    }
+
+    return count;
 }
 
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model) {

@@ -486,8 +486,176 @@ void test_gomaa_scoped_memory_and_timeline(void) {
     printf("  -> Gomaa Memory & Timeline PASSED\n");
 }
 
+void test_tool_call_scavenger(void) {
+    printf("[Test] Tool-Call Scavenger Engine (DeepSeek/Reasoning Extraction)...\n");
+
+    const char *known_tools[] = {"bash", "read_file", "write_file", "edit_file"};
+    size_t known_count = 4;
+
+    // 1. Scavenge from <think> XML block
+    const char *reasoning_xml = "<think>\nLet me run bash command\n<tool_call>\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n</tool_call>\n</think>";
+    ModelParsedToolCall *calls1 = NULL;
+    size_t count1 = model_gateway_scavenge_tool_calls(NULL, reasoning_xml, known_tools, known_count, &calls1);
+    assert(count1 == 1);
+    assert(calls1 != NULL);
+    assert(strcmp(calls1[0].name, "bash") == 0);
+    assert(strstr(calls1[0].arguments_json, "ls -la") != NULL);
+    for (size_t i = 0; i < count1; i++) {
+        free(calls1[i].id);
+        free(calls1[i].name);
+        free(calls1[i].arguments_json);
+    }
+    free(calls1);
+
+    // 2. Scavenge from markdown / raw embedded JSON
+    const char *content_json = "I will inspect the file:\n```json\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"main.c\"}}\n```";
+    ModelParsedToolCall *calls2 = NULL;
+    size_t count2 = model_gateway_scavenge_tool_calls(content_json, NULL, known_tools, known_count, &calls2);
+    assert(count2 == 1);
+    assert(calls2 != NULL);
+    assert(strcmp(calls2[0].name, "read_file") == 0);
+    assert(strstr(calls2[0].arguments_json, "main.c") != NULL);
+    for (size_t i = 0; i < count2; i++) {
+        free(calls2[i].id);
+        free(calls2[i].name);
+        free(calls2[i].arguments_json);
+    }
+    free(calls2);
+
+    // 3. Reject unknown hallucinated tools
+    const char *unknown_tool_json = "{\"name\": \"unregistered_magic_tool\", \"arguments\": {}}";
+    ModelParsedToolCall *calls3 = NULL;
+    size_t count3 = model_gateway_scavenge_tool_calls(unknown_tool_json, NULL, known_tools, known_count, &calls3);
+    assert(count3 == 0);
+    assert(calls3 == NULL);
+
+    // 4. Reject malformed JSON
+    const char *malformed_json = "{\"name\": \"bash\", \"arguments\": {\"command\": \"incomplete";
+    ModelParsedToolCall *calls4 = NULL;
+    size_t count4 = model_gateway_scavenge_tool_calls(malformed_json, NULL, known_tools, known_count, &calls4);
+    assert(count4 == 0);
+
+    printf("  -> Tool-Call Scavenger PASSED\n");
+}
+
+void test_skills_curation_and_recall(void) {
+    printf("[Test] Skills Curation & Progressive Disclosure Loop...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_skills_mem.sqlite", "Test System");
+
+    // 1. Save procedural skill
+    bool saved = c_agent_save_skill(agent, "git_sync", "sync_repo",
+        "Synchronize current Git branch with remote origin",
+        "Step 1: git fetch origin\nStep 2: git rebase origin/main\nStep 3: git push");
+    assert(saved == true);
+
+    // 2. Search skills
+    char *search_res = c_agent_search_skills(agent, "sync");
+    assert(search_res != NULL);
+    assert(strstr(search_res, "git_sync") != NULL);
+    assert(strstr(search_res, "git fetch origin") != NULL);
+    free(search_res);
+
+    // 3. Manifest progressive disclosure
+    char *manifest = c_agent_get_skills_manifest(agent);
+    assert(manifest != NULL);
+    assert(strstr(manifest, "git_sync") != NULL);
+    assert(strstr(manifest, "sync_repo") != NULL);
+    free(manifest);
+
+    // 4. On-demand trigger matching
+    char *matched = c_agent_match_skill_for_prompt(agent, "Please sync_repo with remote");
+    assert(matched != NULL);
+    assert(strstr(matched, "git rebase origin/main") != NULL);
+    free(matched);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_skills_mem.sqlite");
+    printf("  -> Skills Curation & Progressive Disclosure PASSED\n");
+}
+
+void test_git_checkpoint_and_rollback(void) {
+    printf("[Test] Git & State Checkpoint and Instant Rollback...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, "test_chk_mem.sqlite", "Test System");
+
+    c_agent_add_message(agent, "user", "Message 1: Start work");
+    c_agent_add_message(agent, "assistant", "Message 2: Working");
+
+    // 1. Create Checkpoint
+    bool chk_ok = c_agent_create_checkpoint(agent, "stage_1");
+    assert(chk_ok == true);
+
+    // 2. Add further messages to simulate subsequent turn
+    c_agent_add_message(agent, "user", "Message 3: Do something risky");
+    c_agent_add_message(agent, "assistant", "Message 4: Execution result");
+    assert(agent->msg_count == 5);
+
+    // 3. List checkpoints
+    char *chk_list = c_agent_list_checkpoints(agent);
+    assert(chk_list != NULL);
+    assert(strstr(chk_list, "stage_1") != NULL);
+    free(chk_list);
+
+    // 4. Rollback to stage_1
+    bool rb_ok = c_agent_rollback_to_checkpoint(agent, "stage_1");
+    assert(rb_ok == true);
+    assert(agent->msg_count == 3); // Restored to 3 messages (system + 2 turns)
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_chk_mem.sqlite");
+    printf("  -> Git Checkpointing & Instant Rollback PASSED\n");
+}
+
+void test_trajectory_exporter(void) {
+    printf("[Test] Trajectory Exporter (OpenAI Fine-Tune JSONL Format)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    CAgent *agent = c_agent_init(gw, ":memory:", "Test Trajectory System Prompt");
+
+    c_agent_add_message(agent, "user", "Refactor memory module in C");
+    c_agent_add_message(agent, "assistant", "I will edit the file.");
+    c_agent_add_tool_result(agent, "call_999", "edit_file", "File successfully edited.");
+    c_agent_add_message(agent, "assistant", "Refactor complete and verified.");
+
+    const char *out_file = "test_trajectory_output.jsonl";
+    unlink(out_file);
+
+    bool exp_ok = c_agent_export_trajectory(agent, NULL, out_file);
+    assert(exp_ok == true);
+
+    FILE *f = fopen(out_file, "rb");
+    assert(f != NULL);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    assert(sz > 0);
+
+    char *buf = malloc(sz + 1);
+    size_t r = fread(buf, 1, sz, f);
+    buf[r] = '\0';
+    fclose(f);
+
+    JsonValue *root = json_parse(buf);
+    assert(root != NULL);
+    assert(root->type == JSON_OBJECT);
+
+    JsonValue *msgs = json_obj_get(root, "messages");
+    assert(msgs != NULL && msgs->type == JSON_ARRAY);
+    assert(msgs->u.array.count == 5); // system + user + assistant + tool + assistant
+
+    json_free(root);
+    free(buf);
+    unlink(out_file);
+
+    c_agent_free(agent);
+    model_gateway_free(gw);
+    printf("  -> Trajectory Exporter PASSED\n");
+}
+
 int main(void) {
-    printf("\n================ Running CHarness & CAgent Evolution 3.0 Test Suite ================\n");
+    printf("\n================ Running CHarness & CAgent Evolution 4.0 Test Suite ================\n");
     test_dyn_string();
     test_minijson();
     test_token_estimator();
@@ -499,6 +667,10 @@ int main(void) {
     test_preflight_compiler_watchdog();
     test_fetch_url_tool();
     test_gomaa_scoped_memory_and_timeline();
-    printf("================ All Tests Passed Successfully (100%%) ================\n\n");
+    test_tool_call_scavenger();
+    test_skills_curation_and_recall();
+    test_git_checkpoint_and_rollback();
+    test_trajectory_exporter();
+    printf("================ All Tests Passed Successfully (15/15 - 100%%) ================\n\n");
     return 0;
 }

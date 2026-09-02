@@ -16,6 +16,9 @@ typedef struct {
     ModelParsedToolCall *tool_calls;
     size_t tool_call_count;
     bool has_tool_call;
+    size_t prompt_tokens;
+    size_t completion_tokens;
+    size_t cached_tokens;
 } ModelGatewayResponse;
 
 typedef void (*TokenStreamCallback)(const char *token, bool is_reasoning, void *userdata);
@@ -36,5 +39,9 @@ typedef struct ModelGateway {
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model);
 void model_gateway_free(ModelGateway *gw);
 void model_gateway_response_free(ModelGatewayResponse *resp);
+
+size_t model_gateway_scavenge_tool_calls(const char *content, const char *reasoning,
+                                         const char *const *known_tool_names, size_t known_count,
+                                         ModelParsedToolCall **out_calls);
 
 #endif

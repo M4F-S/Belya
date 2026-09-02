@@ -1,11 +1,11 @@
 # CHarness & CAgent — High-Performance Autonomous C Agent & Security Execution Sandbox
 
-[![Release](https://img.shields.io/badge/Release-v3.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v3.0.0)
+[![Release](https://img.shields.io/badge/Release-v4.0.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v4.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-11%2F11_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-15%2F15_Passed_(100%25)-brightgreen.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
@@ -18,39 +18,38 @@ graph TD
     subgraph "Mode A: Full Agent System (CAgent + CHarness)"
         User["Operator (Terminal CLI / Telegram)"] --> H["CHarness Runtime & Security Sandbox"]
         H --> A["CAgent Reasoning Core (ReAct Loop)"]
-        A --> GW["Model Gateway (Ollama / vLLM / OpenAI / Anthropic)"]
-        A --> DB[("SQLite FTS5 + Gomaa Memory & Sessions")]
+        A --> GW["Model Gateway (Ollama / vLLM / OpenAI / DeepSeek / Anthropic)"]
+        A --> DB[("SQLite FTS5 + Gomaa Memory, Skills & Checkpoints")]
+        A --> SCAV["Tool-Call Scavenger (Reasoning Extraction)"]
         A --> SUB["spawn_subagent (Isolated Worker Sandboxes)"]
     end
 
     subgraph "Mode B: Standalone Harness (CHarness Alone)"
         Ext["External App / Python / Node / Custom Agent"] --> H2["CHarness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
-        SEC --> T1["14 Native Tools (bash, edit_file, apply_patch, fetch_url, git, etc.)"]
-        SEC --> T2["Dynamic Custom Tools (.charness/tools/)"]
-        SEC --> T3["MCP Client (JSON-RPC stdio servers)"]
+        H2 --> T1["16 Native Tools (bash, edit_file, save_skill, recall_skill, fetch_url, git, etc.)"]
+        H2 --> T2["Dynamic Custom Tools (.charness/tools/)"]
+        H2 --> T3["MCP Client (JSON-RPC stdio servers)"]
     end
 ```
 
 ---
 
-## Key Capabilities & Evolution 3.0 Innovations
+## Key Capabilities & Evolution 4.0 Innovations
 
-- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required.
-- **Micro Footprint & Instant Startup:** Self-contained ~120KB binary with instant (<2ms) startup and minimal RAM footprint (<8MB).
+- **Tool-Call Scavenger Engine (Always-On):** Robust extraction of JSON tool calls embedded within `<think>` reasoning traces, `<tool_call>` XML tags, or markdown code fences from reasoning models (DeepSeek-R1, Qwen-2.5, Hermes) with brace-depth balancing and whitelist validation.
+- **3-Zone Prefix Cache Invariant & Economics:** Strict byte-locked Zone 1 pinned prefix (system prompt + skills manifest), Zone 2 append-only history log, and Zone 3 ephemeral skill guidance injection for 90%+ prompt cache hit rates. Real-time cache economics tracking via `/cache`.
+- **Closed Skill Curation Loop & Progressive Disclosure:** High-level procedural skills saved to SQLite (`save_skill`, `/skills`) with compact 1-line manifest disclosure in Zone 1, and automated on-demand trigger matching to inject full instructions only when needed.
+- **Git State Checkpoints & Instant Rollback:** Automated per-turn commit snapshots and manual checkpointing (`c_agent_create_checkpoint`, `/checkpoint [id]`, `/rollback [id]`) restoring workspace files and conversation context instantly.
+- **Fine-Tuning Trajectory Exporter:** Export complete multi-turn conversations and tool execution trajectories into standard OpenAI fine-tune JSONL format (`/export [session_id] [file]`).
+- **Disambiguated `edit_file` Safety:** Content-anchored search-and-replace now detects duplicate matches across a file and returns exact line numbers for disambiguation.
 - **Pre-Flight Compiler Watchdog (Auto-Healing Loop):** `write_file`, `edit_file`, and `apply_patch` automatically run pre-flight syntax checks on C/C++ files (`gcc -fsyntax-only`), returning compiler warnings directly to the model for immediate self-correction.
 - **Gomaa Memory Architecture (Slim C99 Paradigm):**
-  - **Wing & Room Scoping:** SQLite-backed memory with domain isolation (`wing/room: topic`), e.g. `backend/auth`, `devops/ci`, `infra/database`.
-  - **Salience Scoring & Recency Boost:** Recalled memories automatically have their salience increased (`salience += 0.1`) and access frequency updated to prioritize relevant knowledge.
+  - **Wing & Room Scoping:** SQLite-backed memory with domain isolation (`wing/room: topic`), e.g. `backend/auth`, `devops/ci`, `skills/git`.
+  - **Salience Scoring & Recency Boost:** Recalled memories and skills automatically have their salience increased and access frequency updated.
   - **Persistent Timeline Logging:** Chronological event timeline recording tool executions, memory writes, compactions, and session checkpoints queryable via `/timeline [N]`.
-- **Native Web Content Retrieval (`fetch_url`):** Built-in HTTP GET client leveraging libcurl directly with automatic redirect following, custom headers, and 100KB buffer protection.
-- **Dynamic Self-Tooling (`define_tool`):** Enables the agent to invent, script, persist (`.charness/tools/`), and register new executable tools on the fly.
-- **Token Budget Auto-Compaction Watchdog:** Proactively monitors BPE token utilization and compacts context automatically at 80% threshold to prevent context overflow errors.
-- **Session Checkpointing & Resumption:** Persistent conversation trees in SQLite (`/sessions`, `/save <id>`, `/resume <id>`, or `--resume <id>`).
+- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required (<8MB RAM footprint).
 - **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted) and **Interactive Inline Approval Buttons** (`[ ✅ Approve ]` / `[ ❌ Deny ]`).
-- **Model Agnostic with Real-Time SSE Streaming:** Live Server-Sent Events (SSE) word-by-word streaming token output and cyan reasoning display across local offline LLMs (Ollama, vLLM) and Cloud APIs (OpenAI, Groq, OpenRouter, Anthropic).
-- **Prompt Caching Breakpoints:** Automatic Anthropic `cache_control: {"type": "ephemeral"}` breakpoint injection on system prompt and tool definitions for 90%+ prompt cache hit rates.
-- **Model Context Protocol (MCP) Client:** Stdio JSON-RPC 2.0 client to connect external MCP tool servers dynamically.
 
 ---
 

@@ -333,13 +333,17 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 if (strcmp(text, "/start") == 0 || strcmp(text, "/help") == 0) {
                     char welcome[8192];
                     snprintf(welcome, sizeof(welcome),
-                        "🤖 <b>CHarness Autonomous VPS Agent Online (Evolution 3.0)</b>\n\n"
+                        "🤖 <b>CHarness Autonomous VPS Agent Online (Evolution 4.0)</b>\n\n"
                         "<b>Active Model:</b> <code>%s</code>\n"
                         "<b>CWD:</b> <code>%s</code>\n"
                         "<b>Context Messages:</b> <code>%zu (%zu estimated tokens)</code>\n\n"
                         "<b>Commands:</b>\n"
                         "/status - System status & token budget\n"
+                        "/cache - Prompt cache economics & hit rates\n"
                         "/tools - List registered VPS tools\n"
+                        "/skills - Search or inspect procedural skills\n"
+                        "/checkpoint - Create Git & memory checkpoint\n"
+                        "/rollback - Restore previous checkpoint\n"
                         "/timeline - Recent Gomaa timeline events\n"
                         "/sessions - Checkpointed sessions\n"
                         "/rules - Active repository rules\n"
@@ -353,19 +357,73 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 }
 
                 if (strcmp(text, "/status") == 0) {
+                    size_t total_p = harness->agent->total_prompt_tokens;
+                    size_t total_c = harness->agent->total_cached_tokens;
+                    double hit_rate = (total_p > 0) ? ((double)total_c / (double)total_p * 100.0) : 0.0;
                     char status_msg[8192];
                     snprintf(status_msg, sizeof(status_msg),
-                        "📊 <b>System Status (Evolution 3.0)</b>\n"
+                        "📊 <b>System Status (Evolution 4.0)</b>\n"
                         "• Model: <code>%s</code>\n"
                         "• CWD: <code>%s</code>\n"
                         "• Memory Table: <code>%s</code>\n"
                         "• Context: <code>%zu messages (%zu estimated tokens)</code>\n"
-                        "• Prompt Caching: <code>%s</code>",
+                        "• Prompt Caching: <code>%s</code>\n"
+                        "• Cache Hit Rate: <code>%.2f%% (%zu / %zu tokens)</code>",
                         harness->agent->gateway->model, harness->cwd,
                         harness->agent->has_fts5 ? "SQLite FTS5 + Salience Ranking" : "Standard SQLite",
                         harness->agent->msg_count, c_agent_total_tokens(harness->agent),
-                        harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
+                        harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled",
+                        hit_rate, total_c, total_p);
                     telegram_bot_send_message(bot, chat_id_str, status_msg);
+                    continue;
+                }
+
+                if (strcmp(text, "/cache") == 0) {
+                    size_t total_p = harness->agent->total_prompt_tokens;
+                    size_t total_c = harness->agent->total_cached_tokens;
+                    double hit_rate = (total_p > 0) ? ((double)total_c / (double)total_p * 100.0) : 0.0;
+                    char cache_msg[512];
+                    snprintf(cache_msg, sizeof(cache_msg),
+                        "⚡ <b>Prompt Cache Economics</b>\n\n"
+                        "• Prompt Tokens: <code>%zu</code>\n"
+                        "• Completion Tokens: <code>%zu</code>\n"
+                        "• Cached Tokens: <code>%zu</code>\n"
+                        "• Cache Hit Rate: <b>%.2f%%</b>",
+                        total_p, harness->agent->total_completion_tokens, total_c, hit_rate);
+                    telegram_bot_send_message(bot, chat_id_str, cache_msg);
+                    continue;
+                }
+
+                if (strncmp(text, "/skills", 7) == 0) {
+                    const char *q = strlen(text) > 7 ? text + 7 : "";
+                    while (*q == ' ') q++;
+                    char *sk = c_agent_search_skills(harness->agent, q);
+                    telegram_bot_send_chunks(bot, chat_id_str, sk ? sk : "No skills found.");
+                    if (sk) free(sk);
+                    continue;
+                }
+
+                if (strncmp(text, "/checkpoint", 11) == 0) {
+                    const char *lbl = strlen(text) > 11 ? text + 11 : "";
+                    while (*lbl == ' ') lbl++;
+                    if (c_agent_create_checkpoint(harness->agent, strlen(lbl) > 0 ? lbl : "telegram_manual")) {
+                        telegram_bot_send_message(bot, chat_id_str, "✅ Checkpoint created successfully.");
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "❌ Failed to create checkpoint.");
+                    }
+                    continue;
+                }
+
+                if (strncmp(text, "/rollback", 9) == 0) {
+                    const char *cid = strlen(text) > 9 ? text + 9 : "";
+                    while (*cid == ' ') cid++;
+                    if (c_agent_rollback_to_checkpoint(harness->agent, strlen(cid) > 0 ? cid : NULL)) {
+                        char rmsg[128];
+                        snprintf(rmsg, sizeof(rmsg), "⏪ Rollback completed. %zu messages active.", harness->agent->msg_count);
+                        telegram_bot_send_message(bot, chat_id_str, rmsg);
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "❌ Rollback failed (no checkpoint found).");
+                    }
                     continue;
                 }
 

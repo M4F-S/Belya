@@ -79,6 +79,14 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
             "  tool_call_id TEXT,"
             "  tool_calls_json TEXT,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS agent_checkpoints ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  label TEXT,"
+            "  git_tree_sha TEXT NOT NULL,"
+            "  turn_id INTEGER,"
+            "  msg_count INTEGER,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");";
         sqlite3_exec(agent->db, schema_sql, 0, 0, 0);
 
@@ -153,6 +161,14 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
             fclose(rfp);
             break;
         }
+    }
+
+    // Progressive Disclosure: Append compact skills manifest (capped at top 20 by salience)
+    char *skills_manifest = c_agent_get_skills_manifest(agent);
+    if (skills_manifest && strlen(skills_manifest) > 0) {
+        dyn_str_append(&sys, "\n\n=== Available Procedural Skills ===\n");
+        dyn_str_append(&sys, skills_manifest);
+        free(skills_manifest);
     }
 
     c_agent_add_message(agent, "system", sys.data);
@@ -639,6 +655,357 @@ char *c_agent_reflect_and_distill(CAgent *agent) {
     return res.data;
 }
 
+static bool contains_case_insensitive(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    size_t hlen = strlen(haystack);
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return true;
+    if (hlen < nlen) return false;
+    for (size_t i = 0; i <= hlen - nlen; i++) {
+        bool match = true;
+        for (size_t j = 0; j < nlen; j++) {
+            char ch = haystack[i + j];
+            char cn = needle[j];
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+            if (cn >= 'A' && cn <= 'Z') cn = (char)(cn + 32);
+            if (ch != cn) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+bool c_agent_save_skill(CAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions) {
+    if (!agent || !agent->db || !name || !instructions) return false;
+    const char *trig = (trigger && strlen(trigger) > 0) ? trigger : name;
+    const char *description = (desc && strlen(desc) > 0) ? desc : name;
+
+    DynString content = dyn_str_new();
+    dyn_str_appendf(&content, "Description: %s\nInstructions:\n%s", description, instructions);
+
+    c_agent_persist_memory_scoped(agent, name, content.data, "skills", trig);
+    dyn_str_free(&content);
+
+    char summary[256];
+    snprintf(summary, sizeof(summary), "Skill saved: %s (Trigger: %s)", name, trig);
+    c_agent_log_timeline(agent, "skill_saved", summary);
+    return true;
+}
+
+char *c_agent_search_skills(CAgent *agent, const char *query) {
+    if (!agent || !agent->db) return strdup("Memory database not active.");
+    DynString ds = dyn_str_new();
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT topic, room, content, salience, access_count FROM agent_memory "
+                      "WHERE wing = 'skills' AND (topic LIKE ? OR room LIKE ? OR content LIKE ?) "
+                      "ORDER BY salience DESC LIMIT 10;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        char pat[256];
+        snprintf(pat, sizeof(pat), "%%%s%%", query ? query : "");
+        sqlite3_bind_text(stmt, 1, pat, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, pat, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 3, pat, -1, SQLITE_STATIC);
+
+        dyn_str_append(&ds, "=== Reusable Agent Skills ===\n");
+        size_t count = 0;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *name = (const char *)sqlite3_column_text(stmt, 0);
+            const char *trig = (const char *)sqlite3_column_text(stmt, 1);
+            const char *content = (const char *)sqlite3_column_text(stmt, 2);
+            double sal = sqlite3_column_double(stmt, 3);
+            int hits = sqlite3_column_int(stmt, 4);
+
+            dyn_str_appendf(&ds, "\n### Skill: %s [Trigger: %s | Salience: %.1f | Uses: %d]\n%s\n",
+                name ? name : "", trig ? trig : "", sal, hits, content ? content : "");
+            count++;
+        }
+        sqlite3_finalize(stmt);
+        if (count == 0) dyn_str_append(&ds, "No matching skills found in procedural memory.");
+    }
+    return ds.data;
+}
+
+char *c_agent_get_skills_manifest(CAgent *agent) {
+    if (!agent || !agent->db) return NULL;
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT topic, room, content FROM agent_memory WHERE wing = 'skills' ORDER BY salience DESC, access_count DESC LIMIT 20;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+
+    DynString ds = dyn_str_new();
+    size_t count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 0);
+        const char *trig = (const char *)sqlite3_column_text(stmt, 1);
+        const char *content = (const char *)sqlite3_column_text(stmt, 2);
+
+        char short_desc[128] = "Reusable procedural skill";
+        if (content) {
+            const char *d_start = strstr(content, "Description: ");
+            if (d_start) {
+                d_start += strlen("Description: ");
+                const char *nl = strchr(d_start, '\n');
+                size_t dlen = nl ? (size_t)(nl - d_start) : strlen(d_start);
+                if (dlen > sizeof(short_desc) - 1) dlen = sizeof(short_desc) - 1;
+                memcpy(short_desc, d_start, dlen);
+                short_desc[dlen] = '\0';
+            }
+        }
+        dyn_str_appendf(&ds, "- %s (Trigger: %s): %s\n", name ? name : "", trig ? trig : "", short_desc);
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    if (count == 0) {
+        dyn_str_free(&ds);
+        return NULL;
+    }
+    return ds.data;
+}
+
+char *c_agent_match_skill_for_prompt(CAgent *agent, const char *user_prompt) {
+    if (!agent || !agent->db || !user_prompt || strlen(user_prompt) == 0) return NULL;
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT id, topic, room, content FROM agent_memory WHERE wing = 'skills' ORDER BY salience DESC;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+
+    char *matched_content = NULL;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int mid = sqlite3_column_int(stmt, 0);
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        const char *trig = (const char *)sqlite3_column_text(stmt, 2);
+        const char *content = (const char *)sqlite3_column_text(stmt, 3);
+
+        bool matches = false;
+        if (trig && strlen(trig) > 0 && contains_case_insensitive(user_prompt, trig)) {
+            matches = true;
+        } else if (name && strlen(name) > 0 && contains_case_insensitive(user_prompt, name)) {
+            matches = true;
+        }
+
+        if (matches && content) {
+            matched_content = strdup(content);
+            // Boost salience and access count
+            sqlite3_stmt *up_stmt;
+            const char *up_sql = "UPDATE agent_memory SET access_count = access_count + 1, "
+                                 "salience = MIN(salience + 0.2, 5.0), last_accessed_at = CURRENT_TIMESTAMP WHERE id = ?;";
+            if (sqlite3_prepare_v2(agent->db, up_sql, -1, &up_stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_int(up_stmt, 1, mid);
+                sqlite3_step(up_stmt);
+                sqlite3_finalize(up_stmt);
+            }
+            break;
+        }
+    }
+    sqlite3_finalize(stmt);
+    return matched_content;
+}
+
+bool c_agent_create_checkpoint(CAgent *agent, const char *label) {
+    if (!agent || !agent->db) return false;
+
+    char sha[128] = {0};
+    FILE *p = popen("git stash create 2>/dev/null", "r");
+    if (p) {
+        if (fgets(sha, sizeof(sha), p)) {
+            sha[strcspn(sha, "\r\n")] = '\0';
+        }
+        pclose(p);
+    }
+
+    if (strlen(sha) == 0) {
+        FILE *p2 = popen("git rev-parse HEAD 2>/dev/null", "r");
+        if (p2) {
+            if (fgets(sha, sizeof(sha), p2)) {
+                sha[strcspn(sha, "\r\n")] = '\0';
+            }
+            pclose(p2);
+        }
+    }
+
+    if (strlen(sha) == 0) {
+        strncpy(sha, "clean_working_tree", sizeof(sha) - 1);
+    }
+
+    sqlite3_stmt *stmt;
+    const char *sql = "INSERT INTO agent_checkpoints (label, git_tree_sha, turn_id, msg_count) VALUES (?, ?, ?, ?);";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, label ? label : "checkpoint", -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, sha, -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 3, (int)agent->turn_count);
+        sqlite3_bind_int(stmt, 4, (int)agent->msg_count);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    char log_summary[256];
+    snprintf(log_summary, sizeof(log_summary), "Checkpoint: '%s' [Turn %zu | Msg %zu | SHA: %.8s]",
+        label ? label : "auto", agent->turn_count, agent->msg_count, sha);
+    c_agent_log_timeline(agent, "checkpoint_created", log_summary);
+    return true;
+}
+
+bool c_agent_rollback_to_checkpoint(CAgent *agent, const char *checkpoint_id) {
+    if (!agent || !agent->db) return false;
+    sqlite3_stmt *stmt;
+    const char *sql = NULL;
+    if (checkpoint_id && strlen(checkpoint_id) > 0) {
+        sql = "SELECT id, label, git_tree_sha, msg_count FROM agent_checkpoints WHERE id = ? OR label = ? ORDER BY id DESC LIMIT 1;";
+    } else {
+        sql = "SELECT id, label, git_tree_sha, msg_count FROM agent_checkpoints ORDER BY id DESC LIMIT 1;";
+    }
+
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+
+    if (checkpoint_id && strlen(checkpoint_id) > 0) {
+        sqlite3_bind_text(stmt, 1, checkpoint_id, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, checkpoint_id, -1, SQLITE_STATIC);
+    }
+
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    int cid = sqlite3_column_int(stmt, 0);
+    const char *label = (const char *)sqlite3_column_text(stmt, 1);
+    const char *sha = (const char *)sqlite3_column_text(stmt, 2);
+    int target_msg_count = sqlite3_column_int(stmt, 3);
+
+    if (sha && strlen(sha) == 40) {
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "git checkout %s -- . 2>/dev/null || git restore --source=%s . 2>/dev/null", sha, sha);
+        system(cmd);
+    }
+
+    if (target_msg_count > 0 && (size_t)target_msg_count < agent->msg_count) {
+        for (size_t i = target_msg_count; i < agent->msg_count; i++) {
+            free_single_message(&agent->messages[i]);
+        }
+        agent->msg_count = target_msg_count;
+    }
+
+    char log_summary[256];
+    snprintf(log_summary, sizeof(log_summary), "Rollback to checkpoint #%d '%s' (Restored to %d messages)",
+        cid, label ? label : "", target_msg_count);
+    c_agent_log_timeline(agent, "checkpoint_rollback", log_summary);
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+char *c_agent_list_checkpoints(CAgent *agent) {
+    if (!agent || !agent->db) return strdup("Checkpoint store not active.");
+    sqlite3_stmt *stmt;
+    const char *sql = "SELECT id, label, git_tree_sha, turn_id, msg_count, created_at FROM agent_checkpoints ORDER BY id DESC LIMIT 15;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return strdup("Failed to query checkpoints table.");
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Agent Git & History Checkpoints ===\n");
+    size_t count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int id = sqlite3_column_int(stmt, 0);
+        const char *lbl = (const char *)sqlite3_column_text(stmt, 1);
+        const char *sha = (const char *)sqlite3_column_text(stmt, 2);
+        int turn = sqlite3_column_int(stmt, 3);
+        int msgs = sqlite3_column_int(stmt, 4);
+        const char *ts = (const char *)sqlite3_column_text(stmt, 5);
+
+        dyn_str_appendf(&ds, "• [#%d] \"%s\" | Turn: %d | Msgs: %d | SHA: %.8s | Created: %s\n",
+            id, lbl ? lbl : "auto", turn, msgs, sha ? sha : "", ts ? ts : "");
+        count++;
+    }
+    sqlite3_finalize(stmt);
+    if (count == 0) dyn_str_append(&ds, "No checkpoints recorded yet. Use /checkpoint <label> to record state.");
+    return ds.data;
+}
+
+bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char *out_path) {
+    if (!agent) return false;
+
+    char default_path[256];
+    if (!out_path || strlen(out_path) == 0) {
+        time_t now = time(NULL);
+        struct tm *tm = gmtime(&now);
+        strftime(default_path, sizeof(default_path), "trajectory_%Y%m%d_%H%M%S.jsonl", tm);
+        out_path = default_path;
+    }
+
+    FILE *f = fopen(out_path, "a");
+    if (!f) return false;
+
+    JsonValue *root = json_create_object();
+    JsonValue *msgs_arr = json_create_array();
+
+    if (session_id && strlen(session_id) > 0 && agent->db) {
+        sqlite3_stmt *stmt;
+        const char *sql = "SELECT role, content, tool_call_id, tool_calls_json FROM session_messages WHERE session_id = ? ORDER BY idx ASC;";
+        if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *role = (const char *)sqlite3_column_text(stmt, 0);
+                const char *content = (const char *)sqlite3_column_text(stmt, 1);
+                const char *tid = (const char *)sqlite3_column_text(stmt, 2);
+                const char *tc_json = (const char *)sqlite3_column_text(stmt, 3);
+
+                JsonValue *m = json_create_object();
+                json_obj_add(m, "role", json_create_string(role ? role : "user"));
+                json_obj_add(m, "content", json_create_string(content ? content : ""));
+                if (tid && strlen(tid) > 0) {
+                    json_obj_add(m, "tool_call_id", json_create_string(tid));
+                }
+                if (tc_json && strlen(tc_json) > 0) {
+                    JsonValue *tcs = json_parse(tc_json);
+                    if (tcs) json_obj_add(m, "tool_calls", tcs);
+                }
+                json_arr_add(msgs_arr, m);
+            }
+            sqlite3_finalize(stmt);
+        }
+    } else {
+        for (size_t i = 0; i < agent->msg_count; i++) {
+            JsonValue *m = json_create_object();
+            json_obj_add(m, "role", json_create_string(agent->messages[i].role));
+            json_obj_add(m, "content", json_create_string(agent->messages[i].content ? agent->messages[i].content : ""));
+            if (agent->messages[i].tool_call_id) {
+                json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
+            }
+            if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+                JsonValue *tcs = json_create_array();
+                for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                    JsonValue *tc = json_create_object();
+                    json_obj_add(tc, "id", json_create_string(agent->messages[i].tool_calls[k].id));
+                    json_obj_add(tc, "type", json_create_string("function"));
+                    JsonValue *fn = json_create_object();
+                    json_obj_add(fn, "name", json_create_string(agent->messages[i].tool_calls[k].name));
+                    json_obj_add(fn, "arguments", json_create_string(agent->messages[i].tool_calls[k].arguments_json));
+                    json_obj_add(tc, "function", fn);
+                    json_arr_add(tcs, tc);
+                }
+                json_obj_add(m, "tool_calls", tcs);
+            }
+            json_arr_add(msgs_arr, m);
+        }
+    }
+
+    json_obj_add(root, "messages", msgs_arr);
+    char *serialized = json_serialize(root);
+    if (serialized) {
+        fprintf(f, "%s\n", serialized);
+        free(serialized);
+    }
+    json_free(root);
+    fclose(f);
+
+    char summary[256];
+    snprintf(summary, sizeof(summary), "Trajectory exported to %s", out_path);
+    c_agent_log_timeline(agent, "trajectory_exported", summary);
+    return true;
+}
+
 ModelGatewayResponse c_agent_step(CAgent *agent) {
     // Auto-save: save before compaction drops messages, and on turn interval
     if (agent->auto_save_interval > 0 && agent->db) {
@@ -762,7 +1129,17 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
         }
     }
 
-    // 1. Build messages array
+    // Zone 3: Match active procedural skill on recent user prompt
+    const char *last_user_prompt = NULL;
+    for (ssize_t ui = (ssize_t)agent->msg_count - 1; ui >= 0; ui--) {
+        if (agent->messages[ui].role && strcmp(agent->messages[ui].role, "user") == 0) {
+            last_user_prompt = agent->messages[ui].content;
+            break;
+        }
+    }
+    char *active_skill = last_user_prompt ? c_agent_match_skill_for_prompt(agent, last_user_prompt) : NULL;
+
+    // 1. Build messages array (Zone 1 Pinned Prefix, Zone 2 Append-Only History, Zone 3 Ephemeral Injection)
     JsonValue *messages_arr = json_create_array();
     for (size_t i = 0; i < agent->msg_count; i++) {
         JsonValue *m = json_create_object();
@@ -772,7 +1149,7 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
         }
 
-        // Prompt Caching breakpoint on system instruction
+        // Prompt Caching breakpoint on system instruction (Zone 1 Pinned Prefix)
         if (i == 0 && agent->gateway && agent->gateway->prompt_caching) {
             JsonValue *cc = json_create_object();
             json_obj_add(cc, "type", json_create_string("ephemeral"));
@@ -794,6 +1171,20 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             json_obj_add(m, "tool_calls", tcs);
         }
         json_arr_add(messages_arr, m);
+    }
+
+    // Zone 3: Inject matched procedural skill ephemeral guidance into messages_arr
+    if (active_skill) {
+        JsonValue *sk_msg = json_create_object();
+        json_obj_add(sk_msg, "role", json_create_string("system"));
+        DynString sk_ds = dyn_str_new();
+        dyn_str_append(&sk_ds, "=== Active Procedural Skill Guidance ===\n");
+        dyn_str_append(&sk_ds, active_skill);
+        dyn_str_append(&sk_ds, "\nFollow these procedural instructions precisely for this turn.");
+        json_obj_add(sk_msg, "content", json_create_string(sk_ds.data));
+        dyn_str_free(&sk_ds);
+        json_arr_add(messages_arr, sk_msg);
+        free(active_skill);
     }
 
     // 2. Build Tool definitions schema
@@ -818,6 +1209,29 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
     }
 
     ModelGatewayResponse resp = agent->gateway->chat_complete(agent->gateway, messages_arr, tools_arr);
+
+    // Accumulate token economics
+    agent->total_prompt_tokens += resp.prompt_tokens;
+    agent->total_completion_tokens += resp.completion_tokens;
+    agent->total_cached_tokens += resp.cached_tokens;
+
+    // Tool Scavenger Fallback (Always on): Scan reasoning and content for JSON tool calls if standard tool_calls is empty
+    if (!resp.has_tool_call && (resp.content != NULL || resp.reasoning_content != NULL) && agent->schema_count > 0) {
+        const char *known_names[64];
+        for (size_t s = 0; s < agent->schema_count && s < 64; s++) {
+            known_names[s] = agent->schemas[s].name;
+        }
+        size_t scavenged = model_gateway_scavenge_tool_calls(resp.content, resp.reasoning_content,
+                                                             known_names, agent->schema_count,
+                                                             &resp.tool_calls);
+        if (scavenged > 0) {
+            resp.has_tool_call = true;
+            resp.tool_call_count = scavenged;
+            char scav_msg[128];
+            snprintf(scav_msg, sizeof(scav_msg), "Scavenged %zu tool calls from model reasoning/content stream", scavenged);
+            c_agent_log_timeline(agent, "tool_scavenged", scav_msg);
+        }
+    }
 
     // Detach shared references before freeing arrays
     for (size_t i = 0; i < tools_arr->u.array.count; i++) {

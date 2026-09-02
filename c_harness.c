@@ -326,11 +326,21 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
     size_t read_bytes = fread(content, 1, sz, f);
     content[read_bytes] = '\0';
     fclose(f);
-
     char *pos = strstr(content, old_text);
     if (!pos) {
         free(content);
         return strdup("Error: old_text was not found in the target file.");
+    }
+
+    char *second_pos = strstr(pos + strlen(old_text), old_text);
+    if (second_pos) {
+        size_t l1 = 1, l2 = 1;
+        for (const char *p = content; p < pos; p++) if (*p == '\n') l1++;
+        for (const char *p = content; p < second_pos; p++) if (*p == '\n') l2++;
+        free(content);
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error: old_text is ambiguous — matches found at line %zu and line %zu. Provide more surrounding context to disambiguate.", l1, l2);
+        return err.data;
     }
 
     size_t prefix_len = pos - content;
@@ -751,6 +761,26 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
     }
 
     return body.data;
+}
+
+static char *tool_save_skill(CAgent *agent, const JsonValue *args) {
+    const char *name = json_obj_get_str(args, "name");
+    const char *trigger = json_obj_get_str(args, "trigger");
+    const char *desc = json_obj_get_str(args, "description");
+    const char *instructions = json_obj_get_str(args, "instructions");
+
+    if (!name || !instructions) return strdup("Error: Missing required arguments (name, instructions).");
+    if (c_agent_save_skill(agent, name, trigger, desc, instructions)) {
+        DynString res = dyn_str_new();
+        dyn_str_appendf(&res, "Skill '%s' successfully saved to procedural memory with trigger '%s'.", name, trigger ? trigger : name);
+        return res.data;
+    }
+    return strdup("Error: Failed to save skill to database.");
+}
+
+static char *tool_recall_skill(CAgent *agent, const JsonValue *args) {
+    const char *query = json_obj_get_str(args, "query");
+    return c_agent_search_skills(agent, query ? query : "");
 }
 
 // Dynamic Custom Tool Execution Runner
@@ -1234,6 +1264,37 @@ CHarness *c_harness_init(CAgent *agent) {
     c_harness_register_tool(h, "fetch_url", "Fetch content from a web URL via HTTP GET",
         build_string_param_schema("url", "The full web URL to fetch"), PERM_ALLOW, tool_fetch_url);
 
+    // 15. save_skill (Procedural Skill Curation)
+    JsonValue *sk_params = json_create_object();
+    json_obj_add(sk_params, "type", json_create_string("object"));
+    JsonValue *sk_props = json_create_object();
+    JsonValue *sk_name = json_create_object();
+    json_obj_add(sk_name, "type", json_create_string("string"));
+    json_obj_add(sk_name, "description", json_create_string("Name of the procedural skill"));
+    json_obj_add(sk_props, "name", sk_name);
+    JsonValue *sk_trig = json_create_object();
+    json_obj_add(sk_trig, "type", json_create_string("string"));
+    json_obj_add(sk_trig, "description", json_create_string("Trigger phrase or keyword to activate the skill"));
+    json_obj_add(sk_props, "trigger", sk_trig);
+    JsonValue *sk_desc = json_create_object();
+    json_obj_add(sk_desc, "type", json_create_string("string"));
+    json_obj_add(sk_desc, "description", json_create_string("Short explanation of what the skill accomplishes"));
+    json_obj_add(sk_props, "description", sk_desc);
+    JsonValue *sk_inst = json_create_object();
+    json_obj_add(sk_inst, "type", json_create_string("string"));
+    json_obj_add(sk_inst, "description", json_create_string("Detailed step-by-step instructions for the agent to follow"));
+    json_obj_add(sk_props, "instructions", sk_inst);
+    json_obj_add(sk_params, "properties", sk_props);
+    JsonValue *sk_req = json_create_array();
+    json_arr_add(sk_req, json_create_string("name"));
+    json_arr_add(sk_req, json_create_string("instructions"));
+    json_obj_add(sk_params, "required", sk_req);
+    c_harness_register_tool(h, "save_skill", "Save a reusable procedural workflow skill into agent memory", sk_params, PERM_ALLOW, tool_save_skill);
+
+    // 16. recall_skill
+    c_harness_register_tool(h, "recall_skill", "Search and inspect saved procedural skills from memory",
+        build_string_param_schema("query", "Search term or trigger keyword"), PERM_ALLOW, tool_recall_skill);
+
     // Load any previously defined custom tools
     c_harness_load_custom_tools(h);
 
@@ -1328,6 +1389,11 @@ static void print_help(CHarness *h) {
     printf("  /sessions        List all checkpointed conversation sessions\n");
     printf("  /save [id]       Checkpoint conversation tree to SQLite\n");
     printf("  /resume <id>     Restore conversation session by ID\n");
+    printf("  /skills [query]  List or search saved procedural skills\n");
+    printf("  /checkpoint [id] Create a Git & conversation snapshot\n");
+    printf("  /rollback [id]   Instant rollback to checkpoint\n");
+    printf("  /export [id]     Export trajectory in OpenAI JSONL format\n");
+    printf("  /cache           View prompt cache economics & hit rates\n");
     printf("  /reflect         Distill recent trajectory into reusable SQLite FTS5 skill\n");
     printf("  /clear           Reset conversation history (preserves system prompt)\n");
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
@@ -1362,7 +1428,8 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     if (buf[0] == '/') {
         const char *commands[] = {
             "/help", "/status", "/tools", "/rules", "/timeline",
-            "/sessions", "/save", "/resume", "/reflect", "/clear",
+            "/sessions", "/save", "/resume", "/skills", "/checkpoint",
+            "/rollback", "/export", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/cwd", "/mcp", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -1478,6 +1545,68 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("Usage: /resume <session_id>. Type /sessions to list available sessions.\n\n");
                 }
+                continue;
+            }
+            if (strncmp(input_buf, "/skills", 7) == 0) {
+                const char *q = strlen(input_buf) > 7 ? input_buf + 7 : "";
+                while (*q == ' ') q++;
+                char *sk = c_agent_search_skills(h->agent, q);
+                printf("\n%s\n", sk ? sk : "No skills found.");
+                if (sk) free(sk);
+                continue;
+            }
+            if (strcmp(input_buf, "/checkpoints") == 0) {
+                char *cps = c_agent_list_checkpoints(h->agent);
+                printf("\n%s\n", cps ? cps : "");
+                if (cps) free(cps);
+                continue;
+            }
+            if (strncmp(input_buf, "/checkpoint", 11) == 0) {
+                const char *lbl = strlen(input_buf) > 11 ? input_buf + 11 : "";
+                while (*lbl == ' ') lbl++;
+                if (c_agent_create_checkpoint(h->agent, strlen(lbl) > 0 ? lbl : "manual")) {
+                    printf("\033[1;32mGit & state checkpoint created successfully.\033[0m\n\n");
+                } else {
+                    printf("\033[1;31mFailed to create checkpoint.\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/rollback", 9) == 0) {
+                const char *cid = strlen(input_buf) > 9 ? input_buf + 9 : "";
+                while (*cid == ' ') cid++;
+                if (c_agent_rollback_to_checkpoint(h->agent, strlen(cid) > 0 ? cid : NULL)) {
+                    printf("\033[1;32mRollback completed successfully (%zu messages active in context).\033[0m\n\n", h->agent->msg_count);
+                } else {
+                    printf("\033[1;31mRollback failed (no matching checkpoint found).\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/export", 7) == 0) {
+                char target_session[128] = {0};
+                char target_file[256] = {0};
+                const char *args = input_buf + 7;
+                while (*args == ' ') args++;
+                if (strlen(args) > 0) {
+                    sscanf(args, "%127s %255s", target_session, target_file);
+                }
+                const char *sid = strlen(target_session) > 0 ? target_session : NULL;
+                const char *outf = strlen(target_file) > 0 ? target_file : NULL;
+                if (c_agent_export_trajectory(h->agent, sid, outf)) {
+                    printf("\033[1;32mTrajectory exported to %s (OpenAI fine-tune JSONL format).\033[0m\n\n", outf ? outf : "trajectory_*.jsonl");
+                } else {
+                    printf("\033[1;31mFailed to export trajectory.\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strcmp(input_buf, "/cache") == 0) {
+                size_t total_p = h->agent->total_prompt_tokens;
+                size_t total_c = h->agent->total_cached_tokens;
+                double hit_rate = (total_p > 0) ? ((double)total_c / (double)total_p * 100.0) : 0.0;
+                printf("\n\033[1;36m=== Prompt Cache Economics ===\033[0m\n");
+                printf("Prompt Tokens:      \033[1;33m%zu\033[0m\n", total_p);
+                printf("Completion Tokens:  \033[1;33m%zu\033[0m\n", h->agent->total_completion_tokens);
+                printf("Cached Tokens:      \033[1;32m%zu\033[0m\n", total_c);
+                printf("Cache Hit Rate:     \033[1;32m%.2f%%\033[0m\n\n", hit_rate);
                 continue;
             }
             if (strcmp(input_buf, "/reflect") == 0) {
