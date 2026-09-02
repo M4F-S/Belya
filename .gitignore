@@ -16,3 +16,6 @@ test_broken.c
 # OS / Editor Artifacts
 .DS_Store
 *.dSYM/
+.env
+c_agent_system.bak.*
+run.sh
