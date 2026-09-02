@@ -40,19 +40,26 @@ static char *preflight_syntax_check(const char *path) {
     FILE *p = popen(cmd, "r");
     if (!p) return NULL;
 
-    DynString out = dyn_str_new();
+    DynString raw_out = dyn_str_new();
     char buf[512];
     while (fgets(buf, sizeof(buf), p)) {
-        dyn_str_append(&out, buf);
-        if (out.len > 8000) break;
+        dyn_str_append(&raw_out, buf);
+        if (raw_out.len > 8000) break;
     }
     int status = pclose(p);
 
-    if (status == 0 || out.len == 0) {
-        dyn_str_free(&out);
+    if (status == 0 || raw_out.len == 0) {
+        dyn_str_free(&raw_out);
         return NULL;
     }
-    return out.data;
+
+    DynString diag = dyn_str_new();
+    dyn_str_appendf(&diag, "%s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": ", raw_out.data, path);
+    dyn_str_append_escaped(&diag, raw_out.data);
+    dyn_str_append(&diag, "\n}");
+    dyn_str_free(&raw_out);
+
+    return diag.data;
 }
 
 // Built-in Native Tools
@@ -355,11 +362,10 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
     dyn_str_append_len(&updated, content, prefix_len);
     dyn_str_append_len(&updated, new_text, new_len);
     dyn_str_append_len(&updated, pos + old_len, suffix_len);
-    free(content);
-
     FILE *out_f = fopen(path, "wb");
     if (!out_f) {
         dyn_str_free(&updated);
+        free(content);
         return strdup("Error: Failed to open target file for writing.");
     }
 
@@ -370,11 +376,28 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
     DynString msg = dyn_str_new();
     dyn_str_appendf(&msg, "File '%s' successfully edited (replaced %zu bytes with %zu bytes).", path, old_len, new_len);
     char *diag = preflight_syntax_check(path);
+    bool verify_compile = json_obj_get_bool(args, "verify_compile", false);
+
     if (diag) {
+        if (verify_compile) {
+            // Auto-revert to original content!
+            FILE *rev_f = fopen(path, "wb");
+            if (rev_f) {
+                fwrite(content, 1, read_bytes, rev_f);
+                fclose(rev_f);
+            }
+            dyn_str_free(&msg);
+            DynString rev_msg = dyn_str_new();
+            dyn_str_appendf(&rev_msg, "⚠️ [Compile-Verify Guard]: Edit rejected because compilation failed (file auto-reverted to original content).\n\n%s", diag);
+            free(diag);
+            free(content);
+            return rev_msg.data;
+        }
         dyn_str_append(&msg, "\n\n⚠️ COMPILER WARNING/ERROR after edit:\n");
         dyn_str_append(&msg, diag);
         free(diag);
     }
+    free(content);
     return msg.data;
 }
 
@@ -670,13 +693,15 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     int turns = (int)max_turns_num;
     if (turns <= 0 || turns > 10) turns = 5;
 
-    DynString result_summary = dyn_str_new();
+    DynString tool_log = dyn_str_new();
+    DynString final_ans = dyn_str_new();
     bool running = true;
+    size_t tool_executions = 0;
 
     while (running && turns-- > 0) {
         ModelGatewayResponse resp = c_agent_step(sub_agent);
         if (!resp.has_tool_call) {
-            if (resp.content) dyn_str_append(&result_summary, resp.content);
+            if (resp.content) dyn_str_append(&final_ans, resp.content);
             running = false;
         } else {
             for (size_t i = 0; i < resp.tool_call_count; i++) {
@@ -694,6 +719,9 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
                     char *obs = matched->callback(sub_agent, p_args);
                     json_free(p_args);
                     c_agent_add_tool_result(sub_agent, tc->id, tc->name, obs);
+
+                    dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", obs ? obs : "");
+                    tool_executions++;
                     if (obs) free(obs);
                 } else {
                     c_agent_add_tool_result(sub_agent, tc->id, tc->name, "Tool not available in subagent sandbox.");
@@ -706,10 +734,18 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     c_harness_free(sub_harness);
     model_gateway_free(sub_gw);
 
-    if (result_summary.len == 0) {
-        dyn_str_append(&result_summary, "Subagent completed execution.");
+    DynString envelope = dyn_str_new();
+    dyn_str_appendf(&envelope, "=== Subagent Task Execution Envelope ===\nTask: %s\nTools Executed: %zu\n\n", task, tool_executions);
+    if (tool_log.len > 0) {
+        dyn_str_append(&envelope, "Execution Trace:\n");
+        dyn_str_append(&envelope, tool_log.data);
+        dyn_str_append(&envelope, "\n");
     }
-    return result_summary.data;
+    dyn_str_appendf(&envelope, "Final Output:\n%s", final_ans.len > 0 ? final_ans.data : "(Completed without final text)");
+    dyn_str_free(&tool_log);
+    dyn_str_free(&final_ans);
+
+    return envelope.data;
 }
 
 static size_t fetch_url_curl_sink(void *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -880,6 +916,33 @@ static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(out_pipe[1], STDERR_FILENO);
         close(out_pipe[1]);
+
+        // Explicit Environment Parameter Schema Contract
+        setenv("TOOL_ARGS_JSON", args_str, 1);
+        if (args && args->type == JSON_OBJECT) {
+            for (size_t m = 0; m < args->u.object.count; m++) {
+                const char *k = args->u.object.members[m].key;
+                JsonValue *v = args->u.object.members[m].value;
+                if (k && v) {
+                    char env_key1[256];
+                    char env_key2[256];
+                    snprintf(env_key1, sizeof(env_key1), "PARAM_%s", k);
+                    snprintf(env_key2, sizeof(env_key2), "ARG_%s", k);
+                    for (size_t c = 0; env_key1[c]; c++) {
+                        if (env_key1[c] >= 'a' && env_key1[c] <= 'z') env_key1[c] -= 32;
+                    }
+                    for (size_t c = 0; env_key2[c]; c++) {
+                        if (env_key2[c] >= 'a' && env_key2[c] <= 'z') env_key2[c] -= 32;
+                    }
+                    char *v_str = (v->type == JSON_STRING) ? strdup(v->u.string) : json_serialize(v);
+                    if (v_str) {
+                        setenv(env_key1, v_str, 1);
+                        setenv(env_key2, v_str, 1);
+                        free(v_str);
+                    }
+                }
+            }
+        }
 
         execl(script_path, script_path, first_val_str, args_str, (char *)NULL);
         // Fallback to /bin/sh if not directly executable binary
@@ -1179,13 +1242,17 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(e_new, "type", json_create_string("string"));
     json_obj_add(e_new, "description", json_create_string("New text to replace old_text with"));
     json_obj_add(e_props, "new_text", e_new);
+    JsonValue *e_vc = json_create_object();
+    json_obj_add(e_vc, "type", json_create_string("boolean"));
+    json_obj_add(e_vc, "description", json_create_string("If true, verifies compilation with preflight watchdog and auto-reverts file if compilation fails"));
+    json_obj_add(e_props, "verify_compile", e_vc);
     json_obj_add(edit_params, "properties", e_props);
     JsonValue *e_req = json_create_array();
     json_arr_add(e_req, json_create_string("path"));
     json_arr_add(e_req, json_create_string("old_text"));
     json_arr_add(e_req, json_create_string("new_text"));
     json_obj_add(edit_params, "required", e_req);
-    c_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file", edit_params, PERM_ALLOW, tool_edit_file);
+    c_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file (with optional verify_compile guard)", edit_params, PERM_ALLOW, tool_edit_file);
 
     // 5. apply_patch
     JsonValue *patch_params = json_create_object();
@@ -1312,7 +1379,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(d_req, json_create_string("description"));
     json_arr_add(d_req, json_create_string("script_body"));
     json_obj_add(def_params, "required", d_req);
-    c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool for self-evolution", def_params, PERM_ALLOW, tool_define_tool);
+    c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool (parameters mapped to $PARAM_<NAME>, $1, $2, and $TOOL_ARGS_JSON)", def_params, PERM_ALLOW, tool_define_tool);
 
     // 14. fetch_url (Native REST Web Client: GET, POST, PUT, DELETE, PATCH, Headers, Body)
     JsonValue *http_params = json_create_object();

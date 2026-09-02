@@ -357,11 +357,12 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
         char *clean_q = sanitize_fts5_query(query);
         sqlite3_stmt *stmt;
         const char *sql = 
-            "SELECT m.id, m.topic, m.content, m.wing, m.room, m.salience, m.access_count "
+            "SELECT m.id, m.topic, m.content, m.wing, m.room, MAX(m.salience), m.access_count "
             "FROM agent_memory m "
             "JOIN agent_memory_fts f ON m.rowid = f.rowid "
             "WHERE agent_memory_fts MATCH ? "
-            "ORDER BY (m.salience * 1.5 - rank) DESC LIMIT 5;";
+            "GROUP BY m.topic, m.content "
+            "ORDER BY (MAX(m.salience) * 1.5 - rank) DESC LIMIT 5;";
         
         if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, clean_q, -1, SQLITE_STATIC);
@@ -394,9 +395,10 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
 
     if (out.len == 0) {
         sqlite3_stmt *stmt;
-        const char *sql = "SELECT id, topic, content, wing, room, salience, access_count "
+        const char *sql = "SELECT id, topic, content, wing, room, MAX(salience), access_count "
                           "FROM agent_memory WHERE topic LIKE ? OR content LIKE ? OR wing LIKE ? OR room LIKE ? "
-                          "ORDER BY salience DESC, id DESC LIMIT 5;";
+                          "GROUP BY topic, content "
+                          "ORDER BY MAX(salience) DESC, id DESC LIMIT 5;";
         if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             char pattern[256];
             snprintf(pattern, sizeof(pattern), "%%%s%%", query ? query : "");
