@@ -92,7 +92,7 @@ TelegramBot *telegram_bot_init(const char *bot_token, const char *allowed_chat_i
 }
 
 bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char *text) {
-    if (!bot || !chat_id || !text) return false;
+    if (!bot || !chat_id || !text || strlen(text) == 0) return false;
 
     JsonValue *payload = json_create_object();
     json_obj_add(payload, "chat_id", json_create_string(chat_id));
@@ -101,6 +101,19 @@ bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char
     JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
     json_free(payload);
 
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    json_free(resp);
+    return ok;
+}
+
+bool telegram_bot_send_chat_action(TelegramBot *bot, const char *chat_id, const char *action) {
+    if (!bot || !chat_id || !action) return false;
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "action", json_create_string(action));
+    JsonValue *resp = telegram_http_post(bot, "sendChatAction", payload);
+    json_free(payload);
     if (!resp) return false;
     bool ok = json_obj_get_bool(resp, "ok", false);
     json_free(resp);
@@ -517,19 +530,28 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 int max_steps = 50;
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
+                    telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                     ModelGatewayResponse resp = c_agent_step(harness->agent);
 
+                    // Send any assistant text/reasoning immediately
+                    if (resp.content && strlen(resp.content) > 0) {
+                        telegram_bot_send_chunks(bot, chat_id_str, resp.content);
+                    }
+
                     if (!resp.has_tool_call) {
-                        if (resp.content && strlen(resp.content) > 0) {
-                            telegram_bot_send_chunks(bot, chat_id_str, resp.content);
-                        } else {
-                            telegram_bot_send_message(bot, chat_id_str, "Action completed.");
+                        if (!resp.content || strlen(resp.content) == 0) {
+                            telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
                         }
                         turn_running = false;
                     } else {
                         for (size_t k = 0; k < resp.tool_call_count; k++) {
                             ModelParsedToolCall *tc = &resp.tool_calls[k];
                             printf("[Bot Tool Call]: %s(%s)\n", tc->name, tc->arguments_json);
+
+                            // Send live tool progress notification to Telegram user
+                            char tool_msg[512];
+                            snprintf(tool_msg, sizeof(tool_msg), "⚙️ <i>Executing:</i> <code>%s</code>", tc->name);
+                            telegram_bot_send_message(bot, chat_id_str, tool_msg);
 
                             CHarnessRegisteredTool *matched = NULL;
                             for (size_t t = 0; t < harness->tool_count; t++) {
