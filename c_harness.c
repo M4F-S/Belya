@@ -1825,93 +1825,99 @@ void c_harness_repl(CHarness *h) {
             continue;
         }
 
-        c_agent_add_message(h->agent, "user", input_buf);
+        c_harness_execute_turn(h, input_buf);
+    }
+}
 
-        // Turn Execution Cycle
-        bool turn_running = true;
-        int max_steps = 50;
-        size_t total_tools_in_turn = 0;
+void c_harness_execute_turn(CHarness *h, const char *prompt) {
+    if (!h || !prompt || strlen(prompt) == 0) return;
 
-        while (turn_running && max_steps-- > 0) {
+    c_agent_add_message(h->agent, "user", prompt);
+
+    // Turn Execution Cycle
+    bool turn_running = true;
+    int max_steps = 50;
+    size_t total_tools_in_turn = 0;
+
+    while (turn_running && max_steps-- > 0) {
+        if (!h->agent->gateway->streaming) {
+            printf("\033[0;33m[Thinking...]\033[0m\n");
+        }
+        ModelGatewayResponse resp = c_agent_step(h->agent);
+
+        if (!resp.has_tool_call) {
             if (!h->agent->gateway->streaming) {
-                printf("\033[0;33m[Thinking...]\033[0m\n");
-            }
-            ModelGatewayResponse resp = c_agent_step(h->agent);
-
-            if (!resp.has_tool_call) {
-                if (!h->agent->gateway->streaming) {
-                    printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
-                } else {
-                    printf("\n\n");
-                }
-
-                bool is_final_report = false;
-                if (resp.content && (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
-                    strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
-                    strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
-                    strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
-                    strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete"))) {
-                    is_final_report = true;
-                }
-
-                if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
-                    c_agent_add_message(h->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
-                    turn_running = true;
-                } else {
-                    turn_running = false;
-                }
+                printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
             } else {
-                total_tools_in_turn += resp.tool_call_count;
-                for (size_t i = 0; i < resp.tool_call_count; i++) {
-                    ModelParsedToolCall *tc = &resp.tool_calls[i];
-                    printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
+                printf("\n\n");
+            }
 
-                    CHarnessRegisteredTool *matched = NULL;
-                    for (size_t t = 0; t < h->tool_count; t++) {
-                        if (strcmp(h->tools[t].name, tc->name) == 0) {
-                            matched = &h->tools[t];
-                            break;
-                        }
+            bool is_final_report = false;
+            if (resp.content && (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
+                strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
+                strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
+                strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
+                strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete"))) {
+                is_final_report = true;
+            }
+
+            if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
+                c_agent_add_message(h->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
+                turn_running = true;
+            } else {
+                turn_running = false;
+            }
+        } else {
+            total_tools_in_turn += resp.tool_call_count;
+            for (size_t i = 0; i < resp.tool_call_count; i++) {
+                ModelParsedToolCall *tc = &resp.tool_calls[i];
+                printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
+
+                CHarnessRegisteredTool *matched = NULL;
+                for (size_t t = 0; t < h->tool_count; t++) {
+                    if (strcmp(h->tools[t].name, tc->name) == 0) {
+                        matched = &h->tools[t];
+                        break;
                     }
+                }
 
-                    if (!matched || matched->security == PERM_DENY) {
-                        printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
-                        c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                if (!matched || matched->security == PERM_DENY) {
+                    printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
+                    c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                    continue;
+                }
+
+                if (matched->security == PERM_ASK_USER) {
+                    bool permitted = false;
+                    if (h->permission_prompt_fn) {
+                        permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);
+                    } else {
+                        permitted = harness_ask_permission(tc->name, tc->arguments_json);
+                    }
+                    if (!permitted) {
+                        printf("\033[1;31m[Rejected]: Operation cancelled by operator.\033[0m\n");
+                        c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
                         continue;
                     }
-
-                    if (matched->security == PERM_ASK_USER) {
-                        bool permitted = false;
-                        if (h->permission_prompt_fn) {
-                            permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);
-                        } else {
-                            permitted = harness_ask_permission(tc->name, tc->arguments_json);
-                        }
-                        if (!permitted) {
-                            printf("\033[1;31m[Rejected]: Operation cancelled by operator.\033[0m\n");
-                            c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
-                            continue;
-                        }
-                    }
-
-                    JsonValue *args_parsed = json_parse(tc->arguments_json);
-                    char *observation = NULL;
-                    g_active_custom_script_path = matched->custom_script_path;
-                    if (matched->mcp_client) {
-                        observation = mcp_client_call_tool(matched->mcp_client, tc->name, args_parsed);
-                    } else if (matched->callback) {
-                        observation = matched->callback(h->agent, args_parsed);
-                    }
-                    g_active_custom_script_path = NULL;
-                    json_free(args_parsed);
-
-                    printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
-                    c_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
-                    if (observation) free(observation);
                 }
+
+                JsonValue *args_parsed = json_parse(tc->arguments_json);
+                char *observation = NULL;
+                g_active_custom_script_path = matched->custom_script_path;
+                if (matched->mcp_client) {
+                    observation = mcp_client_call_tool(matched->mcp_client, tc->name, args_parsed);
+                } else if (matched->callback) {
+                    observation = matched->callback(h->agent, args_parsed);
+                }
+                g_active_custom_script_path = NULL;
+                json_free(args_parsed);
+
+                printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
+                c_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
+                if (observation) free(observation);
             }
-            model_gateway_response_free(&resp);
         }
+        model_gateway_response_free(&resp);
     }
 }
 

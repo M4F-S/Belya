@@ -42,6 +42,7 @@ bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *des
 void c_harness_load_custom_tools(CHarness *h);
 bool c_harness_connect_mcp(CHarness *h, const char *server_cmd);
 void c_harness_repl(CHarness *h);
+void c_harness_execute_turn(CHarness *h, const char *prompt);
 void c_harness_free(CHarness *h);
 
 extern const char *g_active_custom_script_path;

@@ -497,29 +497,19 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
         // 2. If no <tool_call> tags were found in this source, scan for raw JSON objects
         if (count == initial_count) {
             p = src;
-            while (*p) {
-                const char *cand1 = strstr(p, "{\"name\"");
-                const char *cand2 = strstr(p, "{\"tool\"");
-                const char *cand3 = strstr(p, "{\"action\"");
-                const char *cand4 = strstr(p, "{ \"name\"");
-                const char *cand = NULL;
-
-                if (cand1 && (!cand || cand1 < cand)) cand = cand1;
-                if (cand2 && (!cand || cand2 < cand)) cand = cand2;
-                if (cand3 && (!cand || cand3 < cand)) cand = cand3;
-                if (cand4 && (!cand || cand4 < cand)) cand = cand4;
-
-                if (!cand) break;
-
+            while ((p = strchr(p, '{')) != NULL) {
                 size_t next_off = 0;
-                char *json_obj_str = extract_json_object(cand, &next_off);
+                char *json_obj_str = extract_json_object(p, &next_off);
                 if (json_obj_str && next_off > 0) {
+                    size_t prev_count = count;
                     try_add_scavenged_call(json_obj_str, known_tool_names, known_count, out_calls, &count, &cap);
                     free(json_obj_str);
-                    p = cand + next_off;
-                } else {
-                    p = cand + 7;
+                    if (count > prev_count) {
+                        p += next_off;
+                        continue;
+                    }
                 }
+                p++;
             }
         }
     }

@@ -9,6 +9,9 @@ TARGET = c_agent_system
 TEST_SRCS = linenoise.c minijson.c mcp_client.c model_adapter.c c_agent.c c_harness.c telegram_adapter.c test_suite.c
 TEST_TARGET = test_runner
 
+BENCHMARK_SRCS = linenoise.c minijson.c mcp_client.c model_adapter.c c_agent.c c_harness.c telegram_adapter.c benchmark_runner.c
+BENCHMARK_TARGET = c_agent_benchmark
+
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
@@ -23,7 +26,14 @@ test: $(TEST_TARGET)
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIBS)
 
-clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) c_agent_memory.sqlite test_agent_memory.sqlite test_harness_mem.sqlite test_sample.txt .charness_history
+benchmark: $(BENCHMARK_TARGET) $(TARGET)
+	./$(BENCHMARK_TARGET)
 
-.PHONY: all test clean
+$(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
+	$(CC) $(CFLAGS) -o $@ $(BENCHMARK_SRCS) $(LIBS)
+
+clean:
+	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(BENCHMARK_TARGET) c_agent_memory.sqlite test_agent_memory.sqlite test_harness_mem.sqlite test_sample.txt bench_mem.sqlite* .charness_history
+
+.PHONY: all test benchmark clean
+

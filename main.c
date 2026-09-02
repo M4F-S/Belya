@@ -8,12 +8,25 @@ int main(int argc, char **argv) {
 
     bool telegram_mode = false;
     const char *resume_session_id = NULL;
+    const char *headless_prompt = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: c_agent_system [OPTIONS]\n\n");
+            printf("Options:\n");
+            printf("  -h, --help                 Show this help message\n");
+            printf("  -t, --telegram             Run as Telegram bot daemon\n");
+            printf("  -r, --resume <session_id>  Resume saved conversation session\n");
+            printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
+            printf("  --headless <prompt>        Alias for --prompt\n");
+            printf("  --eval <prompt>            Alias for --prompt\n\n");
+            return 0;
+        } else if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0) {
             telegram_mode = true;
         } else if ((strcmp(argv[i], "--resume") == 0 || strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--session") == 0) && i + 1 < argc) {
             resume_session_id = argv[++i];
+        } else if ((strcmp(argv[i], "--headless") == 0 || strcmp(argv[i], "--eval") == 0 || strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
+            headless_prompt = argv[++i];
         }
     }
 
@@ -84,6 +97,9 @@ int main(int argc, char **argv) {
         TelegramBot *bot = telegram_bot_init(tg_token, tg_chat_id);
         telegram_bot_run(bot, harness);
         telegram_bot_free(bot);
+    } else if (headless_prompt) {
+        printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
+        c_harness_execute_turn(harness, headless_prompt);
     } else {
         printf("Starting CHarness with endpoint: %s (Model: %s)\n", endpoint, model);
         c_harness_repl(harness);

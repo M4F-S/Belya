@@ -2,6 +2,8 @@
 *.o
 c_agent_system
 test_runner
+c_agent_benchmark
+bench_*
 
 # SQLite Databases & Test Artifacts
 *.sqlite
