@@ -32,6 +32,14 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     agent->turn_count = 0;
     agent->turns_since_save = 0;
 
+    // Configurable compaction thresholds from environment
+    const char *comp_pct_env = getenv("COMPACTION_PERCENT");
+    agent->compaction_percent = (comp_pct_env && atoi(comp_pct_env) > 0 && atoi(comp_pct_env) <= 100)
+                                ? (size_t)atoi(comp_pct_env) : 80;
+    const char *comp_keep_env = getenv("COMPACTION_KEEP");
+    agent->compaction_keep = (comp_keep_env && atoi(comp_keep_env) > 0)
+                             ? (size_t)atoi(comp_keep_env) : 10;
+
     // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
         // Enable WAL mode for better concurrent read performance
@@ -676,15 +684,81 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
     }
     // Check if context window auto-pruning or token budget compaction is needed
     if (agent->msg_count > 1) {
+        bool needs_compaction = false;
+        size_t keep = 10;  // default
+        const char *reason = NULL;
+
         if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages) {
-            size_t keep = agent->max_context_messages > 20 ? 20 : agent->max_context_messages / 2;
-            c_agent_compact_history(agent, keep);
+            keep = agent->max_context_messages > 20 ? 20 : agent->max_context_messages / 2;
+            needs_compaction = true;
+            reason = "message count limit";
         }
         size_t est_tokens = c_agent_total_tokens(agent);
         size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
-        if (est_tokens > (budget * 80 / 100) && agent->msg_count > 10) {
-            c_agent_compact_history(agent, 10);
-            c_agent_log_timeline(agent, "auto_compaction", "Compacted context to 10 messages (80% token budget reached)");
+        if (est_tokens > (budget * agent->compaction_percent / 100) && agent->msg_count > agent->compaction_keep) {
+            keep = agent->compaction_keep;
+            needs_compaction = true;
+            reason = "token budget threshold";
+        }
+
+        if (needs_compaction && agent->db) {
+            // Before dropping messages, save their content as a memory entry
+            size_t drop_count = agent->msg_count - 1 - keep;
+            if (drop_count > 0) {
+                DynString dropped = dyn_str_new();
+                dyn_str_append(&dropped, "### Archived Conversation (pre-compaction)\n\n");
+                // Skip system message (index 0), save user+assistant messages being dropped
+                for (size_t i = 1; i < agent->msg_count - keep; i++) {
+                    const char *role = agent->messages[i].role ? agent->messages[i].role : "unknown";
+                    const char *content = agent->messages[i].content ? agent->messages[i].content : "";
+                    dyn_str_appendf(&dropped, "**%s**:\n%s\n\n", role, content);
+
+                    // Also include tool calls if present
+                    if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+                        for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                            dyn_str_appendf(&dropped, "  - Tool: %s(%s)\n",
+                                agent->messages[i].tool_calls[k].name ? agent->messages[i].tool_calls[k].name : "",
+                                agent->messages[i].tool_calls[k].arguments_json ? agent->messages[i].tool_calls[k].arguments_json : "");
+                        }
+                    }
+
+                    if (dropped.len > 50000) {
+                        dyn_str_append(&dropped, "... [truncated at 50KB]\n");
+                        break;
+                    }
+                }
+
+                // Extract a topic from the first user message being dropped
+                char topic[128];
+                const char *first_user = NULL;
+                for (size_t i = 1; i < agent->msg_count - keep; i++) {
+                    if (agent->messages[i].role && strcmp(agent->messages[i].role, "user") == 0 &&
+                        agent->messages[i].content && strlen(agent->messages[i].content) > 10) {
+                        first_user = agent->messages[i].content;
+                        break;
+                    }
+                }
+                if (first_user) {
+                    size_t tlen = strlen(first_user);
+                    if (tlen > 80) { memcpy(topic, first_user, 77); topic[77] = '.'; topic[78] = '.'; topic[79] = '.'; topic[80] = '\0'; }
+                    else { snprintf(topic, sizeof(topic), "%s", first_user); }
+                } else {
+                    snprintf(topic, sizeof(topic), "Compacted conversation (turn %zu)", agent->turn_count);
+                }
+
+                c_agent_persist_memory(agent, topic, dropped.data);
+                dyn_str_free(&dropped);
+                c_agent_log_timeline(agent, "memory_before_compaction", topic);
+            }
+
+            // Now compact
+            c_agent_compact_history(agent, keep);
+
+            // Log the compaction
+            char comp_msg[128];
+            snprintf(comp_msg, sizeof(comp_msg),
+                "Compacted context to %zu messages (%s)", keep, reason ? reason : "unknown");
+            c_agent_log_timeline(agent, "auto_compaction", comp_msg);
         }
     }
 

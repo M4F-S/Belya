@@ -32,6 +32,8 @@ typedef struct CAgent {
     size_t turn_count;          /* Total steps taken */
     size_t auto_save_interval;  /* Auto-save every N turns (0=disabled) */
     size_t turns_since_save;    /* Turns since last auto-save */
+    size_t compaction_percent;  /* Token budget % that triggers compaction (default 80) */
+    size_t compaction_keep;     /* Messages to keep after compaction (default 10) */
 } CAgent;
 
 CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions);

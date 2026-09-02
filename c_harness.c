@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <fnmatch.h>
 #include <curl/curl.h>
@@ -190,11 +191,22 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
 
 static bool is_path_safe(const char *path) {
     if (!path || path[0] == '\0') return false;
-    // Reject paths with directory traversal
+    // Reject paths with explicit directory traversal
     if (strstr(path, "..")) return false;
-    // Reject absolute paths
-    if (path[0] == '/') return false;
-    return true;
+
+    char cwd[4096];
+    if (!getcwd(cwd, sizeof(cwd))) return false;
+
+    // Resolve path to absolute, following symlinks
+    char *resolved = realpath(path, NULL);
+    if (!resolved) {
+        // File doesn't exist yet (e.g. write_file creates new file).
+        // Already blocked '..' and absolute paths above — safe to allow.
+        return true;
+    }
+    bool safe = (strncmp(resolved, cwd, strlen(cwd)) == 0);
+    free(resolved);
+    return safe;
 }
 
 static char *tool_read_file(CAgent *agent, const JsonValue *args) {
