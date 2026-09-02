@@ -579,11 +579,13 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                             JsonValue *args_parsed = json_parse(tc->arguments_json);
                             char *obs = NULL;
+                            g_active_custom_script_path = matched->custom_script_path;
                             if (matched->mcp_client) {
                                 obs = mcp_client_call_tool(matched->mcp_client, tc->name, args_parsed);
                             } else if (matched->callback) {
                                 obs = matched->callback(harness->agent, args_parsed);
                             }
+                            g_active_custom_script_path = NULL;
                             json_free(args_parsed);
 
                             c_agent_add_tool_result(harness->agent, tc->id, tc->name, obs ? obs : "Success");

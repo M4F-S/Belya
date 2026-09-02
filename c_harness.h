@@ -44,4 +44,6 @@ bool c_harness_connect_mcp(CHarness *h, const char *server_cmd);
 void c_harness_repl(CHarness *h);
 void c_harness_free(CHarness *h);
 
+extern const char *g_active_custom_script_path;
+
 #endif

@@ -14,6 +14,7 @@
 #include <curl/curl.h>
 
 static CHarness *g_harness = NULL;
+const char *g_active_custom_script_path = NULL;
 
 static void safe_pipe_write(int fd, const char *data, size_t len) {
     while (len > 0) {
@@ -827,12 +828,10 @@ static char *tool_recall_conversation(CAgent *agent, const JsonValue *args) {
 // Dynamic Custom Tool Execution Runner
 static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
     (void)agent;
-    // Find matching custom tool path from harness
-    const char *script_path = NULL;
-    if (g_harness) {
-        for (size_t i = 0; i < g_harness->tool_count; i++) {
+    const char *script_path = g_active_custom_script_path;
+    if (!script_path && g_harness && g_harness->tool_count > 0) {
+        for (int i = (int)g_harness->tool_count - 1; i >= 0; i--) {
             if (g_harness->tools[i].custom_script_path) {
-                // If callback matches or was invoked
                 script_path = g_harness->tools[i].custom_script_path;
                 break;
             }
@@ -1813,11 +1812,13 @@ void c_harness_repl(CHarness *h) {
 
                     JsonValue *args_parsed = json_parse(tc->arguments_json);
                     char *observation = NULL;
+                    g_active_custom_script_path = matched->custom_script_path;
                     if (matched->mcp_client) {
                         observation = mcp_client_call_tool(matched->mcp_client, tc->name, args_parsed);
                     } else if (matched->callback) {
                         observation = matched->callback(h->agent, args_parsed);
                     }
+                    g_active_custom_script_path = NULL;
                     json_free(args_parsed);
 
                     printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
