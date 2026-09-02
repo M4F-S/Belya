@@ -1682,7 +1682,7 @@ void c_harness_repl(CHarness *h) {
 
         // Turn Execution Cycle
         bool turn_running = true;
-        int max_steps = 10;
+        int max_steps = 50;
 
         while (turn_running && max_steps-- > 0) {
             if (!h->agent->gateway->streaming) {

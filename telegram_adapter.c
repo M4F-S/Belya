@@ -514,7 +514,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 c_agent_add_message(harness->agent, "user", text);
 
                 bool turn_running = true;
-                int max_steps = 10;
+                int max_steps = 50;
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     ModelGatewayResponse resp = c_agent_step(harness->agent);
