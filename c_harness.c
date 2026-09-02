@@ -1763,6 +1763,7 @@ void c_harness_repl(CHarness *h) {
         // Turn Execution Cycle
         bool turn_running = true;
         int max_steps = 50;
+        size_t total_tools_in_turn = 0;
 
         while (turn_running && max_steps-- > 0) {
             if (!h->agent->gateway->streaming) {
@@ -1776,8 +1777,24 @@ void c_harness_repl(CHarness *h) {
                 } else {
                     printf("\n\n");
                 }
-                turn_running = false;
+
+                bool is_final_report = false;
+                if (resp.content && (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
+                    strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
+                    strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
+                    strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
+                    strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete"))) {
+                    is_final_report = true;
+                }
+
+                if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
+                    c_agent_add_message(h->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
+                    turn_running = true;
+                } else {
+                    turn_running = false;
+                }
             } else {
+                total_tools_in_turn += resp.tool_call_count;
                 for (size_t i = 0; i < resp.tool_call_count; i++) {
                     ModelParsedToolCall *tc = &resp.tool_calls[i];
                     printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);

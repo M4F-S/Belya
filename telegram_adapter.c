@@ -528,6 +528,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                 bool turn_running = true;
                 int max_steps = 50;
+                size_t total_tools_in_turn = 0;
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
@@ -543,26 +544,24 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                             telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
                             turn_running = false;
                         } else {
-                            bool is_intermediate = false;
-                            if (strstr(resp.content, "Stage ") || strstr(resp.content, "Step ") ||
-                                strstr(resp.content, "Next,") || strstr(resp.content, "Proceeding to") ||
-                                strstr(resp.content, "Moving on to") || strstr(resp.content, "I will now")) {
-                                if (!strstr(resp.content, "Stage 10") && !strstr(resp.content, "Step 10") &&
-                                    !strstr(resp.content, "All 10") && !strstr(resp.content, "All steps") &&
-                                    !strstr(resp.content, "Final Summary") && !strstr(resp.content, "Consolidated Report") &&
-                                    !strstr(resp.content, "100% complete") && !strstr(resp.content, "100% Complete")) {
-                                    is_intermediate = true;
-                                }
+                            bool is_final_report = false;
+                            if (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
+                                strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
+                                strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
+                                strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
+                                strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete")) {
+                                is_final_report = true;
                             }
 
-                            if (is_intermediate && max_steps > 0) {
-                                c_agent_add_message(harness->agent, "user", "Continue immediately with the remaining steps using tool calls.");
+                            if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
+                                c_agent_add_message(harness->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
                                 turn_running = true;
                             } else {
                                 turn_running = false;
                             }
                         }
                     } else {
+                        total_tools_in_turn += resp.tool_call_count;
                         for (size_t k = 0; k < resp.tool_call_count; k++) {
                             ModelParsedToolCall *tc = &resp.tool_calls[k];
                             printf("[Bot Tool Call]: %s(%s)\n", tc->name, tc->arguments_json);
