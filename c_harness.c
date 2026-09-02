@@ -98,6 +98,7 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
     }
 
     DynString full_cmd_ds = dyn_str_new();
+    dyn_str_append(&full_cmd_ds, "export PAGER=cat SYSTEMD_PAGER=cat LESS=-R && ");
     if (g_harness && strlen(g_harness->cwd) > 0) {
         dyn_str_appendf(&full_cmd_ds, "cd \"%s\" && %s", g_harness->cwd, cmd);
     } else {
