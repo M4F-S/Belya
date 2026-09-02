@@ -816,6 +816,20 @@ static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
         return strdup("Error: Failed to fork process for custom tool.");
     }
 
+    const char *first_val_str = NULL;
+    if (args && args->type == JSON_OBJECT && args->u.object.count > 0) {
+        first_val_str = json_obj_get_str(args, "input");
+        if (!first_val_str) first_val_str = json_obj_get_str(args, "arg");
+        if (!first_val_str) first_val_str = json_obj_get_str(args, "value");
+        if (!first_val_str) first_val_str = json_obj_get_str(args, "text");
+        if (!first_val_str) first_val_str = json_obj_get_str(args, "command");
+        if (!first_val_str) first_val_str = json_obj_get_str(args, "query");
+        if (!first_val_str && args->u.object.members[0].value && args->u.object.members[0].value->type == JSON_STRING) {
+            first_val_str = args->u.object.members[0].value->u.string;
+        }
+    }
+    if (!first_val_str) first_val_str = args_str;
+
     if (pid == 0) {
         // Child
         close(in_pipe[1]);
@@ -827,9 +841,9 @@ static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
         dup2(out_pipe[1], STDERR_FILENO);
         close(out_pipe[1]);
 
-        execl(script_path, script_path, (char *)NULL);
+        execl(script_path, script_path, first_val_str, args_str, (char *)NULL);
         // Fallback to /bin/sh if not directly executable binary
-        execl("/bin/sh", "sh", script_path, (char *)NULL);
+        execl("/bin/sh", "sh", script_path, first_val_str, args_str, (char *)NULL);
         _exit(127);
     }
 
