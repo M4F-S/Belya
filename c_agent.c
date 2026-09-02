@@ -876,7 +876,8 @@ bool c_agent_rollback_to_checkpoint(CAgent *agent, const char *checkpoint_id) {
     if (sha && strlen(sha) == 40) {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "git checkout %s -- . 2>/dev/null || git restore --source=%s . 2>/dev/null", sha, sha);
-        system(cmd);
+        int ret = system(cmd);
+        (void)ret;
     }
 
     if (target_msg_count > 0 && (size_t)target_msg_count < agent->msg_count) {
@@ -1000,7 +1001,7 @@ bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char
     json_free(root);
     fclose(f);
 
-    char summary[256];
+    char summary[512];
     snprintf(summary, sizeof(summary), "Trajectory exported to %s", out_path);
     c_agent_log_timeline(agent, "trajectory_exported", summary);
     return true;
