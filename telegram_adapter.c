@@ -541,8 +541,27 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     if (!resp.has_tool_call) {
                         if (!resp.content || strlen(resp.content) == 0) {
                             telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
+                            turn_running = false;
+                        } else {
+                            bool is_intermediate = false;
+                            if (strstr(resp.content, "Stage ") || strstr(resp.content, "Step ") ||
+                                strstr(resp.content, "Next,") || strstr(resp.content, "Proceeding to") ||
+                                strstr(resp.content, "Moving on to") || strstr(resp.content, "I will now")) {
+                                if (!strstr(resp.content, "Stage 10") && !strstr(resp.content, "Step 10") &&
+                                    !strstr(resp.content, "All 10") && !strstr(resp.content, "All steps") &&
+                                    !strstr(resp.content, "Final Summary") && !strstr(resp.content, "Consolidated Report") &&
+                                    !strstr(resp.content, "100% complete") && !strstr(resp.content, "100% Complete")) {
+                                    is_intermediate = true;
+                                }
+                            }
+
+                            if (is_intermediate && max_steps > 0) {
+                                c_agent_add_message(harness->agent, "user", "Continue immediately with the remaining steps using tool calls.");
+                                turn_running = true;
+                            } else {
+                                turn_running = false;
+                            }
                         }
-                        turn_running = false;
                     } else {
                         for (size_t k = 0; k < resp.tool_call_count; k++) {
                             ModelParsedToolCall *tc = &resp.tool_calls[k];

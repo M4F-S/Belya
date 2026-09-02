@@ -1,5 +1,6 @@
 #include "c_agent.h"
 #include <time.h>
+#include <ctype.h>
 
 static void free_single_message(AgentMessage *m) {
     if (!m) return;
@@ -284,7 +285,9 @@ void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char 
     if (agent->has_fts5) {
         const char *fts_insert = "INSERT INTO agent_memory_fts (topic, content) VALUES (?, ?);";
         if (sqlite3_prepare_v2(agent->db, fts_insert, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, topic, -1, SQLITE_STATIC);
+            char fts_top[512];
+            snprintf(fts_top, sizeof(fts_top), "%s %s %s", w, r, topic);
+            sqlite3_bind_text(stmt, 1, fts_top, -1, SQLITE_STATIC);
             sqlite3_bind_text(stmt, 2, content, -1, SQLITE_STATIC);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
@@ -321,11 +324,26 @@ void c_agent_persist_memory(CAgent *agent, const char *topic, const char *conten
     c_agent_persist_memory_scoped(agent, actual_topic, content, wing, room);
 }
 
+static char *sanitize_fts5_query(const char *raw) {
+    if (!raw) return strdup("");
+    DynString ds = dyn_str_new();
+    for (size_t i = 0; raw[i]; i++) {
+        char c = raw[i];
+        if (isalnum((unsigned char)c) || c == ' ' || c == '_' || c == '-') {
+            dyn_str_append_len(&ds, &c, 1);
+        } else {
+            dyn_str_append_len(&ds, " ", 1);
+        }
+    }
+    return ds.data;
+}
+
 char *c_agent_search_memory(CAgent *agent, const char *query) {
     if (!agent->db) return strdup("Memory database not active.");
     DynString out = dyn_str_new();
 
     if (agent->has_fts5 && query && strlen(query) > 0) {
+        char *clean_q = sanitize_fts5_query(query);
         sqlite3_stmt *stmt;
         const char *sql = 
             "SELECT m.id, m.topic, m.content, m.wing, m.room, m.salience, m.access_count "
@@ -335,7 +353,7 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
             "ORDER BY (m.salience * 1.5 - rank) DESC LIMIT 5;";
         
         if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, query, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 1, clean_q, -1, SQLITE_STATIC);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 int mid = sqlite3_column_int(stmt, 0);
                 const char *top = (const char *)sqlite3_column_text(stmt, 1);
@@ -360,6 +378,7 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
             }
             sqlite3_finalize(stmt);
         }
+        free(clean_q);
     }
 
     if (out.len == 0) {
