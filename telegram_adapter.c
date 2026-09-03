@@ -608,10 +608,10 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                             if (status_msg_id == 0) {
                                 status_msg_id = telegram_bot_send_status_message(bot, chat_id_str, status_buf);
-                                strncpy(last_status_text, status_buf, sizeof(last_status_text) - 1);
+                                snprintf(last_status_text, sizeof(last_status_text), "%s", status_buf);
                             } else if (strcmp(last_status_text, status_buf) != 0) {
                                 telegram_bot_edit_message(bot, chat_id_str, status_msg_id, status_buf);
-                                strncpy(last_status_text, status_buf, sizeof(last_status_text) - 1);
+                                snprintf(last_status_text, sizeof(last_status_text), "%s", status_buf);
                             }
 
                             CHarnessRegisteredTool *matched = NULL;
