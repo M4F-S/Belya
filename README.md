@@ -291,11 +291,11 @@ Execute automated one-shot missions directly from the terminal or in CI/CD pipel
 Use `Belya Harness` purely as an embedded C99 execution engine for external agents, scripts, or Python/Node runtimes.
 
 ```c
-#include "c_harness.h"
+#include "belya_harness.h"
 
 int main(void) {
     // Initialize standalone sandbox without an LLM
-    Belya Harness *h = c_harness_init(NULL);
+    BelyaHarness *h = belya_harness_init(NULL);
 
     // Prepare tool arguments
     JsonValue *args = json_create_object();
@@ -312,7 +312,7 @@ int main(void) {
     }
 
     json_free(args);
-    c_harness_free(h);
+    belya_harness_free(h);
     return 0;
 }
 ```

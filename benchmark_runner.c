@@ -235,7 +235,7 @@ static void benchmark_arena1_tool_calling(void) {
             "        {\n"
             "          \"id\": \"call_m2\",\n"
             "          \"type\": \"function\",\n"
-            "          \"function\": { \"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"c_harness.h\\\"}\" }\n"
+            "          \"function\": { \"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"belya_harness.h\\\"}\" }\n"
             "        }\n"
             "      ]\n"
             "    }\n"
