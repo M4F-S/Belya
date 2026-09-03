@@ -129,7 +129,8 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             "Core Rules:\n"
             "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
             "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
-            "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n\n"
+            "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
+            "4. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n\n"
             "Execution Protocol:\n"
             "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
             "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
@@ -139,8 +140,8 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
         );
     }
 
-    // Check for repository guidelines (.agentrules / AGENT.md / CLAUDE.md)
-    const char *rules_files[] = {".agentrules", "AGENT.md", "CLAUDE.md", NULL};
+    // Check for repository guidelines (.agentrules / AGENT.md / AGENTS.md / GEMINI.md / CLAUDE.md)
+    const char *rules_files[] = {".agentrules", "AGENT.md", "AGENTS.md", "GEMINI.md", "CLAUDE.md", NULL};
     for (int rf = 0; rules_files[rf]; rf++) {
         FILE *rfp = fopen(rules_files[rf], "r");
         if (rfp) {
