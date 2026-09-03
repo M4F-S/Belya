@@ -1,7 +1,35 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
 
+static void load_env_file(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\r' || *p == '\n' || *p == '\0') continue;
+        char *eq = strchr(p, '=');
+        if (eq) {
+            *eq = '\0';
+            char *key = p;
+            char *val = eq + 1;
+            char *end_key = key + strlen(key) - 1;
+            while (end_key > key && (*end_key == ' ' || *end_key == '\t')) *end_key-- = '\0';
+            while (*val == ' ' || *val == '\t') val++;
+            char *end_val = val + strlen(val) - 1;
+            while (end_val >= val && (*end_val == '\r' || *end_val == '\n' || *end_val == ' ' || *end_val == '\t')) *end_val-- = '\0';
+            if (strlen(key) > 0 && strlen(val) > 0) {
+                setenv(key, val, 0); // 0 means do not overwrite already set environment variables
+            }
+        }
+    }
+    fclose(fp);
+}
+
 int main(int argc, char **argv) {
+    load_env_file(".env");
+
     // Unbuffered stdout for systemd journal visibility
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -59,13 +87,14 @@ int main(int argc, char **argv) {
     // 2. Initialize Belya Agent with persistent SQLite memory & Strategic Execution Directives
     const char *default_system_prompt =
         "Role & Objective:\n"
-        "Act as Belya, an autonomous AI software engineer and execution engine powered by Belya Harness in pure C99. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+        "Act as Belya, an autonomous AI software engineer and execution engine powered by Belya Harness in pure C99. You run natively on the host system (macOS / Linux) with full POSIX, bash, and filesystem access. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
         "Core Rules:\n"
-        "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
-        "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
-        "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
-        "4. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
-        "5. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
+        "1. Host Access & Native Execution Mandate: You run natively on the host system with direct POSIX, bash, filesystem, and shell execution privileges. NEVER claim you lack access to the computer, terminal, files, GUI, or operating system. If a task requires terminal manipulation, system configuration, file operations, or running commands, invoke your `bash` or native tools immediately.\n"
+        "2. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
+        "3. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
+        "4. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
+        "5. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
+        "6. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
         "Execution Protocol:\n"
         "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
         "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"

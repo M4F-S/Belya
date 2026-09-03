@@ -125,13 +125,14 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     } else {
         dyn_str_append(&sys,
             "Role & Objective:\n"
-            "Act as an expert researcher and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+            "Act as BelyaAgent, an expert systems engineer and autonomous execution engine running natively on the host system (macOS / Linux) with full POSIX, bash, and filesystem access. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
             "Core Rules:\n"
-            "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
-            "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
-            "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
-            "4. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
-            "5. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
+            "1. Host Access & Native Execution Mandate: You run natively on the host system with direct POSIX, bash, filesystem, and shell execution privileges. NEVER claim you lack access to the computer, terminal, files, GUI, or operating system. If a task requires terminal manipulation, system configuration, file operations, or running commands, invoke your `bash` or native tools immediately.\n"
+            "2. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
+            "3. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
+            "4. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
+            "5. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
+            "6. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
             "Execution Protocol:\n"
             "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
             "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
@@ -1222,7 +1223,19 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     for (size_t i = 0; i < agent->msg_count; i++) {
         JsonValue *m = json_create_object();
         json_obj_add(m, "role", json_create_string(agent->messages[i].role));
-        json_obj_add(m, "content", json_create_string(agent->messages[i].content));
+        if (i == 0) {
+            DynString sys_content = dyn_str_new();
+            dyn_str_append(&sys_content, agent->messages[0].content);
+            if (agent->gateway && agent->gateway->model) {
+                const char *provider = (agent->gateway->endpoint && strstr(agent->gateway->endpoint, "openrouter.ai") != NULL) ? "OpenRouter Cloud" : "Local Metal Ollama";
+                dyn_str_appendf(&sys_content, "\n\n=== Active Runtime Engine ===\nActive Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
+                                agent->gateway->model, provider, agent->gateway->model, provider);
+            }
+            json_obj_add(m, "content", json_create_string(sys_content.data));
+            dyn_str_free(&sys_content);
+        } else {
+            json_obj_add(m, "content", json_create_string(agent->messages[i].content));
+        }
         if (agent->messages[i].tool_call_id) {
             json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
         }
@@ -1263,6 +1276,21 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         dyn_str_free(&sk_ds);
         json_arr_add(messages_arr, sk_msg);
         free(active_skill);
+    }
+
+    // If model does not support API tools (like deepseek-r1 in Ollama), inject tool instructions in system message
+    if (agent->gateway && agent->gateway->model && strstr(agent->gateway->model, "deepseek-r1") != NULL && agent->schema_count > 0) {
+        JsonValue *tool_guide_msg = json_create_object();
+        json_obj_add(tool_guide_msg, "role", json_create_string("system"));
+        DynString tg = dyn_str_new();
+        dyn_str_append(&tg, "=== Available Tools ===\nTo execute an action, output a JSON object or ```bash codeblock:\n");
+        for (size_t s = 0; s < agent->schema_count; s++) {
+            dyn_str_appendf(&tg, "- %s: %s\n", agent->schemas[s].name, agent->schemas[s].description);
+        }
+        dyn_str_append(&tg, "\nExample: {\"name\": \"bash\", \"arguments\": {\"command\": \"ls -la\"}}\n");
+        json_obj_add(tool_guide_msg, "content", json_create_string(tg.data));
+        dyn_str_free(&tg);
+        json_arr_add(messages_arr, tool_guide_msg);
     }
 
     // 2. Build Tool definitions schema

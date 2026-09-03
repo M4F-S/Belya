@@ -110,9 +110,29 @@ static int getColumns(int ifd, int ofd) {
     return ws.ws_col;
 }
 
+static size_t linenoisePromptLen(const char *prompt) {
+    size_t len = 0;
+    while (*prompt) {
+        if (*prompt == '\x1b') {
+            prompt++;
+            if (*prompt == '[') {
+                prompt++;
+                while (*prompt && ((*prompt >= '0' && *prompt <= '9') || *prompt == ';' || *prompt == '?')) {
+                    prompt++;
+                }
+                if (*prompt) prompt++;
+            }
+        } else {
+            len++;
+            prompt++;
+        }
+    }
+    return len;
+}
+
 static void refreshLine(struct linenoiseState *l) {
     char seq[64];
-    size_t plen = strlen(l->prompt);
+    size_t plen = l->plen;
     char *buf = l->buf;
     size_t len = l->len;
     size_t pos = l->pos;
@@ -147,11 +167,7 @@ static int linenoiseEditInsert(struct linenoiseState *l, char c) {
             l->pos++;
             l->len++;
             l->buf[l->len] = '\0';
-            if (l->plen + l->len < l->cols) {
-                if (write(l->ofd, &c, 1) == -1) return -1;
-            } else {
-                refreshLine(l);
-            }
+            refreshLine(l);
         } else {
             memmove(l->buf + l->pos + 1, l->buf + l->pos, l->len - l->pos);
             l->buf[l->pos] = c;
@@ -304,7 +320,7 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
     l.buf = buf;
     l.buflen = buflen;
     l.prompt = prompt;
-    l.plen = strlen(prompt);
+    l.plen = linenoisePromptLen(prompt);
     l.oldpos = l.pos = 0;
     l.len = 0;
     l.cols = getColumns(stdin_fd, stdout_fd);
@@ -316,7 +332,7 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
 
     linenoiseHistoryAdd("");
 
-    if (write(l.ofd, prompt, l.plen) == -1) return -1;
+    if (write(l.ofd, prompt, strlen(prompt)) == -1) return -1;
     while (1) {
         char c;
         int nread = read(l.ifd, &c, 1);

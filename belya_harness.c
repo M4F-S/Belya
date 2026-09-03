@@ -1551,6 +1551,9 @@ static void print_help(BelyaHarness *h) {
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
     printf("  /memory [query]  Search SQLite persistent memory directly\n");
     printf("  /model <name>    Dynamically change the active AI model\n");
+    printf("  /openrouter [m]  Switch to OpenRouter (e.g. anthropic/claude-3.7-sonnet, deepseek/deepseek-r1)\n");
+    printf("  /ollama [model]  Switch to local Ollama (e.g. qwen2.5-coder:7b, deepseek-r1:7b-m2)\n");
+    printf("  /key <api_key>   Dynamically set or update API key (for OpenRouter / cloud providers)\n");
     printf("  /cwd [path]      View or change working directory\n");
     printf("  /mcp <command>   Connect to an external MCP stdio server\n");
     printf("  exit             Terminate the harness REPL\n\n");
@@ -1582,7 +1585,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/help", "/status", "/tools", "/rules", "/timeline",
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
-            "/compact", "/memory", "/model", "/cwd", "/mcp", NULL
+            "/compact", "/memory", "/model", "/openrouter", "/ollama", "/key", "/cwd", "/mcp", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -1602,9 +1605,11 @@ void belya_harness_repl(BelyaHarness *h) {
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
     while (1) {
-        size_t est_tokens = belya_agent_total_tokens(h->agent);
+        const char *m_disp = h->agent->gateway->model ? h->agent->gateway->model : "unknown";
+        const char *slash = strrchr(m_disp, '/');
+        if (slash) m_disp = slash + 1;
         char prompt[128];
-        snprintf(prompt, sizeof(prompt), "\033[1;35mbelya [%zu msgs | %zu toks]>\033[0m ", h->agent->msg_count, est_tokens);
+        snprintf(prompt, sizeof(prompt), "\033[1;35mbelya (\033[1;36m%s\033[1;35m) [%zu msgs]>\033[0m ", m_disp, h->agent->msg_count);
 
         char *line = linenoise(prompt);
         if (!line) break;
@@ -1790,13 +1795,79 @@ void belya_harness_repl(BelyaHarness *h) {
                 if (res) free(res);
                 continue;
             }
+            if (strncmp(input_buf, "/openrouter", 11) == 0) {
+                const char *new_m = strlen(input_buf) > 11 ? input_buf + 11 : "";
+                while (*new_m == ' ') new_m++;
+                if (strlen(new_m) == 0) new_m = "anthropic/claude-3.7-sonnet";
+
+                const char *or_key = getenv("OPENROUTER_API_KEY");
+                if (!or_key || strlen(or_key) == 0) {
+                    or_key = getenv("MODEL_API_KEY");
+                }
+
+                free(h->agent->gateway->endpoint);
+                h->agent->gateway->endpoint = strdup("https://openrouter.ai/api/v1/chat/completions");
+                free(h->agent->gateway->model);
+                h->agent->gateway->model = strdup(new_m);
+                if (or_key && strlen(or_key) > 0 && strcmp(or_key, "ollama") != 0 && strcmp(or_key, "none") != 0) {
+                    free(h->agent->gateway->api_key);
+                    h->agent->gateway->api_key = strdup(or_key);
+                }
+                printf("\033[1;32mSwitched to OpenRouter: Model: %s | Endpoint: %s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
+                if (!h->agent->gateway->api_key || strcmp(h->agent->gateway->api_key, "none") == 0 || strcmp(h->agent->gateway->api_key, "ollama") == 0) {
+                    printf("\033[1;33m[Notice] API key not set. Provide your OpenRouter key with: /key sk-or-v1-...\033[0m\n\n");
+                } else {
+                    printf("\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/ollama", 7) == 0) {
+                const char *new_m = strlen(input_buf) > 7 ? input_buf + 7 : "";
+                while (*new_m == ' ') new_m++;
+                if (strlen(new_m) == 0) new_m = "qwen2.5-coder:7b";
+
+                free(h->agent->gateway->endpoint);
+                h->agent->gateway->endpoint = strdup("http://localhost:11434/v1/chat/completions");
+                free(h->agent->gateway->model);
+                h->agent->gateway->model = strdup(new_m);
+                free(h->agent->gateway->api_key);
+                h->agent->gateway->api_key = strdup("ollama");
+                printf("\033[1;32mSwitched to Local Ollama: Model: %s | Endpoint: %s\033[0m\n\n", h->agent->gateway->model, h->agent->gateway->endpoint);
+                continue;
+            }
+            if (strncmp(input_buf, "/key", 4) == 0) {
+                const char *new_k = strlen(input_buf) > 4 ? input_buf + 4 : "";
+                while (*new_k == ' ') new_k++;
+                if (strlen(new_k) > 0) {
+                    free(h->agent->gateway->api_key);
+                    h->agent->gateway->api_key = strdup(new_k);
+                    setenv("OPENROUTER_API_KEY", new_k, 1);
+                    setenv("MODEL_API_KEY", new_k, 1);
+                    printf("\033[1;32mAPI Key updated successfully.\033[0m\n\n");
+                } else {
+                    printf("Current API Key: %s\nUsage: /key <api_key>\n\n", (h->agent->gateway->api_key && strcmp(h->agent->gateway->api_key, "none") != 0) ? "****" : "none");
+                }
+                continue;
+            }
             if (strncmp(input_buf, "/model", 6) == 0) {
                 const char *new_m = strlen(input_buf) > 6 ? input_buf + 6 : "";
                 while (*new_m == ' ') new_m++;
                 if (strlen(new_m) > 0) {
                     free(h->agent->gateway->model);
                     h->agent->gateway->model = strdup(new_m);
-                    printf("\033[1;32mActive model switched to: %s\033[0m\n\n", h->agent->gateway->model);
+                    // If model name contains slash (e.g. anthropic/claude, openai/gpt-4o), auto-route to OpenRouter if currently on localhost
+                    if (strchr(new_m, '/') != NULL && strstr(h->agent->gateway->endpoint, "localhost") != NULL) {
+                        free(h->agent->gateway->endpoint);
+                        h->agent->gateway->endpoint = strdup("https://openrouter.ai/api/v1/chat/completions");
+                        const char *or_key = getenv("OPENROUTER_API_KEY");
+                        if (or_key && strlen(or_key) > 0 && strcmp(or_key, "ollama") != 0) {
+                            free(h->agent->gateway->api_key);
+                            h->agent->gateway->api_key = strdup(or_key);
+                        }
+                        printf("\033[1;32mModel set to '%s' (Auto-routed endpoint to OpenRouter: %s)\033[0m\n\n", h->agent->gateway->model, h->agent->gateway->endpoint);
+                    } else {
+                        printf("\033[1;32mActive model switched to: %s\033[0m\n\n", h->agent->gateway->model);
+                    }
                 } else {
                     printf("Current model: %s. Usage: /model <model_name>\n\n", h->agent->gateway->model);
                 }
@@ -1850,7 +1921,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
         ModelGatewayResponse resp = belya_agent_step(h->agent);
 
         if (!resp.has_tool_call) {
-            if (!h->agent->gateway->streaming) {
+            if (!h->agent->gateway->streaming || (resp.content && (strncmp(resp.content, "API Error", 9) == 0 || strncmp(resp.content, "Network Error", 13) == 0 || strncmp(resp.content, "Empty response", 14) == 0 || strncmp(resp.content, "Error:", 6) == 0))) {
                 printf("\n\033[1;34m[Belya]\033[0m\n%s\n\n", resp.content ? resp.content : "");
             } else {
                 printf("\n\n");

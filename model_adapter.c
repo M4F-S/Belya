@@ -168,8 +168,10 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
     json_obj_add(payload, "model", json_create_string(self->model));
     json_obj_add(payload, "messages", (JsonValue *)messages_json); // Shared reference
     if (tools_schema && tools_schema->type == JSON_ARRAY && tools_schema->u.array.count > 0) {
-        json_obj_add(payload, "tools", (JsonValue *)tools_schema);
-        json_obj_add(payload, "tool_choice", json_create_string("auto"));
+        if (!self->model || strstr(self->model, "deepseek-r1") == NULL) {
+            json_obj_add(payload, "tools", (JsonValue *)tools_schema);
+            json_obj_add(payload, "tool_choice", json_create_string("auto"));
+        }
     }
     if (self->streaming) {
         json_obj_add(payload, "stream", json_create_bool(true));
@@ -214,6 +216,11 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             }
         }
 
+        if (self->endpoint && strstr(self->endpoint, "openrouter.ai") != NULL) {
+            headers = curl_slist_append(headers, "HTTP-Referer: https://github.com/M4F-S/Belya");
+            headers = curl_slist_append(headers, "X-Title: Belya Agent");
+        }
+
         long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 120L;
         curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
@@ -251,6 +258,14 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             dyn_str_free(&stream_ctx.accum_reasoning);
             dyn_str_free(&stream_ctx.raw_fallback);
             dyn_str_free(&non_stream_body);
+
+            if (code == CURLE_COULDNT_CONNECT && strstr(self->endpoint, "localhost") != NULL) {
+                DynString err_ds = dyn_str_new();
+                dyn_str_appendf(&err_ds, "Connection Error: Failed to connect to local Ollama server at '%s'. Please ensure 'ollama serve' is running in another terminal.", self->endpoint);
+                res.content = err_ds.data;
+                free(json_body);
+                return res;
+            }
 
             if (attempt < max_attempts - 1 && (code == CURLE_OPERATION_TIMEDOUT || code == CURLE_COULDNT_CONNECT)) {
                 sleep(sleep_sec);
@@ -421,12 +436,34 @@ static void try_add_scavenged_call(const char *json_str, const char *const *know
         const char *tname = json_obj_get_str(root, "name");
         if (!tname) tname = json_obj_get_str(root, "tool");
         if (!tname) tname = json_obj_get_str(root, "action");
+        bool self_args = false;
+        if (!tname) {
+            if (json_obj_get_str(root, "command")) {
+                tname = "bash";
+                self_args = true;
+            } else if (json_obj_get_str(root, "new_text") && json_obj_get_str(root, "path")) {
+                tname = "edit_file";
+                self_args = true;
+            } else if (json_obj_get_str(root, "content") && json_obj_get_str(root, "path")) {
+                tname = "write_file";
+                self_args = true;
+            } else if (json_obj_get_str(root, "pattern")) {
+                tname = "search_files";
+                self_args = true;
+            }
+        }
 
         if (tname && is_known_tool(tname, known_tools, known_count)) {
-            JsonValue *args_val = json_obj_get(root, "arguments");
-            if (!args_val) args_val = json_obj_get(root, "parameters");
-            if (!args_val) args_val = json_obj_get(root, "args");
-            if (!args_val) args_val = json_obj_get(root, "action_input");
+            JsonValue *args_val = NULL;
+            if (self_args) {
+                args_val = root;
+            } else {
+                args_val = json_obj_get(root, "arguments");
+                if (!args_val) args_val = json_obj_get(root, "parameters");
+                if (!args_val) args_val = json_obj_get(root, "args");
+                if (!args_val) args_val = json_obj_get(root, "action_input");
+                if (!args_val) args_val = root; // fallback to root object
+            }
 
             char *args_json = NULL;
             if (args_val) {
