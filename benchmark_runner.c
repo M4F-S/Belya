@@ -1020,7 +1020,7 @@ static void print_master_scoreboard(void) {
     printf("\033[1;36m========================================================================================================\033[0m\n\n");
 
     printf("%-20s | %-14s | %-14s | %-14s | %-14s | %-14s\n",
-           "Metric", "BelyaAgent 4.0", "Devin", "OpenHands", "SWE-agent", "Aider");
+           "Metric", "Belya (C99)", "Devin", "OpenHands", "SWE-agent", "Aider");
     printf("--------------------------------------------------------------------------------------------------------\n");
     printf("%-20s | \033[1;32m%-14s\033[0m | %-14s | %-14s | %-14s | %-14s\n",
            "Core Language", "Pure C99", "Proprietary", "Python/Docker", "Python", "Python CLI");
