@@ -598,13 +598,12 @@ static char *tool_search_files(CAgent *agent, const JsonValue *args) {
 }
 
 static char *tool_git_status(CAgent *agent, const JsonValue *args) {
-    (void)agent; (void)args;
+    (void)agent;
+    const char *path = json_obj_get_str(args, "path");
+    const char *dir = (path && strlen(path) > 0) ? path : (g_harness && strlen(g_harness->cwd) > 0 ? g_harness->cwd : ".");
+
     DynString cmd = dyn_str_new();
-    if (g_harness && strlen(g_harness->cwd) > 0) {
-        dyn_str_appendf(&cmd, "cd \"%s\" && git status -s", g_harness->cwd);
-    } else {
-        dyn_str_append(&cmd, "git status -s");
-    }
+    dyn_str_appendf(&cmd, "cd \"%s\" 2>&1 && git status", dir);
 
     FILE *pipe = popen(cmd.data, "r");
     dyn_str_free(&cmd);
@@ -1301,7 +1300,13 @@ CHarness *c_harness_init(CAgent *agent) {
     // 8. git_status
     JsonValue *gs_params = json_create_object();
     json_obj_add(gs_params, "type", json_create_string("object"));
-    c_harness_register_tool(h, "git_status", "Check Git repository status in current workspace", gs_params, PERM_ALLOW, tool_git_status);
+    JsonValue *gs_props = json_create_object();
+    JsonValue *gs_path = json_create_object();
+    json_obj_add(gs_path, "type", json_create_string("string"));
+    json_obj_add(gs_path, "description", json_create_string("Optional target repository directory path (default: current workspace)"));
+    json_obj_add(gs_props, "path", gs_path);
+    json_obj_add(gs_params, "properties", gs_props);
+    c_harness_register_tool(h, "git_status", "Check Git repository branch, staged changes, and cleanliness status", gs_params, PERM_ALLOW, tool_git_status);
 
     // 9. git_diff
     JsonValue *gd_params = json_create_object();
@@ -1837,7 +1842,6 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
     // Turn Execution Cycle
     bool turn_running = true;
     int max_steps = 50;
-    size_t total_tools_in_turn = 0;
 
     while (turn_running && max_steps-- > 0) {
         if (!h->agent->gateway->streaming) {
@@ -1851,24 +1855,8 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
             } else {
                 printf("\n\n");
             }
-
-            bool is_final_report = false;
-            if (resp.content && (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
-                strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
-                strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
-                strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
-                strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete"))) {
-                is_final_report = true;
-            }
-
-            if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
-                c_agent_add_message(h->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
-                turn_running = true;
-            } else {
-                turn_running = false;
-            }
+            turn_running = false;
         } else {
-            total_tools_in_turn += resp.tool_call_count;
             for (size_t i = 0; i < resp.tool_call_count; i++) {
                 ModelParsedToolCall *tc = &resp.tool_calls[i];
                 printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
