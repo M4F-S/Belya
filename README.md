@@ -1,6 +1,6 @@
-# Belya & Belya Harness — High-Performance Autonomous Belya Agent & Security Execution Sandbox
+# Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v4.4.1-blue.svg)](https://github.com/M4F-S/Belya Harness/releases/tag/v4.4.1)
+[![Release](https://img.shields.io/badge/Release-v5.0.0-blue.svg)](https://github.com/M4F-S/belya/releases/tag/v5.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
 [![Tests](https://img.shields.io/badge/Unit_Tests-20%2F20_Passed_(100%25)-brightgreen.svg)]()
@@ -122,7 +122,7 @@ Belya and Belya Harness were evaluated across a rigorous 5-arena benchmark suite
 
 ### 3. Frontier Agent Architectural Comparison
 
-| Architectural Feature | **Belya Agent 4.0** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
+| Architectural Feature | **Belya (C99)** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
 |:---|:---:|:---:|:---:|:---:|:---:|
 | **Core Runtime** | **Pure C99 POSIX** | Proprietary | Python / Docker | Python | Python CLI |
 | **RAM Footprint (RSS)** | **< 3–12 MB** | ~800 MB (Cloud) | ~1,500 MB | ~450 MB | ~250 MB |
@@ -164,8 +164,8 @@ brew install curl sqlite3
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/M4F-S/Belya Harness.git
-cd Belya Harness
+git clone https://github.com/M4F-S/belya.git
+cd belya
 
 # 2. Build the self-contained executable
 make
@@ -234,7 +234,7 @@ sequenceDiagram
     Harness->>Tools: Run pre-flight compiler check & benchmarks
     Tools-->>Harness: Result output
     Harness-->>Bot: Structured Execution Envelope
-    Bot-->>User: "✅ Benchmark passed (966k ns) & tag v4.0.0 pushed."
+    Bot-->>User: "✅ Benchmark passed (966k ns) & tag v5.0.0 pushed."
 ```
 
 #### 1. Obtain Bot Credentials
