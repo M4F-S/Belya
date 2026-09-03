@@ -1,6 +1,6 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v5.0.0-blue.svg)](https://github.com/M4F-S/belya/releases/tag/v5.0.0)
+[![Release](https://img.shields.io/badge/Release-v5.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v5.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
 [![Tests](https://img.shields.io/badge/Unit_Tests-20%2F20_Passed_(100%25)-brightgreen.svg)]()
@@ -164,8 +164,8 @@ brew install curl sqlite3
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/M4F-S/belya.git
-cd belya
+git clone https://github.com/M4F-S/Belya.git
+cd Belya
 
 # 2. Build the self-contained executable
 make
