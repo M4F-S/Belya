@@ -3,7 +3,7 @@
 
 #include "common.h"
 #include "minijson.h"
-#include "c_agent.h"
+#include "belya_agent.h"
 #include <sys/types.h>
 
 typedef struct MCPClient {

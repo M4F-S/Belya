@@ -1,8 +1,9 @@
 #!/bin/bash
-cd /opt/charness
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
 while IFS="=" read -r key val; do
   [[ "$key" =~ ^# ]] && continue
   [[ -z "$key" ]] && continue
   export "$key"="$val"
-done < /opt/charness/.env
-exec /opt/charness/c_agent_system --telegram
+done < "$DIR/.env"
+exec "$DIR/belya" --telegram

@@ -1,4 +1,4 @@
-#include "c_harness.h"
+#include "belya_harness.h"
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -13,7 +13,7 @@
 #include <strings.h>
 #include <curl/curl.h>
 
-static CHarness *g_harness = NULL;
+static BelyaHarness *g_harness = NULL;
 const char *g_active_custom_script_path = NULL;
 
 static void safe_pipe_write(int fd, const char *data, size_t len) {
@@ -64,7 +64,7 @@ static char *preflight_syntax_check(const char *path) {
 
 // Built-in Native Tools
 
-static char *tool_bash(CAgent *agent, const JsonValue *args) {
+static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *cmd = json_obj_get_str(args, "command");
     if (!cmd) return strdup("Error: Missing command argument.");
@@ -161,7 +161,7 @@ static char *tool_bash(CAgent *agent, const JsonValue *args) {
             buf[bytes] = '\0';
             dyn_str_append(&out, buf);
             if (out.len > 100000) {
-                dyn_str_append(&out, "\n[Output Truncated by C Harness (100KB buffer limit)]");
+                dyn_str_append(&out, "\n[Output Truncated by Belya Harness (100KB buffer limit)]");
                 break;
             }
         }
@@ -219,7 +219,7 @@ static bool is_path_safe(const char *path) {
     return safe;
 }
 
-static char *tool_read_file(CAgent *agent, const JsonValue *args) {
+static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     if (!path) return strdup("Error: Missing file path argument.");
@@ -280,7 +280,7 @@ static char *tool_read_file(CAgent *agent, const JsonValue *args) {
     return buf;
 }
 
-static char *tool_write_file(CAgent *agent, const JsonValue *args) {
+static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *content = json_obj_get_str(args, "content");
@@ -305,7 +305,7 @@ static char *tool_write_file(CAgent *agent, const JsonValue *args) {
     return msg.data;
 }
 
-static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
+static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *old_text = json_obj_get_str(args, "old_text");
@@ -401,7 +401,7 @@ static char *tool_edit_file(CAgent *agent, const JsonValue *args) {
     return msg.data;
 }
 
-static char *tool_apply_patch(CAgent *agent, const JsonValue *args) {
+static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *patch = json_obj_get_str(args, "patch");
@@ -500,7 +500,7 @@ static char *tool_apply_patch(CAgent *agent, const JsonValue *args) {
     return strdup("Error: Unsupported patch format. Use <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks.");
 }
 
-static char *tool_list_dir(CAgent *agent, const JsonValue *args) {
+static char *tool_list_dir(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     if (!path) path = g_harness ? g_harness->cwd : ".";
@@ -571,7 +571,7 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
     closedir(d);
 }
 
-static char *tool_search_files(CAgent *agent, const JsonValue *args) {
+static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *pattern = json_obj_get_str(args, "pattern");
     const char *path = json_obj_get_str(args, "path");
@@ -597,7 +597,7 @@ static char *tool_search_files(CAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-static char *tool_git_status(CAgent *agent, const JsonValue *args) {
+static char *tool_git_status(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *dir = (path && strlen(path) > 0) ? path : (g_harness && strlen(g_harness->cwd) > 0 ? g_harness->cwd : ".");
@@ -621,7 +621,7 @@ static char *tool_git_status(CAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-static char *tool_git_diff(CAgent *agent, const JsonValue *args) {
+static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     bool staged = json_obj_get_bool(args, "staged", false);
     const char *path = json_obj_get_str(args, "path");
@@ -652,21 +652,21 @@ static char *tool_git_diff(CAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-static char *tool_save_memory(CAgent *agent, const JsonValue *args) {
+static char *tool_save_memory(BelyaAgent *agent, const JsonValue *args) {
     const char *topic = json_obj_get_str(args, "topic");
     const char *content = json_obj_get_str(args, "content");
     if (!topic || !content) return strdup("Error: Missing topic or content.");
-    c_agent_persist_memory(agent, topic, content);
+    belya_agent_persist_memory(agent, topic, content);
     return strdup("Knowledge successfully stored in persistent agent SQLite database.");
 }
 
-static char *tool_recall_memory(CAgent *agent, const JsonValue *args) {
+static char *tool_recall_memory(BelyaAgent *agent, const JsonValue *args) {
     const char *query = json_obj_get_str(args, "query");
     if (!query) return strdup("Error: Missing query string.");
-    return c_agent_search_memory(agent, query);
+    return belya_agent_search_memory(agent, query);
 }
 
-static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
+static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     const char *task = json_obj_get_str(args, "task");
     const char *instructions = json_obj_get_str(args, "instructions");
     double max_turns_num = json_obj_get_num(args, "max_turns", 5);
@@ -683,11 +683,11 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     ModelGateway *sub_gw = model_gateway_init(agent->gateway->endpoint, agent->gateway->api_key, agent->gateway->model);
     sub_gw->streaming = false; // Run silent to avoid stdout collision
 
-    CAgent *sub_agent = c_agent_init(sub_gw, ":memory:", sys.data);
+    BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
     dyn_str_free(&sys);
 
-    CHarness *sub_harness = c_harness_init(sub_agent);
-    c_agent_add_message(sub_agent, "user", task);
+    BelyaHarness *sub_harness = belya_harness_init(sub_agent);
+    belya_agent_add_message(sub_agent, "user", task);
 
     int turns = (int)max_turns_num;
     if (turns <= 0 || turns > 10) turns = 5;
@@ -698,14 +698,14 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
     size_t tool_executions = 0;
 
     while (running && turns-- > 0) {
-        ModelGatewayResponse resp = c_agent_step(sub_agent);
+        ModelGatewayResponse resp = belya_agent_step(sub_agent);
         if (!resp.has_tool_call) {
             if (resp.content) dyn_str_append(&final_ans, resp.content);
             running = false;
         } else {
             for (size_t i = 0; i < resp.tool_call_count; i++) {
                 ModelParsedToolCall *tc = &resp.tool_calls[i];
-                CHarnessRegisteredTool *matched = NULL;
+                BelyaRegisteredTool *matched = NULL;
                 for (size_t t = 0; t < sub_harness->tool_count; t++) {
                     if (strcmp(sub_harness->tools[t].name, tc->name) == 0 &&
                         strcmp(tc->name, "spawn_subagent") != 0) {
@@ -717,20 +717,20 @@ static char *tool_spawn_subagent(CAgent *agent, const JsonValue *args) {
                     JsonValue *p_args = json_parse(tc->arguments_json);
                     char *obs = matched->callback(sub_agent, p_args);
                     json_free(p_args);
-                    c_agent_add_tool_result(sub_agent, tc->id, tc->name, obs);
+                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, obs);
 
                     dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", obs ? obs : "");
                     tool_executions++;
                     if (obs) free(obs);
                 } else {
-                    c_agent_add_tool_result(sub_agent, tc->id, tc->name, "Tool not available in subagent sandbox.");
+                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, "Tool not available in subagent sandbox.");
                 }
             }
         }
         model_gateway_response_free(&resp);
     }
 
-    c_harness_free(sub_harness);
+    belya_harness_free(sub_harness);
     model_gateway_free(sub_gw);
 
     DynString envelope = dyn_str_new();
@@ -754,7 +754,7 @@ static size_t fetch_url_curl_sink(void *ptr, size_t size, size_t nmemb, void *us
     return total;
 }
 
-static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
+static char *tool_fetch_url(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *url = json_obj_get_str(args, "url");
     if (!url || strlen(url) == 0) return strdup("Error: Missing url argument.");
@@ -768,7 +768,7 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
 
     DynString body = dyn_str_new();
     struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "User-Agent: CAgent/4.0 (Autonomous C99 Engine)");
+    headers = curl_slist_append(headers, "User-Agent: BelyaAgent/4.0 (Autonomous C99 Engine)");
 
     // Custom headers
     JsonValue *hdrs_val = json_obj_get(args, "headers");
@@ -825,7 +825,7 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
     if (body.len > 100000) {
         body.data[100000] = '\0';
         body.len = 100000;
-        dyn_str_append(&body, "\n[Content truncated by C Harness (100KB buffer limit)]");
+        dyn_str_append(&body, "\n[Content truncated by Belya Harness (100KB buffer limit)]");
     }
 
     if (body.len == 0) {
@@ -835,14 +835,14 @@ static char *tool_fetch_url(CAgent *agent, const JsonValue *args) {
     return body.data;
 }
 
-static char *tool_save_skill(CAgent *agent, const JsonValue *args) {
+static char *tool_save_skill(BelyaAgent *agent, const JsonValue *args) {
     const char *name = json_obj_get_str(args, "name");
     const char *trigger = json_obj_get_str(args, "trigger");
     const char *desc = json_obj_get_str(args, "description");
     const char *instructions = json_obj_get_str(args, "instructions");
 
     if (!name || !instructions) return strdup("Error: Missing required arguments (name, instructions).");
-    if (c_agent_save_skill(agent, name, trigger, desc, instructions)) {
+    if (belya_agent_save_skill(agent, name, trigger, desc, instructions)) {
         DynString res = dyn_str_new();
         dyn_str_appendf(&res, "Skill '%s' successfully saved to procedural memory with trigger '%s'.", name, trigger ? trigger : name);
         return res.data;
@@ -850,18 +850,18 @@ static char *tool_save_skill(CAgent *agent, const JsonValue *args) {
     return strdup("Error: Failed to save skill to database.");
 }
 
-static char *tool_recall_skill(CAgent *agent, const JsonValue *args) {
+static char *tool_recall_skill(BelyaAgent *agent, const JsonValue *args) {
     const char *query = json_obj_get_str(args, "query");
-    return c_agent_search_skills(agent, query ? query : "");
+    return belya_agent_search_skills(agent, query ? query : "");
 }
 
-static char *tool_recall_conversation(CAgent *agent, const JsonValue *args) {
+static char *tool_recall_conversation(BelyaAgent *agent, const JsonValue *args) {
     const char *query = json_obj_get_str(args, "query");
-    return c_agent_search_conversations(agent, query ? query : "");
+    return belya_agent_search_conversations(agent, query ? query : "");
 }
 
 // Dynamic Custom Tool Execution Runner
-static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
+static char *tool_custom_script_runner(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *script_path = g_active_custom_script_path;
     if (!script_path && g_harness && g_harness->tool_count > 0) {
@@ -1003,8 +1003,8 @@ static char *tool_custom_script_runner(CAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-// Tool define_tool: Enables CAgent to dynamically add new tools to itself
-static char *tool_define_tool(CAgent *agent, const JsonValue *args) {
+// Tool define_tool: Enables BelyaAgent to dynamically add new tools to itself
+static char *tool_define_tool(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     if (!g_harness) return strdup("Error: Harness runtime not active.");
 
@@ -1028,7 +1028,7 @@ static char *tool_define_tool(CAgent *agent, const JsonValue *args) {
         json_obj_add(params_clone, "type", json_create_string("object"));
     }
 
-    bool ok = c_harness_define_custom_tool(g_harness, name, desc, params_clone, script_body);
+    bool ok = belya_harness_define_custom_tool(g_harness, name, desc, params_clone, script_body);
     if (ok) {
         DynString res = dyn_str_new();
         dyn_str_appendf(&res, "Tool '%s' successfully defined, persisted, and registered into active tool catalog.", name);
@@ -1037,17 +1037,17 @@ static char *tool_define_tool(CAgent *agent, const JsonValue *args) {
     return strdup("Error: Failed to register custom tool (max tool limit reached or disk write error).");
 }
 
-bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
+bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
     if (!h || !name || !script_body || h->tool_count >= 64) {
         if (params) json_free(params);
         return false;
     }
 
-    mkdir(".charness", 0755);
-    mkdir(".charness/tools", 0755);
+    mkdir(".belya", 0755);
+    mkdir(".belya/tools", 0755);
 
     char script_path[512];
-    snprintf(script_path, sizeof(script_path), ".charness/tools/%s.sh", name);
+    snprintf(script_path, sizeof(script_path), ".belya/tools/%s.sh", name);
 
     FILE *sf = fopen(script_path, "wb");
     if (!sf) {
@@ -1065,7 +1065,7 @@ bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *des
 
     // Save JSON metadata for auto-loading on restart
     char meta_path[512];
-    snprintf(meta_path, sizeof(meta_path), ".charness/tools/%s.json", name);
+    snprintf(meta_path, sizeof(meta_path), ".belya/tools/%s.json", name);
     JsonValue *meta = json_create_object();
     json_obj_add(meta, "name", json_create_string(name));
     json_obj_add(meta, "description", json_create_string(desc ? desc : ""));
@@ -1092,13 +1092,13 @@ bool c_harness_define_custom_tool(CHarness *h, const char *name, const char *des
     h->tools[h->tool_count].mcp_client = NULL;
     h->tool_count++;
 
-    c_agent_register_schema(h->agent, name, desc ? desc : "", params);
+    belya_agent_register_schema(h->agent, name, desc ? desc : "", params);
     return true;
 }
 
-void c_harness_load_custom_tools(CHarness *h) {
+void belya_harness_load_custom_tools(BelyaHarness *h) {
     if (!h) return;
-    DIR *d = opendir(".charness/tools");
+    DIR *d = opendir(".belya/tools");
     if (!d) return;
 
     struct dirent *dir;
@@ -1106,7 +1106,7 @@ void c_harness_load_custom_tools(CHarness *h) {
         const char *ext = strrchr(dir->d_name, '.');
         if (ext && strcmp(ext, ".json") == 0) {
             char fpath[512];
-            snprintf(fpath, sizeof(fpath), ".charness/tools/%s", dir->d_name);
+            snprintf(fpath, sizeof(fpath), ".belya/tools/%s", dir->d_name);
             FILE *f = fopen(fpath, "rb");
             if (f) {
                 fseek(f, 0, SEEK_END);
@@ -1144,7 +1144,7 @@ void c_harness_load_custom_tools(CHarness *h) {
                                 h->tools[h->tool_count].mcp_client = NULL;
                                 h->tool_count++;
 
-                                c_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
+                                belya_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
                             }
                         }
                         json_free(meta);
@@ -1175,8 +1175,8 @@ static JsonValue *build_string_param_schema(const char *prop_name, const char *p
     return p;
 }
 
-CHarness *c_harness_init(CAgent *agent) {
-    CHarness *h = calloc(1, sizeof(CHarness));
+BelyaHarness *belya_harness_init(BelyaAgent *agent) {
+    BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     h->agent = agent;
     if (getcwd(h->cwd, sizeof(h->cwd)) == NULL) {
         strncpy(h->cwd, ".", sizeof(h->cwd));
@@ -1184,7 +1184,7 @@ CHarness *c_harness_init(CAgent *agent) {
     g_harness = h;
 
     // 1. bash
-    c_harness_register_tool(h, "bash", "Execute shell commands in the host system", 
+    belya_harness_register_tool(h, "bash", "Execute shell commands in the host system", 
         build_string_param_schema("command", "The bash command string to execute"), PERM_ALLOW, tool_bash);
 
     // 2. read_file
@@ -1207,7 +1207,7 @@ CHarness *c_harness_init(CAgent *agent) {
     JsonValue *r_req = json_create_array();
     json_arr_add(r_req, json_create_string("path"));
     json_obj_add(read_params, "required", r_req);
-    c_harness_register_tool(h, "read_file", "Read contents from a file with optional line ranges", read_params, PERM_ALLOW, tool_read_file);
+    belya_harness_register_tool(h, "read_file", "Read contents from a file with optional line ranges", read_params, PERM_ALLOW, tool_read_file);
 
     // 3. write_file
     JsonValue *write_params = json_create_object();
@@ -1224,7 +1224,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(w_req, json_create_string("path"));
     json_arr_add(w_req, json_create_string("content"));
     json_obj_add(write_params, "required", w_req);
-    c_harness_register_tool(h, "write_file", "Write contents to a file path", write_params, PERM_ALLOW, tool_write_file);
+    belya_harness_register_tool(h, "write_file", "Write contents to a file path", write_params, PERM_ALLOW, tool_write_file);
 
     // 4. edit_file
     JsonValue *edit_params = json_create_object();
@@ -1251,7 +1251,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(e_req, json_create_string("old_text"));
     json_arr_add(e_req, json_create_string("new_text"));
     json_obj_add(edit_params, "required", e_req);
-    c_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file (with optional verify_compile guard)", edit_params, PERM_ALLOW, tool_edit_file);
+    belya_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file (with optional verify_compile guard)", edit_params, PERM_ALLOW, tool_edit_file);
 
     // 5. apply_patch
     JsonValue *patch_params = json_create_object();
@@ -1269,10 +1269,10 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(p_req, json_create_string("path"));
     json_arr_add(p_req, json_create_string("patch"));
     json_obj_add(patch_params, "required", p_req);
-    c_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch to a file", patch_params, PERM_ALLOW, tool_apply_patch);
+    belya_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch to a file", patch_params, PERM_ALLOW, tool_apply_patch);
 
     // 6. list_dir
-    c_harness_register_tool(h, "list_dir", "List files and directories in path",
+    belya_harness_register_tool(h, "list_dir", "List files and directories in path",
         build_string_param_schema("path", "Directory path"), PERM_ALLOW, tool_list_dir);
 
     // 7. search_files
@@ -1295,7 +1295,7 @@ CHarness *c_harness_init(CAgent *agent) {
     JsonValue *s_req = json_create_array();
     json_arr_add(s_req, json_create_string("pattern"));
     json_obj_add(s_params, "required", s_req);
-    c_harness_register_tool(h, "search_files", "Search for text patterns recursively across files", s_params, PERM_ALLOW, tool_search_files);
+    belya_harness_register_tool(h, "search_files", "Search for text patterns recursively across files", s_params, PERM_ALLOW, tool_search_files);
 
     // 8. git_status
     JsonValue *gs_params = json_create_object();
@@ -1306,7 +1306,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(gs_path, "description", json_create_string("Optional target repository directory path (default: current workspace)"));
     json_obj_add(gs_props, "path", gs_path);
     json_obj_add(gs_params, "properties", gs_props);
-    c_harness_register_tool(h, "git_status", "Check Git repository branch, staged changes, and cleanliness status", gs_params, PERM_ALLOW, tool_git_status);
+    belya_harness_register_tool(h, "git_status", "Check Git repository branch, staged changes, and cleanliness status", gs_params, PERM_ALLOW, tool_git_status);
 
     // 9. git_diff
     JsonValue *gd_params = json_create_object();
@@ -1321,7 +1321,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(gd_path, "description", json_create_string("Optional specific file path to diff"));
     json_obj_add(gd_props, "path", gd_path);
     json_obj_add(gd_params, "properties", gd_props);
-    c_harness_register_tool(h, "git_diff", "View Git working copy or staged diffs", gd_params, PERM_ALLOW, tool_git_diff);
+    belya_harness_register_tool(h, "git_diff", "View Git working copy or staged diffs", gd_params, PERM_ALLOW, tool_git_diff);
 
     // 10. save_memory
     JsonValue *mem_params = json_create_object();
@@ -1334,10 +1334,10 @@ CHarness *c_harness_init(CAgent *agent) {
     json_obj_add(m_cnt, "type", json_create_string("string"));
     json_obj_add(m_props, "content", m_cnt);
     json_obj_add(mem_params, "properties", m_props);
-    c_harness_register_tool(h, "save_memory", "Save a verified skill or trajectory to SQLite memory", mem_params, PERM_ALLOW, tool_save_memory);
+    belya_harness_register_tool(h, "save_memory", "Save a verified skill or trajectory to SQLite memory", mem_params, PERM_ALLOW, tool_save_memory);
 
     // 11. recall_memory
-    c_harness_register_tool(h, "recall_memory", "Search SQLite memory for past solutions and skills",
+    belya_harness_register_tool(h, "recall_memory", "Search SQLite memory for past solutions and skills",
         build_string_param_schema("query", "Search term"), PERM_ALLOW, tool_recall_memory);
 
     // 12. spawn_subagent
@@ -1360,7 +1360,7 @@ CHarness *c_harness_init(CAgent *agent) {
     JsonValue *sub_req = json_create_array();
     json_arr_add(sub_req, json_create_string("task"));
     json_obj_add(sub_params, "required", sub_req);
-    c_harness_register_tool(h, "spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
+    belya_harness_register_tool(h, "spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
 
     // 13. define_tool (Self-Tooling Dynamic Evolution)
     JsonValue *def_params = json_create_object();
@@ -1384,7 +1384,7 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(d_req, json_create_string("description"));
     json_arr_add(d_req, json_create_string("script_body"));
     json_obj_add(def_params, "required", d_req);
-    c_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool (parameters mapped to $PARAM_<NAME>, $1, $2, and $TOOL_ARGS_JSON)", def_params, PERM_ALLOW, tool_define_tool);
+    belya_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool (parameters mapped to $PARAM_<NAME>, $1, $2, and $TOOL_ARGS_JSON)", def_params, PERM_ALLOW, tool_define_tool);
 
     // 14. fetch_url (Native REST Web Client: GET, POST, PUT, DELETE, PATCH, Headers, Body)
     JsonValue *http_params = json_create_object();
@@ -1410,7 +1410,7 @@ CHarness *c_harness_init(CAgent *agent) {
     JsonValue *hp_req = json_create_array();
     json_arr_add(hp_req, json_create_string("url"));
     json_obj_add(http_params, "required", hp_req);
-    c_harness_register_tool(h, "fetch_url", "Send HTTP/REST requests (GET, POST, PUT, DELETE) with headers and payload", http_params, PERM_ALLOW, tool_fetch_url);
+    belya_harness_register_tool(h, "fetch_url", "Send HTTP/REST requests (GET, POST, PUT, DELETE) with headers and payload", http_params, PERM_ALLOW, tool_fetch_url);
 
     // 15. save_skill (Procedural Skill Curation)
     JsonValue *sk_params = json_create_object();
@@ -1437,23 +1437,23 @@ CHarness *c_harness_init(CAgent *agent) {
     json_arr_add(sk_req, json_create_string("name"));
     json_arr_add(sk_req, json_create_string("instructions"));
     json_obj_add(sk_params, "required", sk_req);
-    c_harness_register_tool(h, "save_skill", "Save a reusable procedural workflow skill into agent memory", sk_params, PERM_ALLOW, tool_save_skill);
+    belya_harness_register_tool(h, "save_skill", "Save a reusable procedural workflow skill into agent memory", sk_params, PERM_ALLOW, tool_save_skill);
 
     // 16. recall_skill
-    c_harness_register_tool(h, "recall_skill", "Search and inspect saved procedural skills from memory",
+    belya_harness_register_tool(h, "recall_skill", "Search and inspect saved procedural skills from memory",
         build_string_param_schema("query", "Search term or trigger keyword"), PERM_ALLOW, tool_recall_skill);
 
     // 17. recall_conversation (Historical Cross-Session Memory)
-    c_harness_register_tool(h, "recall_conversation", "Search past conversation messages and history across all historical sessions",
+    belya_harness_register_tool(h, "recall_conversation", "Search past conversation messages and history across all historical sessions",
         build_string_param_schema("query", "Keywords or topics from past conversations"), PERM_ALLOW, tool_recall_conversation);
 
     // Load any previously defined custom tools
-    c_harness_load_custom_tools(h);
+    belya_harness_load_custom_tools(h);
 
     return h;
 }
 
-void c_harness_register_tool(CHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, ToolCallback fn) {
+void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, BelyaToolCallback fn) {
     if (h->tool_count >= 64) {
         if (params) json_free(params);
         return;
@@ -1465,10 +1465,10 @@ void c_harness_register_tool(CHarness *h, const char *name, const char *desc, Js
     h->tools[h->tool_count].custom_script_path = NULL;
     h->tool_count++;
 
-    c_agent_register_schema(h->agent, name, desc, params);
+    belya_agent_register_schema(h->agent, name, desc, params);
 }
 
-bool c_harness_connect_mcp(CHarness *h, const char *server_cmd) {
+bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     if (!h || !server_cmd || h->mcp_server_count >= 8) return false;
 
     printf("\033[1;36m[MCP] Connecting to server:\033[0m %s\n", server_cmd);
@@ -1501,7 +1501,7 @@ bool c_harness_connect_mcp(CHarness *h, const char *server_cmd) {
                 char *sch_str = t_schema ? json_serialize(t_schema) : strdup("{\"type\":\"object\"}");
                 JsonValue *sch_clone = json_parse(sch_str);
                 free(sch_str);
-                c_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
+                belya_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
             }
         }
         json_free(tools);
@@ -1523,11 +1523,11 @@ static bool harness_ask_permission(const char *name, const char *args) {
     return false;
 }
 
-static void print_help(CHarness *h) {
-    printf("\n\033[1;36m=== CHarness & CAgent Help ===\033[0m\n");
+static void print_help(BelyaHarness *h) {
+    printf("\n\033[1;36m=== BelyaHarness & BelyaAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
     printf("Current CWD:     \033[1;33m%s\033[0m\n", h->cwd);
-    printf("Context Size:    \033[1;33m%zu messages | %zu estimated tokens\033[0m\n", h->agent->msg_count, c_agent_total_tokens(h->agent));
+    printf("Context Size:    \033[1;33m%zu messages | %zu estimated tokens\033[0m\n", h->agent->msg_count, belya_agent_total_tokens(h->agent));
     printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
     printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
     printf("Streaming SSE:   \033[1;33m%s\033[0m\n", h->agent->gateway->streaming ? "Enabled (Real-time)" : "Disabled");
@@ -1556,7 +1556,7 @@ static void print_help(CHarness *h) {
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
-static void list_tools(CHarness *h) {
+static void list_tools(BelyaHarness *h) {
     printf("\n\033[1;36m=== Registered Tools (%zu) ===\033[0m\n", h->tool_count);
     for (size_t i = 0; i < h->tool_count; i++) {
         const char *sec_str = "ALLOW";
@@ -1592,19 +1592,19 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
     }
 }
 
-void c_harness_repl(CHarness *h) {
+void belya_harness_repl(BelyaHarness *h) {
     linenoiseHistorySetMaxLen(200);
-    linenoiseHistoryLoad(".charness_history");
+    linenoiseHistoryLoad(".belya_history");
     linenoiseSetCompletionCallback(harness_completion_hook);
 
-    printf("\033[1;32m=== CHarness & CAgent Evolution 4.0 System Activated ===\033[0m\n");
+    printf("\033[1;32m=== BelyaHarness & BelyaAgent Evolution 4.0 System Activated ===\033[0m\n");
     printf("Model: \033[1;36m%s\033[0m | Endpoint: \033[1;36m%s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
     while (1) {
-        size_t est_tokens = c_agent_total_tokens(h->agent);
+        size_t est_tokens = belya_agent_total_tokens(h->agent);
         char prompt[128];
-        snprintf(prompt, sizeof(prompt), "\033[1;35mcharness [%zu msgs | %zu toks]>\033[0m ", h->agent->msg_count, est_tokens);
+        snprintf(prompt, sizeof(prompt), "\033[1;35mbelya [%zu msgs | %zu toks]>\033[0m ", h->agent->msg_count, est_tokens);
 
         char *line = linenoise(prompt);
         if (!line) break;
@@ -1616,7 +1616,7 @@ void c_harness_repl(CHarness *h) {
 
         if (strlen(input_buf) > 0) {
             linenoiseHistoryAdd(input_buf);
-            linenoiseHistorySave(".charness_history");
+            linenoiseHistorySave(".belya_history");
         }
         linenoiseFree(line);
 
@@ -1630,12 +1630,12 @@ void c_harness_repl(CHarness *h) {
                 continue;
             }
             if (strcmp(input_buf, "/status") == 0) {
-                printf("\n\033[1;36m=== CHarness System Status ===\033[0m\n");
+                printf("\n\033[1;36m=== BelyaHarness System Status ===\033[0m\n");
                 printf("Active Model:    \033[1;33m%s\033[0m\n", h->agent->gateway->model);
                 printf("Endpoint:        \033[1;33m%s\033[0m\n", h->agent->gateway->endpoint);
                 printf("Working Dir:     \033[1;33m%s\033[0m\n", h->cwd);
                 printf("Message History: \033[1;33m%zu messages\033[0m\n", h->agent->msg_count);
-                printf("Token Budget:    \033[1;33m%zu estimated tokens\033[0m\n", c_agent_total_tokens(h->agent));
+                printf("Token Budget:    \033[1;33m%zu estimated tokens\033[0m\n", belya_agent_total_tokens(h->agent));
                 printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
                 printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
                 printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
@@ -1663,13 +1663,13 @@ void c_harness_repl(CHarness *h) {
                     limit = atoi(input_buf + 9);
                     if (limit <= 0) limit = 15;
                 }
-                char *tl = c_agent_get_timeline(h->agent, limit);
+                char *tl = belya_agent_get_timeline(h->agent, limit);
                 printf("\n%s\n", tl);
                 free(tl);
                 continue;
             }
             if (strcmp(input_buf, "/sessions") == 0) {
-                char *sess_list = c_agent_list_sessions(h->agent);
+                char *sess_list = belya_agent_list_sessions(h->agent);
                 printf("\n%s\n", sess_list);
                 free(sess_list);
                 continue;
@@ -1678,7 +1678,7 @@ void c_harness_repl(CHarness *h) {
                 const char *s_id = strlen(input_buf) > 5 ? input_buf + 5 : "default_session";
                 while (*s_id == ' ') s_id++;
                 if (strlen(s_id) == 0) s_id = "default_session";
-                if (c_agent_save_session(h->agent, s_id, s_id)) {
+                if (belya_agent_save_session(h->agent, s_id, s_id)) {
                     printf("\033[1;32mSession '%s' successfully checkpointed to SQLite database.\033[0m\n\n", s_id);
                 } else {
                     printf("\033[1;31mFailed to save session.\033[0m\n\n");
@@ -1689,7 +1689,7 @@ void c_harness_repl(CHarness *h) {
                 const char *s_id = strlen(input_buf) > 7 ? input_buf + 7 : "";
                 while (*s_id == ' ') s_id++;
                 if (strlen(s_id) > 0) {
-                    if (c_agent_load_session(h->agent, s_id)) {
+                    if (belya_agent_load_session(h->agent, s_id)) {
                         printf("\033[1;32mSession '%s' successfully loaded (%zu messages restored).\033[0m\n\n", s_id, h->agent->msg_count);
                     } else {
                         printf("\033[1;31mSession '%s' not found or empty.\033[0m\n\n", s_id);
@@ -1702,13 +1702,13 @@ void c_harness_repl(CHarness *h) {
             if (strncmp(input_buf, "/skills", 7) == 0) {
                 const char *q = strlen(input_buf) > 7 ? input_buf + 7 : "";
                 while (*q == ' ') q++;
-                char *sk = c_agent_search_skills(h->agent, q);
+                char *sk = belya_agent_search_skills(h->agent, q);
                 printf("\n%s\n", sk ? sk : "No skills found.");
                 if (sk) free(sk);
                 continue;
             }
             if (strcmp(input_buf, "/checkpoints") == 0) {
-                char *cps = c_agent_list_checkpoints(h->agent);
+                char *cps = belya_agent_list_checkpoints(h->agent);
                 printf("\n%s\n", cps ? cps : "");
                 if (cps) free(cps);
                 continue;
@@ -1716,7 +1716,7 @@ void c_harness_repl(CHarness *h) {
             if (strncmp(input_buf, "/checkpoint", 11) == 0) {
                 const char *lbl = strlen(input_buf) > 11 ? input_buf + 11 : "";
                 while (*lbl == ' ') lbl++;
-                if (c_agent_create_checkpoint(h->agent, strlen(lbl) > 0 ? lbl : "manual")) {
+                if (belya_agent_create_checkpoint(h->agent, strlen(lbl) > 0 ? lbl : "manual")) {
                     printf("\033[1;32mGit & state checkpoint created successfully.\033[0m\n\n");
                 } else {
                     printf("\033[1;31mFailed to create checkpoint.\033[0m\n\n");
@@ -1726,7 +1726,7 @@ void c_harness_repl(CHarness *h) {
             if (strncmp(input_buf, "/rollback", 9) == 0) {
                 const char *cid = strlen(input_buf) > 9 ? input_buf + 9 : "";
                 while (*cid == ' ') cid++;
-                if (c_agent_rollback_to_checkpoint(h->agent, strlen(cid) > 0 ? cid : NULL)) {
+                if (belya_agent_rollback_to_checkpoint(h->agent, strlen(cid) > 0 ? cid : NULL)) {
                     printf("\033[1;32mRollback completed successfully (%zu messages active in context).\033[0m\n\n", h->agent->msg_count);
                 } else {
                     printf("\033[1;31mRollback failed (no matching checkpoint found).\033[0m\n\n");
@@ -1743,7 +1743,7 @@ void c_harness_repl(CHarness *h) {
                 }
                 const char *sid = strlen(target_session) > 0 ? target_session : NULL;
                 const char *outf = strlen(target_file) > 0 ? target_file : NULL;
-                if (c_agent_export_trajectory(h->agent, sid, outf)) {
+                if (belya_agent_export_trajectory(h->agent, sid, outf)) {
                     printf("\033[1;32mTrajectory exported to %s (OpenAI fine-tune JSONL format).\033[0m\n\n", outf ? outf : "trajectory_*.jsonl");
                 } else {
                     printf("\033[1;31mFailed to export trajectory.\033[0m\n\n");
@@ -1762,13 +1762,13 @@ void c_harness_repl(CHarness *h) {
                 continue;
             }
             if (strcmp(input_buf, "/reflect") == 0) {
-                char *ref = c_agent_reflect_and_distill(h->agent);
+                char *ref = belya_agent_reflect_and_distill(h->agent);
                 printf("\n\033[1;36m=== Reflection & Skill Distillation ===\033[0m\n%s\n\n", ref);
                 free(ref);
                 continue;
             }
             if (strcmp(input_buf, "/clear") == 0 || strcmp(input_buf, "/reset") == 0 || strcmp(input_buf, "/new") == 0) {
-                c_agent_clear_history(h->agent);
+                belya_agent_clear_history(h->agent);
                 printf("\033[1;32mSession reset. Conversation context cleared (system prompt and persistent SQLite memory preserved).\033[0m\n\n");
                 continue;
             }
@@ -1778,14 +1778,14 @@ void c_harness_repl(CHarness *h) {
                     keep = (size_t)atoi(input_buf + 8);
                     if (keep == 0) keep = 10;
                 }
-                c_agent_compact_history(h->agent, keep);
+                belya_agent_compact_history(h->agent, keep);
                 printf("\033[1;32mContext compacted to %zu messages.\033[0m\n\n", h->agent->msg_count);
                 continue;
             }
             if (strncmp(input_buf, "/memory", 7) == 0) {
                 const char *query = strlen(input_buf) > 7 ? input_buf + 7 : "";
                 while (*query == ' ') query++;
-                char *res = c_agent_search_memory(h->agent, strlen(query) > 0 ? query : "");
+                char *res = belya_agent_search_memory(h->agent, strlen(query) > 0 ? query : "");
                 printf("\n\033[1;36m=== Memory Search: '%s' ===\033[0m\n%s\n", query, res ? res : "No results.");
                 if (res) free(res);
                 continue;
@@ -1820,7 +1820,7 @@ void c_harness_repl(CHarness *h) {
                 const char *cmd = strlen(input_buf) > 4 ? input_buf + 4 : "";
                 while (*cmd == ' ') cmd++;
                 if (strlen(cmd) > 0) {
-                    c_harness_connect_mcp(h, cmd);
+                    belya_harness_connect_mcp(h, cmd);
                 } else {
                     printf("Usage: /mcp <server_command> (e.g. /mcp npx -y @modelcontextprotocol/server-filesystem .)\n\n");
                 }
@@ -1830,14 +1830,14 @@ void c_harness_repl(CHarness *h) {
             continue;
         }
 
-        c_harness_execute_turn(h, input_buf);
+        belya_harness_execute_turn(h, input_buf);
     }
 }
 
-void c_harness_execute_turn(CHarness *h, const char *prompt) {
+void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
     if (!h || !prompt || strlen(prompt) == 0) return;
 
-    c_agent_add_message(h->agent, "user", prompt);
+    belya_agent_add_message(h->agent, "user", prompt);
 
     // Turn Execution Cycle
     bool turn_running = true;
@@ -1847,11 +1847,11 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
         if (!h->agent->gateway->streaming) {
             printf("\033[0;33m[Thinking...]\033[0m\n");
         }
-        ModelGatewayResponse resp = c_agent_step(h->agent);
+        ModelGatewayResponse resp = belya_agent_step(h->agent);
 
         if (!resp.has_tool_call) {
             if (!h->agent->gateway->streaming) {
-                printf("\n\033[1;34m[C Agent]\033[0m\n%s\n\n", resp.content ? resp.content : "");
+                printf("\n\033[1;34m[Belya]\033[0m\n%s\n\n", resp.content ? resp.content : "");
             } else {
                 printf("\n\n");
             }
@@ -1861,7 +1861,7 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
                 ModelParsedToolCall *tc = &resp.tool_calls[i];
                 printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
 
-                CHarnessRegisteredTool *matched = NULL;
+                BelyaRegisteredTool *matched = NULL;
                 for (size_t t = 0; t < h->tool_count; t++) {
                     if (strcmp(h->tools[t].name, tc->name) == 0) {
                         matched = &h->tools[t];
@@ -1871,7 +1871,7 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
 
                 if (!matched || matched->security == PERM_DENY) {
                     printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
-                    c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                    belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
                     continue;
                 }
 
@@ -1884,7 +1884,7 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
                     }
                     if (!permitted) {
                         printf("\033[1;31m[Rejected]: Operation cancelled by operator.\033[0m\n");
-                        c_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
+                        belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
                         continue;
                     }
                 }
@@ -1901,7 +1901,7 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
                 json_free(args_parsed);
 
                 printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
-                c_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
+                belya_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
                 if (observation) free(observation);
             }
         }
@@ -1909,7 +1909,7 @@ void c_harness_execute_turn(CHarness *h, const char *prompt) {
     }
 }
 
-void c_harness_free(CHarness *h) {
+void belya_harness_free(BelyaHarness *h) {
     if (!h) return;
     for (size_t i = 0; i < h->tool_count; i++) {
         if (h->tools[i].name) free(h->tools[i].name);
@@ -1918,7 +1918,7 @@ void c_harness_free(CHarness *h) {
     for (size_t s = 0; s < h->mcp_server_count; s++) {
         mcp_client_close(h->mcp_servers[s]);
     }
-    c_agent_free(h->agent);
+    belya_agent_free(h->agent);
     if (g_harness == h) g_harness = NULL;
     free(h);
 }

@@ -1,6 +1,6 @@
-# CHarness & CAgent — High-Performance Autonomous C Agent & Security Execution Sandbox
+# Belya & Belya Harness — High-Performance Autonomous Belya Agent & Security Execution Sandbox
 
-[![Release](https://img.shields.io/badge/Release-v4.2.0-blue.svg)](https://github.com/M4F-S/CHarness/releases/tag/v4.2.0)
+[![Release](https://img.shields.io/badge/Release-v4.4.1-blue.svg)](https://github.com/M4F-S/Belya Harness/releases/tag/v4.4.1)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
 [![Tests](https://img.shields.io/badge/Unit_Tests-20%2F20_Passed_(100%25)-brightgreen.svg)]()
@@ -44,24 +44,24 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
 
 ## Architectural Overview
 
-CHarness and CAgent feature a clean **Brain & Sandbox** separation. You can run them **together as an autonomous software engineer** or use **CHarness alone as a standalone security execution runtime** for any external agent or application.
+Belya and Belya Harness feature a clean **Brain & Sandbox** separation. You can run them **together as an autonomous software engineer** or use **Belya Harness alone as a standalone security execution runtime** for any external agent or application.
 
 ```mermaid
 graph TD
-    subgraph "Mode A: Full Autonomous Agent System (CAgent + CHarness)"
-        User["Operator (Terminal CLI / Telegram Bot)"] --> H["CHarness Runtime & Security Sandbox"]
-        H --> A["CAgent Reasoning Core (ReAct / Autonomous Mission Loop)"]
+    subgraph "Mode A: Full Autonomous Agent System (Belya Agent + Belya Harness)"
+        User["Operator (Terminal CLI / Telegram Bot)"] --> H["Belya Harness Runtime & Security Sandbox"]
+        H --> A["Belya Agent Reasoning Core (ReAct / Autonomous Mission Loop)"]
         A --> GW["Model Gateway (OpenRouter / DeepSeek / Ollama / OpenAI / vLLM)"]
         A --> DB[("SQLite FTS5 + Gomaa Memory, Skills & Checkpoints")]
         A --> SCAV["Tool-Call Scavenger (Reasoning Extraction Engine)"]
         A --> SUB["spawn_subagent (Isolated Sandbox Workers)"]
     end
 
-    subgraph "Mode B: Standalone Security Harness (CHarness Alone)"
-        Ext["External App / Python / Node / Custom Agent"] --> H2["CHarness Sandboxed Execution Engine"]
+    subgraph "Mode B: Standalone Security Harness (Belya Harness Alone)"
+        Ext["External App / Python / Node / Custom Agent"] --> H2["Belya Harness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
         H2 --> T1["17 Native Tools (bash, edit_file, fetch_url, git, skills, memory)"]
-        H2 --> T2["Dynamic Custom Tools (.charness/tools/)"]
+        H2 --> T2["Dynamic Custom Tools (.belya/tools/)"]
         H2 --> T3["MCP Client (JSON-RPC stdio servers)"]
     end
 ```
@@ -82,7 +82,7 @@ graph TD
   - **FTS5 Sanitization & Deduplication:** Queries sanitize delimiters (`:`, `/`) to prevent syntax errors; query results use `GROUP BY` deduplication to prevent repeated entries.
   - **Persistent Timeline Logging:** Chronological event timeline recording tool executions, memory writes, compactions, and session checkpoints (`/timeline [N]`).
 - **3-Zone Prefix Cache Invariant & Economics:** Strict byte-locked Zone 1 pinned prefix (system prompt + skills manifest), Zone 2 append-only history log, and Zone 3 ephemeral skill guidance injection for 90%+ prompt cache hit rates. Real-time cache economics tracking via `/cache`.
-- **Git State Checkpoints & Instant Rollback:** Automated per-turn commit snapshots and manual checkpointing (`c_agent_create_checkpoint`, `/checkpoint [id]`, `/rollback [id]`) restoring workspace files and conversation context instantly.
+- **Git State Checkpoints & Instant Rollback:** Automated per-turn commit snapshots and manual checkpointing (`belya_agent_create_checkpoint`, `/checkpoint [id]`, `/rollback [id]`) restoring workspace files and conversation context instantly.
 - **Fine-Tuning Trajectory Exporter:** Export complete multi-turn conversations and tool execution trajectories into standard OpenAI fine-tune JSONL format (`/export [session_id] [file]`).
 - **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted), real-time streaming, typing indicators, and session management (`/reset`, `/clear`, `/new`, `/compact`).
 
@@ -90,7 +90,7 @@ graph TD
 
 ## Multi-Arena Benchmarks & Frontier Agent Evaluation
 
-CAgent and CHarness were evaluated across a rigorous 5-arena benchmark suite (`c_agent_benchmark`) measuring function calling accuracy, polyglot editing precision, long-context memory retention, autonomous problem solving, and low-level system efficiency against frontier AI coding agents (**Devin, OpenHands / OpenDevin, SWE-agent, Aider, and Cline**).
+Belya and Belya Harness were evaluated across a rigorous 5-arena benchmark suite (`belya_benchmark`) measuring function calling accuracy, polyglot editing precision, long-context memory retention, autonomous problem solving, and low-level system efficiency against frontier AI coding agents (**Devin, OpenHands / OpenDevin, SWE-agent, Aider, and Cline**).
 
 ### 1. Comprehensive Scorecard (30/30 - 100% Passed)
 
@@ -122,7 +122,7 @@ CAgent and CHarness were evaluated across a rigorous 5-arena benchmark suite (`c
 
 ### 3. Frontier Agent Architectural Comparison
 
-| Architectural Feature | **CAgent 4.0** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
+| Architectural Feature | **Belya Agent 4.0** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
 |:---|:---:|:---:|:---:|:---:|:---:|
 | **Core Runtime** | **Pure C99 POSIX** | Proprietary | Python / Docker | Python | Python CLI |
 | **RAM Footprint (RSS)** | **< 3–12 MB** | ~800 MB (Cloud) | ~1,500 MB | ~450 MB | ~250 MB |
@@ -164,8 +164,8 @@ brew install curl sqlite3
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/M4F-S/CHarness.git
-cd CHarness
+git clone https://github.com/M4F-S/Belya Harness.git
+cd Belya Harness
 
 # 2. Build the self-contained executable
 make
@@ -177,7 +177,7 @@ make test
 make benchmark
 ```
 
-This compiles the standalone binary: `./c_agent_system` (~166KB binary size).
+This compiles the standalone binary: `./belya` (~166KB binary size).
 
 ---
 
@@ -205,27 +205,27 @@ export MODEL_API_KEY="none"
 
 #### 2. Start the Agent
 ```bash
-./c_agent_system
+./belya
 ```
 
 #### 3. Interacting with the Agent
 Type your request in natural language. The agent will read files, execute shell commands, edit code, auto-heal compiler warnings, and report results:
 ```text
-charness [1 msgs | 67 toks]> Create a lock-free SPSC ring buffer in pure C99 and benchmark it.
+belya [1 msgs | 67 toks]> Create a lock-free SPSC ring buffer in pure C99 and benchmark it.
 ```
 
 ---
 
 ### Mode 2: 24/7 VPS Telegram Bot Daemon
 
-Run CAgent as a persistent background daemon on your VPS to manage servers, audit infrastructure, and develop software remotely from Telegram.
+Run Belya Agent as a persistent background daemon on your VPS to manage servers, audit infrastructure, and develop software remotely from Telegram.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as You (Telegram Mobile)
-    participant Bot as CAgent Daemon (VPS)
-    participant Harness as CHarness Security Sandbox
+    participant Bot as Belya Agent Daemon (VPS)
+    participant Harness as Belya Harness Security Sandbox
     participant Tools as VPS Native Tools (bash, gcc, git)
 
     User->>Bot: "Run strict benchmark and push release tag"
@@ -258,15 +258,15 @@ TELEGRAM_CHAT_ID=7934918808
 
 #### 3. Run as a Systemd Service (Auto-restart on boot)
 ```bash
-sudo cp charness.service /etc/systemd/system/
+sudo cp belya.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now charness
+sudo systemctl enable --now belya
 ```
 
 Check status or stream live logs anytime:
 ```bash
-sudo systemctl status charness
-sudo journalctl -u charness -f
+sudo systemctl status belya
+sudo journalctl -u belya -f
 ```
 
 ---
@@ -277,25 +277,25 @@ Execute automated one-shot missions directly from the terminal or in CI/CD pipel
 
 ```bash
 # Execute prompt directly and output result to stdout
-./c_agent_system -p "Audit the repository for security vulnerabilities and output a report in markdown"
+./belya -p "Audit the repository for security vulnerabilities and output a report in markdown"
 
 # Or using --headless / --eval aliases
-./c_agent_system --headless "Run make test, fix any compiler warnings, and commit changes"
-./c_agent_system --eval "Benchmark matrix evaluation task"
+./belya --headless "Run make test, fix any compiler warnings, and commit changes"
+./belya --eval "Benchmark matrix evaluation task"
 ```
 
 ---
 
 ### Mode 4: Standalone Security Execution Sandbox
 
-Use `CHarness` purely as an embedded C99 execution engine for external agents, scripts, or Python/Node runtimes.
+Use `Belya Harness` purely as an embedded C99 execution engine for external agents, scripts, or Python/Node runtimes.
 
 ```c
 #include "c_harness.h"
 
 int main(void) {
     // Initialize standalone sandbox without an LLM
-    CHarness *h = c_harness_init(NULL);
+    Belya Harness *h = c_harness_init(NULL);
 
     // Prepare tool arguments
     JsonValue *args = json_create_object();
@@ -375,7 +375,7 @@ int main(void) {
 Frontier reasoning models (like DeepSeek-R1) often output tool invocations directly within `<think>` reasoning traces or markdown code blocks without setting formal tool-call flags. The scavenger engine scans model responses with balanced-brace parsing, validates tool names against the active registry, parses arguments safely, and invokes tools seamlessly.
 
 ### 2. Pre-Flight Compiler Watchdog & Auto-Healing
-Whenever `write_file`, `edit_file`, or `apply_patch` modifies a `.c`, `.h`, `.cpp`, or `.cc` file, CHarness runs `gcc -fsyntax-only` in the background. If syntax errors exist, structured compiler diagnostics are returned directly to the agent. When `verify_compile: true` is passed, failing edits are **automatically reverted** to preserve file integrity.
+Whenever `write_file`, `edit_file`, or `apply_patch` modifies a `.c`, `.h`, `.cpp`, or `.cc` file, Belya Harness runs `gcc -fsyntax-only` in the background. If syntax errors exist, structured compiler diagnostics are returned directly to the agent. When `verify_compile: true` is passed, failing edits are **automatically reverted** to preserve file integrity.
 
 ### 3. Gomaa Memory Paradigm & Scoping
 - **Scoped Wings & Rooms:** Knowledge is organized under domain paths (`wing/room: topic`), preventing context pollution.
@@ -384,7 +384,7 @@ Whenever `write_file`, `edit_file`, or `apply_patch` modifies a `.c`, `.h`, `.cp
 - **Salience & Recency:** Recalled memories receive an automatic salience boost.
 
 ### 4. Dynamic Self-Tooling & Parameter Contracts
-When the agent creates a custom tool via `define_tool`, the script is stored in `.charness/tools/` and registered dynamically. The execution runner provides an explicit parameter contract:
+When the agent creates a custom tool via `define_tool`, the script is stored in `.belya/tools/` and registered dynamically. The execution runner provides an explicit parameter contract:
 - **Environment Variables:** `$PARAM_<KEY>` and `$ARG_<KEY>` (e.g. `$PARAM_INPUT`).
 - **Positional Arguments:** `$1` (primary input) and `$2` (raw JSON arguments).
 - **Standard Input (`stdin`):** Streamed JSON payload.
@@ -412,7 +412,7 @@ make test
 ```
 
 ```text
-================ Running CHarness & CAgent Super Strict Test Suite ================
+================ Running Belya & Belya Harness Super Strict Test Suite ================
 [Test] DynString Operations...
   -> DynString PASSED
 [Test] MiniJSON Parser & Serializer...

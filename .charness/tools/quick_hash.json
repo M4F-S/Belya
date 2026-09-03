@@ -1,1 +1,0 @@
-{"name":"quick_hash","description":"Computes SHA-256 hash of an input string. Provide 'input' argument with the string to hash.","parameters":{"type":"object"},"script_path":".charness/tools/quick_hash.sh"}

@@ -1,8 +1,8 @@
-#include "c_agent.h"
+#include "belya_agent.h"
 #include <time.h>
 #include <ctype.h>
 
-static void free_single_message(AgentMessage *m) {
+static void free_single_message(BelyaMessage *m) {
     if (!m) return;
     if (m->role) { free(m->role); m->role = NULL; }
     if (m->content) { free(m->content); m->content = NULL; }
@@ -19,11 +19,11 @@ static void free_single_message(AgentMessage *m) {
     m->tool_call_count = 0;
 }
 
-CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions) {
-    CAgent *agent = calloc(1, sizeof(CAgent));
+BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions) {
+    BelyaAgent *agent = calloc(1, sizeof(BelyaAgent));
     agent->gateway = gw;
     agent->msg_cap = 64;
-    agent->messages = calloc(agent->msg_cap, sizeof(AgentMessage));
+    agent->messages = calloc(agent->msg_cap, sizeof(BelyaMessage));
     agent->max_context_messages = 50;
     
     const char *tok_budget_env = getenv("MAX_CONTEXT_TOKENS");
@@ -121,7 +121,7 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     DynString sys = dyn_str_new();
     if (system_instructions && strlen(system_instructions) > 0) {
         dyn_str_append(&sys, system_instructions);
-        dyn_str_append(&sys, "\n\nYou are CAgent, an autonomous software engine. Use your tools sequentially to solve tasks.");
+        dyn_str_append(&sys, "\n\nYou are BelyaAgent, an autonomous software engine. Use your tools sequentially to solve tasks.");
     } else {
         dyn_str_append(&sys,
             "Role & Objective:\n"
@@ -135,7 +135,7 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
             "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
             "3. Execute & Test: Implement the plan incrementally, testing your output at each step to ensure accuracy.\n"
             "4. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.\n\n"
-            "You are CAgent, an autonomous software engine. Use your tools sequentially to solve tasks."
+            "You are BelyaAgent, an autonomous software engine. Use your tools sequentially to solve tasks."
         );
     }
 
@@ -165,68 +165,68 @@ CAgent *c_agent_init(ModelGateway *gw, const char *db_path, const char *system_i
     }
 
     // Progressive Disclosure: Append compact skills manifest (capped at top 20 by salience)
-    char *skills_manifest = c_agent_get_skills_manifest(agent);
+    char *skills_manifest = belya_agent_get_skills_manifest(agent);
     if (skills_manifest && strlen(skills_manifest) > 0) {
         dyn_str_append(&sys, "\n\n=== Available Procedural Skills ===\n");
         dyn_str_append(&sys, skills_manifest);
         free(skills_manifest);
     }
 
-    c_agent_add_message(agent, "system", sys.data);
+    belya_agent_add_message(agent, "system", sys.data);
     dyn_str_free(&sys);
 
     return agent;
 }
 
-void c_agent_register_schema(CAgent *agent, const char *name, const char *desc, JsonValue *params) {
+void belya_agent_register_schema(BelyaAgent *agent, const char *name, const char *desc, JsonValue *params) {
     agent->schema_count++;
-    AgentToolSchema *new_schemas = realloc(agent->schemas, sizeof(AgentToolSchema) * agent->schema_count);
+    BelyaToolSchema *new_schemas = realloc(agent->schemas, sizeof(BelyaToolSchema) * agent->schema_count);
     if (!new_schemas) {
-        fprintf(stderr, "[Fatal] Out of memory in c_agent_register_schema\n");
+        fprintf(stderr, "[Fatal] Out of memory in belya_agent_register_schema\n");
         abort();
     }
     agent->schemas = new_schemas;
-    AgentToolSchema *s = &agent->schemas[agent->schema_count - 1];
+    BelyaToolSchema *s = &agent->schemas[agent->schema_count - 1];
     s->name = strdup(name);
     s->description = strdup(desc);
     s->parameters_schema = params;
 }
 
-void c_agent_add_message(CAgent *agent, const char *role, const char *content) {
+void belya_agent_add_message(BelyaAgent *agent, const char *role, const char *content) {
     if (agent->msg_count >= agent->msg_cap) {
         agent->msg_cap *= 2;
-        AgentMessage *new_msgs = realloc(agent->messages, sizeof(AgentMessage) * agent->msg_cap);
+        BelyaMessage *new_msgs = realloc(agent->messages, sizeof(BelyaMessage) * agent->msg_cap);
         if (!new_msgs) {
-            fprintf(stderr, "[Fatal] Out of memory in c_agent_add_message\n");
+            fprintf(stderr, "[Fatal] Out of memory in belya_agent_add_message\n");
             abort();
         }
         agent->messages = new_msgs;
     }
-    AgentMessage *m = &agent->messages[agent->msg_count++];
-    memset(m, 0, sizeof(AgentMessage));
+    BelyaMessage *m = &agent->messages[agent->msg_count++];
+    memset(m, 0, sizeof(BelyaMessage));
     m->role = strdup(role);
     m->content = strdup(content ? content : "");
 }
 
-void c_agent_add_tool_result(CAgent *agent, const char *tool_call_id, const char *name, const char *result) {
+void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, const char *name, const char *result) {
     (void)name;
     if (agent->msg_count >= agent->msg_cap) {
         agent->msg_cap *= 2;
-        AgentMessage *new_msgs = realloc(agent->messages, sizeof(AgentMessage) * agent->msg_cap);
+        BelyaMessage *new_msgs = realloc(agent->messages, sizeof(BelyaMessage) * agent->msg_cap);
         if (!new_msgs) {
-            fprintf(stderr, "[Fatal] Out of memory in c_agent_add_tool_result\n");
+            fprintf(stderr, "[Fatal] Out of memory in belya_agent_add_tool_result\n");
             abort();
         }
         agent->messages = new_msgs;
     }
-    AgentMessage *m = &agent->messages[agent->msg_count++];
-    memset(m, 0, sizeof(AgentMessage));
+    BelyaMessage *m = &agent->messages[agent->msg_count++];
+    memset(m, 0, sizeof(BelyaMessage));
     m->role = strdup("tool");
     m->tool_call_id = strdup(tool_call_id ? tool_call_id : "call_default");
     m->content = strdup(result ? result : "");
 }
 
-void c_agent_log_timeline(CAgent *agent, const char *event_type, const char *summary) {
+void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const char *summary) {
     if (!agent || !agent->db || !event_type || !summary) return;
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO agent_timeline (event_type, summary) VALUES (?, ?);";
@@ -238,7 +238,7 @@ void c_agent_log_timeline(CAgent *agent, const char *event_type, const char *sum
     }
 }
 
-char *c_agent_get_timeline(CAgent *agent, int limit) {
+char *belya_agent_get_timeline(BelyaAgent *agent, int limit) {
     if (!agent || !agent->db) return strdup("Timeline database not active.");
     if (limit <= 0) limit = 15;
 
@@ -266,7 +266,7 @@ char *c_agent_get_timeline(CAgent *agent, int limit) {
     return ds.data;
 }
 
-void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char *content, const char *wing, const char *room) {
+void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, const char *content, const char *wing, const char *room) {
     if (!agent || !agent->db || !topic || !content) return;
     const char *w = (wing && strlen(wing) > 0) ? wing : "default";
     const char *r = (room && strlen(room) > 0) ? room : "general";
@@ -307,10 +307,10 @@ void c_agent_persist_memory_scoped(CAgent *agent, const char *topic, const char 
 
     char log_summary[256];
     snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, topic);
-    c_agent_log_timeline(agent, "memory_persisted", log_summary);
+    belya_agent_log_timeline(agent, "memory_persisted", log_summary);
 }
 
-void c_agent_persist_memory(CAgent *agent, const char *topic, const char *content) {
+void belya_agent_persist_memory(BelyaAgent *agent, const char *topic, const char *content) {
     if (!topic || !content) return;
 
     char wing[64] = "default";
@@ -332,7 +332,7 @@ void c_agent_persist_memory(CAgent *agent, const char *topic, const char *conten
         }
     }
 
-    c_agent_persist_memory_scoped(agent, actual_topic, content, wing, room);
+    belya_agent_persist_memory_scoped(agent, actual_topic, content, wing, room);
 }
 
 static char *sanitize_fts5_query(const char *raw) {
@@ -349,7 +349,7 @@ static char *sanitize_fts5_query(const char *raw) {
     return ds.data;
 }
 
-char *c_agent_search_memory(CAgent *agent, const char *query) {
+char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
     if (!agent->db) return strdup("Memory database not active.");
     DynString out = dyn_str_new();
 
@@ -437,7 +437,7 @@ char *c_agent_search_memory(CAgent *agent, const char *query) {
     return out.data;
 }
 
-void c_agent_compact_history(CAgent *agent, size_t keep_recent) {
+void belya_agent_compact_history(BelyaAgent *agent, size_t keep_recent) {
     if (!agent || agent->msg_count <= 1 + keep_recent) return;
 
     size_t drop_count = agent->msg_count - 1 - keep_recent;
@@ -452,7 +452,7 @@ void c_agent_compact_history(CAgent *agent, size_t keep_recent) {
     agent->msg_count = 1 + remaining;
 }
 
-void c_agent_clear_history(CAgent *agent) {
+void belya_agent_clear_history(BelyaAgent *agent) {
     if (!agent || agent->msg_count <= 1) return;
     for (size_t i = 1; i < agent->msg_count; i++) {
         free_single_message(&agent->messages[i]);
@@ -460,7 +460,7 @@ void c_agent_clear_history(CAgent *agent) {
     agent->msg_count = 1;
 }
 
-size_t c_agent_total_tokens(const CAgent *agent) {
+size_t belya_agent_total_tokens(const BelyaAgent *agent) {
     if (!agent) return 0;
     size_t total = 0;
     for (size_t i = 0; i < agent->msg_count; i++) {
@@ -479,7 +479,7 @@ size_t c_agent_total_tokens(const CAgent *agent) {
     return total;
 }
 
-bool c_agent_save_session(CAgent *agent, const char *session_id, const char *title) {
+bool belya_agent_save_session(BelyaAgent *agent, const char *session_id, const char *title) {
     if (!agent || !agent->db || !session_id || strlen(session_id) == 0) return false;
 
     // Upsert session metadata
@@ -535,12 +535,12 @@ bool c_agent_save_session(CAgent *agent, const char *session_id, const char *tit
 
     char save_summary[256];
     snprintf(save_summary, sizeof(save_summary), "Session '%s' saved (%zu messages)", session_id, agent->msg_count);
-    c_agent_log_timeline(agent, "session_saved", save_summary);
+    belya_agent_log_timeline(agent, "session_saved", save_summary);
 
     return true;
 }
 
-bool c_agent_load_session(CAgent *agent, const char *session_id) {
+bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
     if (!agent || !agent->db || !session_id) return false;
 
     sqlite3_stmt *stmt;
@@ -552,12 +552,12 @@ bool c_agent_load_session(CAgent *agent, const char *session_id) {
     // Temporarily collect messages
     size_t count = 0;
     size_t cap = 32;
-    AgentMessage *loaded = calloc(cap, sizeof(AgentMessage));
+    BelyaMessage *loaded = calloc(cap, sizeof(BelyaMessage));
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         if (count >= cap) {
             cap *= 2;
-            AgentMessage *more = realloc(loaded, sizeof(AgentMessage) * cap);
+            BelyaMessage *more = realloc(loaded, sizeof(BelyaMessage) * cap);
             if (!more) { sqlite3_finalize(stmt); return false; }
             loaded = more;
         }
@@ -567,8 +567,8 @@ bool c_agent_load_session(CAgent *agent, const char *session_id) {
         const char *t_id = (const char *)sqlite3_column_text(stmt, 3);
         const char *tc_json = (const char *)sqlite3_column_text(stmt, 4);
 
-        AgentMessage *m = &loaded[count++];
-        memset(m, 0, sizeof(AgentMessage));
+        BelyaMessage *m = &loaded[count++];
+        memset(m, 0, sizeof(BelyaMessage));
         m->role = strdup(role ? role : "user");
         m->content = strdup(content ? content : "");
         if (t_id && strlen(t_id) > 0) m->tool_call_id = strdup(t_id);
@@ -610,12 +610,12 @@ bool c_agent_load_session(CAgent *agent, const char *session_id) {
 
     char load_summary[256];
     snprintf(load_summary, sizeof(load_summary), "Session '%s' restored (%zu messages)", session_id, count);
-    c_agent_log_timeline(agent, "session_loaded", load_summary);
+    belya_agent_log_timeline(agent, "session_loaded", load_summary);
 
     return true;
 }
 
-char *c_agent_list_sessions(CAgent *agent) {
+char *belya_agent_list_sessions(BelyaAgent *agent) {
     if (!agent || !agent->db) return strdup("Session store not active.");
 
     sqlite3_stmt *stmt;
@@ -646,7 +646,7 @@ char *c_agent_list_sessions(CAgent *agent) {
     return ds.data;
 }
 
-char *c_agent_reflect_and_distill(CAgent *agent) {
+char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
     if (!agent || agent->msg_count <= 2) {
         return strdup("Not enough conversation turns to distill a reusable skill.");
     }
@@ -677,10 +677,10 @@ char *c_agent_reflect_and_distill(CAgent *agent) {
         topic[57] = '.'; topic[58] = '.'; topic[59] = '.'; topic[60] = '\0';
     }
 
-    c_agent_persist_memory(agent, topic, skill.data);
+    belya_agent_persist_memory(agent, topic, skill.data);
     dyn_str_free(&skill);
 
-    c_agent_log_timeline(agent, "skill_distilled", topic);
+    belya_agent_log_timeline(agent, "skill_distilled", topic);
 
     DynString res = dyn_str_new();
     dyn_str_appendf(&res, "Successfully distilled and indexed skill into SQLite FTS5 memory under topic: '%s'", topic);
@@ -710,7 +710,7 @@ static bool contains_case_insensitive(const char *haystack, const char *needle) 
     return false;
 }
 
-bool c_agent_save_skill(CAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions) {
+bool belya_agent_save_skill(BelyaAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions) {
     if (!agent || !agent->db || !name || !instructions) return false;
     const char *trig = (trigger && strlen(trigger) > 0) ? trigger : name;
     const char *description = (desc && strlen(desc) > 0) ? desc : name;
@@ -718,16 +718,16 @@ bool c_agent_save_skill(CAgent *agent, const char *name, const char *trigger, co
     DynString content = dyn_str_new();
     dyn_str_appendf(&content, "Description: %s\nInstructions:\n%s", description, instructions);
 
-    c_agent_persist_memory_scoped(agent, name, content.data, "skills", trig);
+    belya_agent_persist_memory_scoped(agent, name, content.data, "skills", trig);
     dyn_str_free(&content);
 
     char summary[256];
     snprintf(summary, sizeof(summary), "Skill saved: %s (Trigger: %s)", name, trig);
-    c_agent_log_timeline(agent, "skill_saved", summary);
+    belya_agent_log_timeline(agent, "skill_saved", summary);
     return true;
 }
 
-char *c_agent_search_skills(CAgent *agent, const char *query) {
+char *belya_agent_search_skills(BelyaAgent *agent, const char *query) {
     if (!agent || !agent->db) return strdup("Memory database not active.");
     DynString ds = dyn_str_new();
     sqlite3_stmt *stmt;
@@ -760,7 +760,7 @@ char *c_agent_search_skills(CAgent *agent, const char *query) {
     return ds.data;
 }
 
-char *c_agent_get_skills_manifest(CAgent *agent) {
+char *belya_agent_get_skills_manifest(BelyaAgent *agent) {
     if (!agent || !agent->db) return NULL;
     sqlite3_stmt *stmt;
     const char *sql = "SELECT topic, room, content FROM agent_memory WHERE wing = 'skills' ORDER BY salience DESC, access_count DESC LIMIT 20;";
@@ -796,7 +796,7 @@ char *c_agent_get_skills_manifest(CAgent *agent) {
     return ds.data;
 }
 
-char *c_agent_match_skill_for_prompt(CAgent *agent, const char *user_prompt) {
+char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_prompt) {
     if (!agent || !agent->db || !user_prompt || strlen(user_prompt) == 0) return NULL;
     sqlite3_stmt *stmt;
     const char *sql = "SELECT id, topic, room, content FROM agent_memory WHERE wing = 'skills' ORDER BY salience DESC;";
@@ -834,7 +834,7 @@ char *c_agent_match_skill_for_prompt(CAgent *agent, const char *user_prompt) {
     return matched_content;
 }
 
-bool c_agent_create_checkpoint(CAgent *agent, const char *label) {
+bool belya_agent_create_checkpoint(BelyaAgent *agent, const char *label) {
     if (!agent || !agent->db) return false;
 
     char sha[128] = {0};
@@ -874,11 +874,11 @@ bool c_agent_create_checkpoint(CAgent *agent, const char *label) {
     char log_summary[256];
     snprintf(log_summary, sizeof(log_summary), "Checkpoint: '%s' [Turn %zu | Msg %zu | SHA: %.8s]",
         label ? label : "auto", agent->turn_count, agent->msg_count, sha);
-    c_agent_log_timeline(agent, "checkpoint_created", log_summary);
+    belya_agent_log_timeline(agent, "checkpoint_created", log_summary);
     return true;
 }
 
-bool c_agent_rollback_to_checkpoint(CAgent *agent, const char *checkpoint_id) {
+bool belya_agent_rollback_to_checkpoint(BelyaAgent *agent, const char *checkpoint_id) {
     if (!agent || !agent->db) return false;
     sqlite3_stmt *stmt;
     const char *sql = NULL;
@@ -922,13 +922,13 @@ bool c_agent_rollback_to_checkpoint(CAgent *agent, const char *checkpoint_id) {
     char log_summary[256];
     snprintf(log_summary, sizeof(log_summary), "Rollback to checkpoint #%d '%s' (Restored to %d messages)",
         cid, label ? label : "", target_msg_count);
-    c_agent_log_timeline(agent, "checkpoint_rollback", log_summary);
+    belya_agent_log_timeline(agent, "checkpoint_rollback", log_summary);
 
     sqlite3_finalize(stmt);
     return true;
 }
 
-char *c_agent_list_checkpoints(CAgent *agent) {
+char *belya_agent_list_checkpoints(BelyaAgent *agent) {
     if (!agent || !agent->db) return strdup("Checkpoint store not active.");
     sqlite3_stmt *stmt;
     const char *sql = "SELECT id, label, git_tree_sha, turn_id, msg_count, created_at FROM agent_checkpoints ORDER BY id DESC LIMIT 15;";
@@ -956,7 +956,7 @@ char *c_agent_list_checkpoints(CAgent *agent) {
     return ds.data;
 }
 
-bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char *out_path) {
+bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, const char *out_path) {
     if (!agent) return false;
 
     char default_path[256];
@@ -1035,11 +1035,11 @@ bool c_agent_export_trajectory(CAgent *agent, const char *session_id, const char
 
     char summary[512];
     snprintf(summary, sizeof(summary), "Trajectory exported to %s", out_path);
-    c_agent_log_timeline(agent, "trajectory_exported", summary);
+    belya_agent_log_timeline(agent, "trajectory_exported", summary);
     return true;
 }
 
-char *c_agent_search_conversations(CAgent *agent, const char *query) {
+char *belya_agent_search_conversations(BelyaAgent *agent, const char *query) {
     if (!agent || !agent->db) return strdup("Database not available for conversation history search.");
     if (!query || strlen(query) == 0) return strdup("Error: Missing query string for conversation search.");
 
@@ -1081,14 +1081,14 @@ char *c_agent_search_conversations(CAgent *agent, const char *query) {
     return out.data;
 }
 
-ModelGatewayResponse c_agent_step(CAgent *agent) {
+ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     // Auto-save: save before compaction drops messages, and on turn interval
     if (agent->auto_save_interval > 0 && agent->db) {
         bool should_save = false;
         if (agent->msg_count > 1) {
             if (agent->max_context_messages > 0 && agent->msg_count > agent->max_context_messages)
                 should_save = true;
-            size_t est_tokens = c_agent_total_tokens(agent);
+            size_t est_tokens = belya_agent_total_tokens(agent);
             size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
             if (est_tokens > (budget * 80 / 100) && agent->msg_count > 10)
                 should_save = true;
@@ -1116,10 +1116,10 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             } else {
                 snprintf(short_title, sizeof(short_title), "Auto-save turn %zu", agent->turn_count);
             }
-            if (c_agent_save_session(agent, sid, short_title)) {
+            if (belya_agent_save_session(agent, sid, short_title)) {
                 char auto_msg[96];
                 snprintf(auto_msg, sizeof(auto_msg), "Session auto-saved (turn %zu)", agent->turn_count);
-                c_agent_log_timeline(agent, "auto_save", auto_msg);
+                belya_agent_log_timeline(agent, "auto_save", auto_msg);
             }
             agent->turns_since_save = 0;
         }
@@ -1135,7 +1135,7 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             needs_compaction = true;
             reason = "message count limit";
         }
-        size_t est_tokens = c_agent_total_tokens(agent);
+        size_t est_tokens = belya_agent_total_tokens(agent);
         size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
         if (est_tokens > (budget * agent->compaction_percent / 100) && agent->msg_count > agent->compaction_keep) {
             keep = agent->compaction_keep;
@@ -1188,19 +1188,19 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
                     snprintf(topic, sizeof(topic), "Compacted conversation (turn %zu)", agent->turn_count);
                 }
 
-                c_agent_persist_memory(agent, topic, dropped.data);
+                belya_agent_persist_memory(agent, topic, dropped.data);
                 dyn_str_free(&dropped);
-                c_agent_log_timeline(agent, "memory_before_compaction", topic);
+                belya_agent_log_timeline(agent, "memory_before_compaction", topic);
             }
 
             // Now compact
-            c_agent_compact_history(agent, keep);
+            belya_agent_compact_history(agent, keep);
 
             // Log the compaction
             char comp_msg[128];
             snprintf(comp_msg, sizeof(comp_msg),
                 "Compacted context to %zu messages (%s)", keep, reason ? reason : "unknown");
-            c_agent_log_timeline(agent, "auto_compaction", comp_msg);
+            belya_agent_log_timeline(agent, "auto_compaction", comp_msg);
         }
     }
 
@@ -1212,7 +1212,7 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             break;
         }
     }
-    char *active_skill = last_user_prompt ? c_agent_match_skill_for_prompt(agent, last_user_prompt) : NULL;
+    char *active_skill = last_user_prompt ? belya_agent_match_skill_for_prompt(agent, last_user_prompt) : NULL;
 
     // 1. Build messages array (Zone 1 Pinned Prefix, Zone 2 Append-Only History, Zone 3 Ephemeral Injection)
     JsonValue *messages_arr = json_create_array();
@@ -1304,7 +1304,7 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
             resp.tool_call_count = scavenged;
             char scav_msg[128];
             snprintf(scav_msg, sizeof(scav_msg), "Scavenged %zu tool calls from model reasoning/content stream", scavenged);
-            c_agent_log_timeline(agent, "tool_scavenged", scav_msg);
+            belya_agent_log_timeline(agent, "tool_scavenged", scav_msg);
         }
     }
 
@@ -1326,15 +1326,15 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
     // Append Assistant response to history
     if (agent->msg_count >= agent->msg_cap) {
         agent->msg_cap *= 2;
-        AgentMessage *new_msgs = realloc(agent->messages, sizeof(AgentMessage) * agent->msg_cap);
+        BelyaMessage *new_msgs = realloc(agent->messages, sizeof(BelyaMessage) * agent->msg_cap);
         if (!new_msgs) {
-            fprintf(stderr, "[Fatal] Out of memory in c_agent_step\n");
+            fprintf(stderr, "[Fatal] Out of memory in belya_agent_step\n");
             abort();
         }
         agent->messages = new_msgs;
     }
-    AgentMessage *ast_msg = &agent->messages[agent->msg_count++];
-    memset(ast_msg, 0, sizeof(AgentMessage));
+    BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
+    memset(ast_msg, 0, sizeof(BelyaMessage));
     ast_msg->role = strdup("assistant");
     ast_msg->content = strdup(resp.content ? resp.content : "");
     if (resp.has_tool_call) {
@@ -1353,14 +1353,14 @@ ModelGatewayResponse c_agent_step(CAgent *agent) {
     return resp;
 }
 
-void c_agent_set_auto_save_interval(CAgent *agent, size_t interval) {
+void belya_agent_set_auto_save_interval(BelyaAgent *agent, size_t interval) {
     if (agent) {
         agent->auto_save_interval = interval;
         agent->turns_since_save = 0;
     }
 }
 
-void c_agent_free(CAgent *agent) {
+void belya_agent_free(BelyaAgent *agent) {
     if (!agent) return;
     if (agent->db) {
         sqlite3_wal_checkpoint_v2(agent->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);

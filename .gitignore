@@ -1,8 +1,9 @@
 # Binaries & Object files
 *.o
-c_agent_system
+belya
+belya_test
+belya_benchmark
 test_runner
-c_agent_benchmark
 bench_*
 
 # SQLite Databases & Test Artifacts
@@ -12,12 +13,11 @@ bench_*
 *.sqlite-wal
 test_sample.txt
 test_broken.c
-.charness_history
-.charness/tools/
+.belya_history
+.belya/tools/
 
 # OS / Editor Artifacts
 .DS_Store
 *.dSYM/
 .env
-c_agent_system.bak.*
 run.sh

@@ -1,4 +1,4 @@
-#include "c_harness.h"
+#include "belya_harness.h"
 #include "telegram_adapter.h"
 
 int main(int argc, char **argv) {
@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Usage: c_agent_system [OPTIONS]\n\n");
+            printf("Usage: belya [OPTIONS]\n\n");
             printf("Options:\n");
             printf("  -h, --help                 Show this help message\n");
             printf("  -t, --telegram             Run as Telegram bot daemon\n");
@@ -56,10 +56,10 @@ int main(int argc, char **argv) {
         gateway->streaming = false;
     }
 
-    // 2. Initialize C Agent with persistent SQLite memory & Strategic Execution Directives
+    // 2. Initialize Belya Agent with persistent SQLite memory & Strategic Execution Directives
     const char *default_system_prompt =
         "Role & Objective:\n"
-        "Act as an expert researcher and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+        "Act as Belya, an expert researcher, software engineer, and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
         "Core Rules:\n"
         "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
         "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
@@ -72,25 +72,25 @@ int main(int argc, char **argv) {
         "5. Autonomous Multi-Step Execution: When given a multi-step mission, execute all steps continuously using tool calls without stopping or generating conversational chit-chat between intermediate steps. Only output your final summary once all stages are 100% complete.\n"
         "6. Conversational Fast-Path: For greetings (e.g., 'good morning', 'hello'), pleasantries, questions about your status/capabilities, or direct queries that do not require tool actions, respond directly, politely, and concisely in a single turn with zero tool calls.";
 
-    CAgent *agent = c_agent_init(gateway, "c_agent_memory.sqlite", default_system_prompt);
+    BelyaAgent *agent = belya_agent_init(gateway, "belya_memory.sqlite", default_system_prompt);
 
     // If resume flag is provided, restore session
     if (resume_session_id) {
-        if (c_agent_load_session(agent, resume_session_id)) {
+        if (belya_agent_load_session(agent, resume_session_id)) {
             printf("\033[1;32m[Session Restored]\033[0m Successfully resumed session '%s' (%zu messages loaded).\n", resume_session_id, agent->msg_count);
         } else {
             printf("\033[1;33m[Session Alert]\033[0m Session '%s' not found. Starting fresh session.\n", resume_session_id);
         }
     }
 
-    // 3. Initialize CHarness & register execution engine
-    CHarness *harness = c_harness_init(agent);
+    // 3. Initialize Belya Harness & register execution engine
+    BelyaHarness *harness = belya_harness_init(agent);
 
     if (telegram_mode) {
         if (!tg_token || strlen(tg_token) == 0) {
             fprintf(stderr, "\033[1;31m[Error] Telegram mode requires TELEGRAM_BOT_TOKEN environment variable.\033[0m\n");
-            fprintf(stderr, "Example:\n  export TELEGRAM_BOT_TOKEN=\"123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ\"\n  export TELEGRAM_CHAT_ID=\"987654321\"\n  ./c_agent_system --telegram\n\n");
-            c_harness_free(harness);
+            fprintf(stderr, "Example:\n  export TELEGRAM_BOT_TOKEN=\"123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ\"\n  export TELEGRAM_CHAT_ID=\"987654321\"\n  ./belya --telegram\n\n");
+            belya_harness_free(harness);
             model_gateway_free(gateway);
             return 1;
         }
@@ -100,14 +100,14 @@ int main(int argc, char **argv) {
         telegram_bot_free(bot);
     } else if (headless_prompt) {
         printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
-        c_harness_execute_turn(harness, headless_prompt);
+        belya_harness_execute_turn(harness, headless_prompt);
     } else {
-        printf("Starting CHarness with endpoint: %s (Model: %s)\n", endpoint, model);
-        c_harness_repl(harness);
+        printf("Starting Belya Harness with endpoint: %s (Model: %s)\n", endpoint, model);
+        belya_harness_repl(harness);
     }
 
     // 4. Cleanup
-    c_harness_free(harness);
+    belya_harness_free(harness);
     model_gateway_free(gateway);
 
     return 0;

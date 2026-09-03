@@ -1,6 +1,6 @@
 #define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
-#include "c_harness.h"
+#include "belya_harness.h"
 #include "telegram_adapter.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -230,7 +230,7 @@ static void benchmark_arena1_tool_calling(void) {
             "        {\n"
             "          \"id\": \"call_m1\",\n"
             "          \"type\": \"function\",\n"
-            "          \"function\": { \"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"c_agent.h\\\"}\" }\n"
+            "          \"function\": { \"name\": \"read_file\", \"arguments\": \"{\\\"path\\\":\\\"belya_agent.h\\\"}\" }\n"
             "        },\n"
             "        {\n"
             "          \"id\": \"call_m2\",\n"
@@ -400,8 +400,8 @@ static void benchmark_arena2_polyglot_editing(void) {
     int total = 6;
 
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
-    CAgent *agent = c_agent_init(gw, ":memory:", "Polyglot benchmark agent");
-    CHarness *h = c_harness_init(agent);
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Polyglot benchmark agent");
+    BelyaHarness *h = belya_harness_init(agent);
 
     // Language 1: C99 / C++ Refactoring
     {
@@ -613,7 +613,7 @@ static void benchmark_arena2_polyglot_editing(void) {
         if (res) free(res);
     }
 
-    c_harness_free(h);
+    belya_harness_free(h);
     model_gateway_free(gw);
 
     double t1 = get_time_ms();
@@ -640,16 +640,16 @@ static void benchmark_arena3_memory_retention(void) {
     const char *db_file = "bench_mem.sqlite";
     unlink(db_file);
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
-    CAgent *agent = c_agent_init(gw, db_file, "Memory benchmark instructions");
+    BelyaAgent *agent = belya_agent_init(gw, db_file, "Memory benchmark instructions");
 
     // Test 1: Domain-Isolated Multi-Room Scoping
     {
-        c_agent_persist_memory_scoped(agent, "VPS IP", "187.124.2.26 (Root user)", "infrastructure", "deployment");
-        c_agent_persist_memory_scoped(agent, "Test Coverage", "20/20 strict tests passing", "quality", "test_suite");
-        c_agent_persist_memory_scoped(agent, "Model Name", "deepseek/deepseek-v4-flash", "llm", "gateway");
+        belya_agent_persist_memory_scoped(agent, "VPS IP", "187.124.2.26 (Root user)", "infrastructure", "deployment");
+        belya_agent_persist_memory_scoped(agent, "Test Coverage", "20/20 strict tests passing", "quality", "test_suite");
+        belya_agent_persist_memory_scoped(agent, "Model Name", "deepseek/deepseek-v4-flash", "llm", "gateway");
 
-        char *s1 = c_agent_search_memory(agent, "infrastructure/deployment: VPS");
-        char *s2 = c_agent_search_memory(agent, "quality/test_suite: Coverage");
+        char *s1 = belya_agent_search_memory(agent, "infrastructure/deployment: VPS");
+        char *s2 = belya_agent_search_memory(agent, "quality/test_suite: Coverage");
 
         if (s1 && strstr(s1, "187.124.2.26") && s2 && strstr(s2, "20/20 strict tests")) {
             passed++;
@@ -663,10 +663,10 @@ static void benchmark_arena3_memory_retention(void) {
 
     // Test 2: Memory Deduplication & Clean Upsert
     {
-        c_agent_persist_memory_scoped(agent, "Release Version", "Version 3.9.0", "core", "release");
-        c_agent_persist_memory_scoped(agent, "Release Version", "Version 4.0.0 Stable", "core", "release");
+        belya_agent_persist_memory_scoped(agent, "Release Version", "Version 3.9.0", "core", "release");
+        belya_agent_persist_memory_scoped(agent, "Release Version", "Version 4.0.0 Stable", "core", "release");
 
-        char *s = c_agent_search_memory(agent, "Release Version");
+        char *s = belya_agent_search_memory(agent, "Release Version");
         if (s && strstr(s, "Version 4.0.0 Stable")) {
             passed++;
             printf("  [3.2] Automatic Deduplication & Clean Upsert: \033[1;32mPASSED\033[0m\n");
@@ -687,13 +687,13 @@ static void benchmark_arena3_memory_retention(void) {
                 snprintf(u_buf, sizeof(u_buf), "Step %d: Executing routine maintenance check.", i);
                 snprintf(a_buf, sizeof(a_buf), "Maintenance check %d passed cleanly.", i);
             }
-            c_agent_add_message(agent, "user", u_buf);
-            c_agent_add_message(agent, "assistant", a_buf);
+            belya_agent_add_message(agent, "user", u_buf);
+            belya_agent_add_message(agent, "assistant", a_buf);
         }
 
         // Save session and search historical conversation
-        c_agent_save_session(agent, "needle_bench", "Needle In Haystack Session");
-        char *hist_res = c_agent_search_conversations(agent, "OMEGA-TOKEN-9942");
+        belya_agent_save_session(agent, "needle_bench", "Needle In Haystack Session");
+        char *hist_res = belya_agent_search_conversations(agent, "OMEGA-TOKEN-9942");
 
         if (hist_res && strstr(hist_res, "OMEGA-TOKEN-9942")) {
             passed++;
@@ -706,8 +706,8 @@ static void benchmark_arena3_memory_retention(void) {
 
     // Test 4: Procedural Skill Curation & Manifest Matching
     {
-        c_agent_save_skill(agent, "vps_deploy", "deploy to vps", "Deploy binary to remote VPS", "Run rsync and systemctl restart charness");
-        char *matched = c_agent_match_skill_for_prompt(agent, "Please deploy to vps right now");
+        belya_agent_save_skill(agent, "vps_deploy", "deploy to vps", "Deploy binary to remote VPS", "Run rsync and systemctl restart belya");
+        char *matched = belya_agent_match_skill_for_prompt(agent, "Please deploy to vps right now");
 
         if (matched && strstr(matched, "rsync and systemctl restart")) {
             passed++;
@@ -721,15 +721,15 @@ static void benchmark_arena3_memory_retention(void) {
     // Test 5: Session Checkpoint & Instant Rollback
     {
         size_t initial_msgs = agent->msg_count;
-        c_agent_create_checkpoint(agent, "chk_before_bloat");
+        belya_agent_create_checkpoint(agent, "chk_before_bloat");
 
         for (int i = 0; i < 20; i++) {
-            c_agent_add_message(agent, "user", "Temporary bloat message");
-            c_agent_add_message(agent, "assistant", "Temporary ack");
+            belya_agent_add_message(agent, "user", "Temporary bloat message");
+            belya_agent_add_message(agent, "assistant", "Temporary ack");
         }
         assert(agent->msg_count == initial_msgs + 40);
 
-        bool rolled_back = c_agent_rollback_to_checkpoint(agent, NULL);
+        bool rolled_back = belya_agent_rollback_to_checkpoint(agent, NULL);
         if (rolled_back && agent->msg_count == initial_msgs) {
             passed++;
             printf("  [3.5] Multi-Turn State Machine & Instant Rollback: \033[1;32mPASSED\033[0m\n");
@@ -738,7 +738,7 @@ static void benchmark_arena3_memory_retention(void) {
         }
     }
 
-    c_agent_free(agent);
+    belya_agent_free(agent);
     model_gateway_free(gw);
     unlink(db_file);
     unlink("bench_mem.sqlite-shm");
@@ -766,12 +766,12 @@ static void benchmark_arena4_swe_autonomous(void) {
     int total = 4;
 
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
-    CAgent *agent = c_agent_init(gw, ":memory:", "Autonomous SWE solver");
-    CHarness *h = c_harness_init(agent);
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Autonomous SWE solver");
+    BelyaHarness *h = belya_harness_init(agent);
 
     // Task 1: Autonomous Codebase File Discovery & Regex Search
     {
-        JsonValue *search_args = json_parse("{\"path\": \".\", \"pattern\": \"c_agent_init\"}");
+        JsonValue *search_args = json_parse("{\"path\": \".\", \"pattern\": \"belya_agent_init\"}");
         char *res = NULL;
         for (size_t i = 0; i < h->tool_count; i++) {
             if (strcmp(h->tools[i].name, "search_files") == 0) {
@@ -781,7 +781,7 @@ static void benchmark_arena4_swe_autonomous(void) {
         }
         json_free(search_args);
 
-        if (res && strstr(res, "c_agent.c") && strstr(res, "c_agent.h")) {
+        if (res && strstr(res, "belya_agent.c") && strstr(res, "belya_agent.h")) {
             passed++;
             printf("  [4.1] Autonomous Codebase Grep & Symbol Discovery: \033[1;32mPASSED\033[0m\n");
         } else {
@@ -866,7 +866,7 @@ static void benchmark_arena4_swe_autonomous(void) {
         if (res) free(res);
     }
 
-    c_harness_free(h);
+    belya_harness_free(h);
     model_gateway_free(gw);
 
     double t1 = get_time_ms();
@@ -893,8 +893,8 @@ static void benchmark_arena5_system_resources(void) {
     // Test 1: Cold Start Latency
     double cs_start = get_time_ms();
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
-    CAgent *agent = c_agent_init(gw, ":memory:", "System instructions");
-    CHarness *h = c_harness_init(agent);
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "System instructions");
+    BelyaHarness *h = belya_harness_init(agent);
     double cs_end = get_time_ms();
     double cold_start_ms = cs_end - cs_start;
 
@@ -938,8 +938,8 @@ static void benchmark_arena5_system_resources(void) {
     // Test 4: Memory Leak & Stability Profile over 1,000 Continuous Tool Calls
     long mem_before = get_peak_rss_kb();
     for (int i = 0; i < 1000; i++) {
-        c_agent_persist_memory_scoped(agent, "stress_topic", "stress test content iteration", "bench", "stress");
-        char *res = c_agent_search_memory(agent, "stress_topic");
+        belya_agent_persist_memory_scoped(agent, "stress_topic", "stress test content iteration", "bench", "stress");
+        char *res = belya_agent_search_memory(agent, "stress_topic");
         if (res) free(res);
     }
     long mem_after = get_peak_rss_kb();
@@ -955,7 +955,7 @@ static void benchmark_arena5_system_resources(void) {
     // Test 5: Compiled Binary Size Footprint
     struct stat st;
     long bin_size_bytes = 0;
-    if (stat("c_agent_system", &st) == 0) {
+    if (stat("belya", &st) == 0) {
         bin_size_bytes = st.st_size;
     }
     double bin_size_kb = (double)bin_size_bytes / 1024.0;
@@ -967,7 +967,7 @@ static void benchmark_arena5_system_resources(void) {
         printf("  [5.5] Standalone Compiled Binary Size: \033[1;31m%.1f KB (FAILED)\033[0m\n", bin_size_kb);
     }
 
-    c_harness_free(h);
+    belya_harness_free(h);
     model_gateway_free(gw);
 
     double t1 = get_time_ms();
@@ -985,7 +985,7 @@ static void benchmark_arena5_system_resources(void) {
 static void print_master_scoreboard(void) {
     printf("\n\n");
     printf("\033[1;35m========================================================================================================\033[0m\n");
-    printf("\033[1;35m                         CAGENT 4.0 vs FRONTIER AGENTS COMPREHENSIVE BENCHMARK SCOREBOARD              \033[0m\n");
+    printf("\033[1;35m                         BELYA (PURE C99) vs FRONTIER AGENTS COMPREHENSIVE BENCHMARK SCOREBOARD              \033[0m\n");
     printf("\033[1;35m========================================================================================================\033[0m\n\n");
 
     printf("\033[1;37m%-48s | %-8s | %-10s | %-12s | %-14s\033[0m\n", "Benchmark Arena", "Passed", "Total", "Accuracy", "Duration");
@@ -1020,7 +1020,7 @@ static void print_master_scoreboard(void) {
     printf("\033[1;36m========================================================================================================\033[0m\n\n");
 
     printf("%-20s | %-14s | %-14s | %-14s | %-14s | %-14s\n",
-           "Metric", "CAgent 4.0", "Devin", "OpenHands", "SWE-agent", "Aider");
+           "Metric", "BelyaAgent 4.0", "Devin", "OpenHands", "SWE-agent", "Aider");
     printf("--------------------------------------------------------------------------------------------------------\n");
     printf("%-20s | \033[1;32m%-14s\033[0m | %-14s | %-14s | %-14s | %-14s\n",
            "Core Language", "Pure C99", "Proprietary", "Python/Docker", "Python", "Python CLI");

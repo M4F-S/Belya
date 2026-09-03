@@ -1,7 +1,7 @@
 #ifndef TELEGRAM_ADAPTER_H
 #define TELEGRAM_ADAPTER_H
 
-#include "c_harness.h"
+#include "belya_harness.h"
 
 typedef struct {
     char *bot_token;
@@ -17,7 +17,7 @@ bool telegram_bot_edit_message(TelegramBot *bot, const char *chat_id, double mes
 bool telegram_bot_delete_message(TelegramBot *bot, const char *chat_id, double message_id);
 bool telegram_bot_send_chat_action(TelegramBot *bot, const char *chat_id, const char *action);
 bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char *text);
-void telegram_bot_run(TelegramBot *bot, CHarness *harness);
+void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness);
 void telegram_bot_stop(TelegramBot *bot);
 void telegram_bot_free(TelegramBot *bot);
 

@@ -97,8 +97,8 @@ MCPClient *mcp_client_start(const char *command_line) {
     json_obj_add(params, "protocolVersion", json_create_string("2024-11-05"));
     json_obj_add(params, "capabilities", json_create_object());
     JsonValue *cinfo = json_create_object();
-    json_obj_add(cinfo, "name", json_create_string("charness"));
-    json_obj_add(cinfo, "version", json_create_string("2.0"));
+    json_obj_add(cinfo, "name", json_create_string("belya"));
+    json_obj_add(cinfo, "version", json_create_string("1.0"));
     json_obj_add(params, "clientInfo", cinfo);
     json_obj_add(init_req, "params", params);
 

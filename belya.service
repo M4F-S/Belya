@@ -1,13 +1,13 @@
 [Unit]
-Description=CHarness Autonomous AI Agent & Telegram Daemon
+Description=Belya Autonomous AI Agent & Telegram Daemon (Pure C99)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/charness
-EnvironmentFile=/opt/charness/.env
-ExecStart=/opt/charness/c_agent_system --telegram
+WorkingDirectory=/opt/belya
+EnvironmentFile=/opt/belya/.env
+ExecStart=/opt/belya/belya --telegram
 Restart=always
 RestartSec=5s
 

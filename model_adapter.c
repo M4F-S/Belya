@@ -68,7 +68,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                     ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
                 } else {
                     if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
-                        printf("\n\n\033[1;34m[C Agent]\033[0m\n");
+                        printf("\n\n\033[1;34m[Belya]\033[0m\n");
                         ctx->printed_content_header = true;
                     }
                     printf("%s", content);

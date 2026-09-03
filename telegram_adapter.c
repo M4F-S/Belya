@@ -205,7 +205,7 @@ typedef struct {
     char current_chat_id[64];
 } TelegramPromptContext;
 
-static bool telegram_permission_prompt_callback(CHarness *h, const char *name, const char *args, void *userdata) {
+static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *name, const char *args, void *userdata) {
     (void)h;
     TelegramPromptContext *ctx = (TelegramPromptContext *)userdata;
     if (!ctx || !ctx->bot || strlen(ctx->current_chat_id) == 0) return false;
@@ -329,7 +329,7 @@ static bool telegram_permission_prompt_callback(CHarness *h, const char *name, c
     return decision;
 }
 
-void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
+void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
     if (!bot || !harness) return;
 
     bot->running = true;
@@ -344,7 +344,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
     harness->permission_prompt_fn = telegram_permission_prompt_callback;
     harness->permission_userdata = &prompt_ctx;
 
-    printf("\033[1;32m=== CHarness Telegram Bot Daemon Online (Evolution 4.0) ===\033[0m\n");
+    printf("\033[1;32m=== BelyaHarness Telegram Bot Daemon Online (Evolution 4.0) ===\033[0m\n");
     printf("Allowed Chat ID: \033[1;36m%s\033[0m\n", strlen(bot->allowed_chat_id) > 0 ? bot->allowed_chat_id : "[None - Zero Trust Mode]");
     printf("Model:           \033[1;33m%s\033[0m\n", harness->agent->gateway->model);
     printf("Listening for Telegram updates via long polling...\n\n");
@@ -399,7 +399,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 if (strcmp(text, "/start") == 0 || strcmp(text, "/help") == 0) {
                     char welcome[8192];
                     snprintf(welcome, sizeof(welcome),
-                        "🤖 <b>CHarness Autonomous VPS Agent Online (Evolution 4.0)</b>\n\n"
+                        "🤖 <b>BelyaHarness Autonomous VPS Agent Online (Evolution 4.0)</b>\n\n"
                         "<b>Active Model:</b> <code>%s</code>\n"
                         "<b>CWD:</b> <code>%s</code>\n"
                         "<b>Context Messages:</b> <code>%zu (%zu estimated tokens)</code>\n\n"
@@ -417,7 +417,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                         "/compact - Compact older turns\n\n"
                         "Send any instructions directly to start autonomous execution!",
                         harness->agent->gateway->model, harness->cwd,
-                        harness->agent->msg_count, c_agent_total_tokens(harness->agent));
+                        harness->agent->msg_count, belya_agent_total_tokens(harness->agent));
                     telegram_bot_send_message(bot, chat_id_str, welcome);
                     continue;
                 }
@@ -437,7 +437,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                         "• Cache Hit Rate: <code>%.2f%% (%zu / %zu tokens)</code>",
                         harness->agent->gateway->model, harness->cwd,
                         harness->agent->has_fts5 ? "SQLite FTS5 + Salience Ranking" : "Standard SQLite",
-                        harness->agent->msg_count, c_agent_total_tokens(harness->agent),
+                        harness->agent->msg_count, belya_agent_total_tokens(harness->agent),
                         harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled",
                         hit_rate, total_c, total_p);
                     telegram_bot_send_message(bot, chat_id_str, status_msg);
@@ -463,7 +463,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 if (strncmp(text, "/skills", 7) == 0) {
                     const char *q = strlen(text) > 7 ? text + 7 : "";
                     while (*q == ' ') q++;
-                    char *sk = c_agent_search_skills(harness->agent, q);
+                    char *sk = belya_agent_search_skills(harness->agent, q);
                     telegram_bot_send_chunks(bot, chat_id_str, sk ? sk : "No skills found.");
                     if (sk) free(sk);
                     continue;
@@ -472,7 +472,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 if (strncmp(text, "/checkpoint", 11) == 0) {
                     const char *lbl = strlen(text) > 11 ? text + 11 : "";
                     while (*lbl == ' ') lbl++;
-                    if (c_agent_create_checkpoint(harness->agent, strlen(lbl) > 0 ? lbl : "telegram_manual")) {
+                    if (belya_agent_create_checkpoint(harness->agent, strlen(lbl) > 0 ? lbl : "telegram_manual")) {
                         telegram_bot_send_message(bot, chat_id_str, "✅ Checkpoint created successfully.");
                     } else {
                         telegram_bot_send_message(bot, chat_id_str, "❌ Failed to create checkpoint.");
@@ -483,7 +483,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 if (strncmp(text, "/rollback", 9) == 0) {
                     const char *cid = strlen(text) > 9 ? text + 9 : "";
                     while (*cid == ' ') cid++;
-                    if (c_agent_rollback_to_checkpoint(harness->agent, strlen(cid) > 0 ? cid : NULL)) {
+                    if (belya_agent_rollback_to_checkpoint(harness->agent, strlen(cid) > 0 ? cid : NULL)) {
                         char rmsg[128];
                         snprintf(rmsg, sizeof(rmsg), "⏪ Rollback completed. %zu messages active.", harness->agent->msg_count);
                         telegram_bot_send_message(bot, chat_id_str, rmsg);
@@ -494,14 +494,14 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 }
 
                 if (strcmp(text, "/timeline") == 0) {
-                    char *tl = c_agent_get_timeline(harness->agent, 10);
+                    char *tl = belya_agent_get_timeline(harness->agent, 10);
                     telegram_bot_send_chunks(bot, chat_id_str, tl);
                     free(tl);
                     continue;
                 }
 
                 if (strcmp(text, "/sessions") == 0) {
-                    char *sess_list = c_agent_list_sessions(harness->agent);
+                    char *sess_list = belya_agent_list_sessions(harness->agent);
                     telegram_bot_send_chunks(bot, chat_id_str, sess_list);
                     free(sess_list);
                     continue;
@@ -511,7 +511,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     const char *sid = strlen(text) > 5 ? text + 5 : "telegram_session";
                     while (*sid == ' ') sid++;
                     if (strlen(sid) == 0) sid = "telegram_session";
-                    if (c_agent_save_session(harness->agent, sid, sid)) {
+                    if (belya_agent_save_session(harness->agent, sid, sid)) {
                         char smsg[256];
                         snprintf(smsg, sizeof(smsg), "💾 Session <code>%s</code> saved to database.", sid);
                         telegram_bot_send_message(bot, chat_id_str, smsg);
@@ -525,7 +525,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     const char *sid = strlen(text) > 7 ? text + 7 : "";
                     while (*sid == ' ') sid++;
                     if (strlen(sid) > 0) {
-                        if (c_agent_load_session(harness->agent, sid)) {
+                        if (belya_agent_load_session(harness->agent, sid)) {
                             char rmsg[256];
                             snprintf(rmsg, sizeof(rmsg), "📂 Session <code>%s</code> loaded (%zu messages restored).", sid, harness->agent->msg_count);
                             telegram_bot_send_message(bot, chat_id_str, rmsg);
@@ -539,7 +539,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 }
 
                 if (strcmp(text, "/reflect") == 0) {
-                    char *ref = c_agent_reflect_and_distill(harness->agent);
+                    char *ref = belya_agent_reflect_and_distill(harness->agent);
                     telegram_bot_send_chunks(bot, chat_id_str, ref);
                     free(ref);
                     continue;
@@ -562,13 +562,13 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 }
 
                 if (strcmp(text, "/clear") == 0 || strcmp(text, "/reset") == 0 || strcmp(text, "/new") == 0) {
-                    c_agent_clear_history(harness->agent);
+                    belya_agent_clear_history(harness->agent);
                     telegram_bot_send_message(bot, chat_id_str, "🧹 Session reset. Conversation history cleared (system prompt and persistent SQLite memory preserved).");
                     continue;
                 }
 
                 if (strcmp(text, "/compact") == 0) {
-                    c_agent_compact_history(harness->agent, 10);
+                    belya_agent_compact_history(harness->agent, 10);
                     char cmsg[128];
                     snprintf(cmsg, sizeof(cmsg), "📦 History compacted to %zu messages.", harness->agent->msg_count);
                     telegram_bot_send_message(bot, chat_id_str, cmsg);
@@ -577,7 +577,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                 // Process User Turn
                 printf("\033[1;35m[Telegram Input from %s]:\033[0m %s\n", chat_id_str, text);
-                c_agent_add_message(harness->agent, "user", text);
+                belya_agent_add_message(harness->agent, "user", text);
 
                 bool turn_running = true;
                 int max_steps = 30;
@@ -587,7 +587,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
-                    ModelGatewayResponse resp = c_agent_step(harness->agent);
+                    ModelGatewayResponse resp = belya_agent_step(harness->agent);
 
                     if (!resp.has_tool_call) {
                         // The model has produced conversational text / final response
@@ -614,7 +614,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                                 snprintf(last_status_text, sizeof(last_status_text), "%s", status_buf);
                             }
 
-                            CHarnessRegisteredTool *matched = NULL;
+                            BelyaRegisteredTool *matched = NULL;
                             for (size_t t = 0; t < harness->tool_count; t++) {
                                 if (strcmp(harness->tools[t].name, tc->name) == 0) {
                                     matched = &harness->tools[t];
@@ -623,7 +623,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                             }
 
                             if (!matched || matched->security == PERM_DENY) {
-                                c_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
                                 continue;
                             }
 
@@ -633,7 +633,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                                     permitted = harness->permission_prompt_fn(harness, tc->name, tc->arguments_json, harness->permission_userdata);
                                 }
                                 if (!permitted) {
-                                    c_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
+                                    belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
                                     continue;
                                 }
                             }
@@ -649,7 +649,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                             g_active_custom_script_path = NULL;
                             json_free(args_parsed);
 
-                            c_agent_add_tool_result(harness->agent, tc->id, tc->name, obs ? obs : "Success");
+                            belya_agent_add_tool_result(harness->agent, tc->id, tc->name, obs ? obs : "Success");
                             if (obs) free(obs);
                         }
                     }
@@ -659,7 +659,7 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 // If max_steps ran out while still executing tools, get one final model response
                 if (max_steps <= 0 && turn_running) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
-                    ModelGatewayResponse final_resp = c_agent_step(harness->agent);
+                    ModelGatewayResponse final_resp = belya_agent_step(harness->agent);
                     if (final_resp.content && strlen(final_resp.content) > 0) {
                         if (final_response_text) free(final_response_text);
                         final_response_text = strdup(final_resp.content);
