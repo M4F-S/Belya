@@ -355,10 +355,22 @@ void test_harness_tools_and_patches(void) {
 }
 
 void test_telegram_adapter(void) {
-    printf("[Test] Telegram Bot Adapter Security & Setup...\n");
+    printf("[Test] Telegram Bot Adapter Security & Ephemeral Lifecycle...\n");
     TelegramBot *bot = telegram_bot_init("123456:FAKE_TOKEN_FOR_UNIT_TEST", "999888777,111222333");
     assert(bot != NULL);
     assert(strcmp(bot->bot_token, "123456:FAKE_TOKEN_FOR_UNIT_TEST") == 0);
+
+    // Test parameter validation & safe handling of null/empty inputs
+    assert(telegram_bot_send_message(bot, NULL, "test") == false);
+    assert(telegram_bot_send_message(bot, "123", NULL) == false);
+    assert(telegram_bot_send_status_message(bot, NULL, "status") == 0);
+    assert(telegram_bot_send_status_message(bot, "123", NULL) == 0);
+    assert(telegram_bot_edit_message(bot, NULL, 100, "edit") == false);
+    assert(telegram_bot_edit_message(bot, "123", 0, "edit") == false);
+    assert(telegram_bot_delete_message(bot, NULL, 100) == false);
+    assert(telegram_bot_delete_message(bot, "123", 0) == false);
+    assert(telegram_bot_send_chat_action(bot, NULL, "typing") == false);
+    assert(telegram_bot_send_chat_action(bot, "123", NULL) == false);
 
     telegram_bot_stop(bot);
     assert(bot->running == false);

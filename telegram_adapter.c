@@ -107,6 +107,59 @@ bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char
     return ok;
 }
 
+double telegram_bot_send_status_message(TelegramBot *bot, const char *chat_id, const char *text) {
+    if (!bot || !chat_id || !text || strlen(text) == 0) return 0;
+
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "text", json_create_string(text));
+
+    JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
+    json_free(payload);
+
+    if (!resp) return 0;
+    double msg_id = 0;
+    JsonValue *res_obj = json_obj_get(resp, "result");
+    if (res_obj) {
+        msg_id = json_obj_get_num(res_obj, "message_id", 0);
+    }
+    json_free(resp);
+    return msg_id;
+}
+
+bool telegram_bot_edit_message(TelegramBot *bot, const char *chat_id, double message_id, const char *text) {
+    if (!bot || !chat_id || message_id <= 0 || !text || strlen(text) == 0) return false;
+
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "message_id", json_create_number(message_id));
+    json_obj_add(payload, "text", json_create_string(text));
+
+    JsonValue *resp = telegram_http_post(bot, "editMessageText", payload);
+    json_free(payload);
+
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    json_free(resp);
+    return ok;
+}
+
+bool telegram_bot_delete_message(TelegramBot *bot, const char *chat_id, double message_id) {
+    if (!bot || !chat_id || message_id <= 0) return false;
+
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "message_id", json_create_number(message_id));
+
+    JsonValue *resp = telegram_http_post(bot, "deleteMessage", payload);
+    json_free(payload);
+
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    json_free(resp);
+    return ok;
+}
+
 bool telegram_bot_send_chat_action(TelegramBot *bot, const char *chat_id, const char *action) {
     if (!bot || !chat_id || !action) return false;
     JsonValue *payload = json_create_object();
@@ -527,49 +580,39 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                 c_agent_add_message(harness->agent, "user", text);
 
                 bool turn_running = true;
-                int max_steps = 50;
-                size_t total_tools_in_turn = 0;
+                int max_steps = 30;
+                double status_msg_id = 0;
+                char last_status_text[256] = {0};
+                char *final_response_text = NULL;
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                     ModelGatewayResponse resp = c_agent_step(harness->agent);
 
-                    // Send any assistant text/reasoning immediately
-                    if (resp.content && strlen(resp.content) > 0) {
-                        telegram_bot_send_chunks(bot, chat_id_str, resp.content);
-                    }
-
                     if (!resp.has_tool_call) {
-                        if (!resp.content || strlen(resp.content) == 0) {
-                            telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
-                            turn_running = false;
-                        } else {
-                            bool is_final_report = false;
-                            if (strstr(resp.content, "Consolidated Report") || strstr(resp.content, "Final Summary") ||
-                                strstr(resp.content, "All 10 stages") || strstr(resp.content, "All 10 steps") ||
-                                strstr(resp.content, "100% Complete") || strstr(resp.content, "100% complete") ||
-                                strstr(resp.content, "100% operational") || strstr(resp.content, "All stages complete") ||
-                                strstr(resp.content, "Audit Complete") || strstr(resp.content, "audit complete")) {
-                                is_final_report = true;
-                            }
-
-                            if (total_tools_in_turn > 0 && !is_final_report && max_steps > 0) {
-                                c_agent_add_message(harness->agent, "user", "Continue immediately with the remaining steps using tool calls until all stages are 100% complete.");
-                                turn_running = true;
-                            } else {
-                                turn_running = false;
-                            }
+                        // The model has produced conversational text / final response
+                        if (resp.content && strlen(resp.content) > 0) {
+                            if (final_response_text) free(final_response_text);
+                            final_response_text = strdup(resp.content);
                         }
+                        turn_running = false;
                     } else {
-                        total_tools_in_turn += resp.tool_call_count;
+                        // The model dispatched one or more tool calls
                         for (size_t k = 0; k < resp.tool_call_count; k++) {
                             ModelParsedToolCall *tc = &resp.tool_calls[k];
                             printf("[Bot Tool Call]: %s(%s)\n", tc->name, tc->arguments_json);
 
-                            // Send live tool progress notification to Telegram user
-                            char tool_msg[512];
-                            snprintf(tool_msg, sizeof(tool_msg), "⚙️ <i>Executing:</i> <code>%s</code>", tc->name);
-                            telegram_bot_send_message(bot, chat_id_str, tool_msg);
+                            // Update Ephemeral Status Message in-place (no chat log pollution)
+                            char status_buf[256];
+                            snprintf(status_buf, sizeof(status_buf), "⚡ Running `%s`...", tc->name);
+
+                            if (status_msg_id == 0) {
+                                status_msg_id = telegram_bot_send_status_message(bot, chat_id_str, status_buf);
+                                strncpy(last_status_text, status_buf, sizeof(last_status_text) - 1);
+                            } else if (strcmp(last_status_text, status_buf) != 0) {
+                                telegram_bot_edit_message(bot, chat_id_str, status_msg_id, status_buf);
+                                strncpy(last_status_text, status_buf, sizeof(last_status_text) - 1);
+                            }
 
                             CHarnessRegisteredTool *matched = NULL;
                             for (size_t t = 0; t < harness->tool_count; t++) {
@@ -613,16 +656,27 @@ void telegram_bot_run(TelegramBot *bot, CHarness *harness) {
                     model_gateway_response_free(&resp);
                 }
 
-                // After max_steps exhausted, get one final model response
-                if (max_steps == 0 && turn_running) {
+                // If max_steps ran out while still executing tools, get one final model response
+                if (max_steps <= 0 && turn_running) {
+                    telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                     ModelGatewayResponse final_resp = c_agent_step(harness->agent);
                     if (final_resp.content && strlen(final_resp.content) > 0) {
-                        telegram_bot_send_chunks(bot, chat_id_str, final_resp.content);
-                    } else if (!final_resp.has_tool_call) {
-                        telegram_bot_send_message(bot, chat_id_str, "Action completed (max steps reached).");
+                        if (final_response_text) free(final_response_text);
+                        final_response_text = strdup(final_resp.content);
                     }
                     model_gateway_response_free(&final_resp);
-                    turn_running = false;
+                }
+
+                // Clean up ephemeral status message and send the clean final response
+                if (status_msg_id > 0) {
+                    telegram_bot_delete_message(bot, chat_id_str, status_msg_id);
+                }
+
+                if (final_response_text && strlen(final_response_text) > 0) {
+                    telegram_bot_send_chunks(bot, chat_id_str, final_response_text);
+                    free(final_response_text);
+                } else {
+                    telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
                 }
 
             }
