@@ -193,12 +193,16 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
     unsigned int sleep_sec = 1;
 
     for (int attempt = 0; attempt < max_attempts; attempt++) {
-        CURL *curl = curl_easy_init();
+        if (!self->curl_handle) {
+            self->curl_handle = curl_easy_init();
+        }
+        CURL *curl = (CURL *)self->curl_handle;
         if (!curl) {
             res.content = strdup("System Error: Failed to initialize libcurl.");
             free(json_body);
             return res;
         }
+        curl_easy_reset(curl); // Resets options while preserving live TCP/TLS connection & DNS cache
 
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -221,11 +225,12 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             headers = curl_slist_append(headers, "X-Title: Belya Agent");
         }
 
-        long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 120L;
+        long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 60L;
         curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
 
         StreamContext stream_ctx;
         memset(&stream_ctx, 0, sizeof(StreamContext));
@@ -250,9 +255,10 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
 
         if (code != CURLE_OK) {
+            curl_easy_cleanup(curl);
+            self->curl_handle = NULL;
             dyn_str_free(&stream_ctx.line_buf);
             dyn_str_free(&stream_ctx.accum_content);
             dyn_str_free(&stream_ctx.accum_reasoning);
@@ -572,6 +578,10 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
 
 void model_gateway_free(ModelGateway *gw) {
     if (!gw) return;
+    if (gw->curl_handle) {
+        curl_easy_cleanup((CURL *)gw->curl_handle);
+        gw->curl_handle = NULL;
+    }
     free(gw->endpoint);
     free(gw->api_key);
     free(gw->model);

@@ -85,6 +85,7 @@ bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, co
 char *belya_agent_search_conversations(BelyaAgent *agent, const char *query);
 
 ModelGatewayResponse belya_agent_step(BelyaAgent *agent);
+ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char *instruction);
 void belya_agent_free(BelyaAgent *agent);
 
 #endif

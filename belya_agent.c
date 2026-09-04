@@ -227,7 +227,14 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
     memset(m, 0, sizeof(BelyaMessage));
     m->role = strdup("tool");
     m->tool_call_id = strdup(tool_call_id ? tool_call_id : "call_default");
-    m->content = strdup(result ? result : "");
+    if (result && strlen(result) > 2500) {
+        DynString ds = dyn_str_new();
+        dyn_str_append_len(&ds, result, 2500);
+        dyn_str_appendf(&ds, "\n\n[... Output truncated to 2500 bytes of %zu total bytes to preserve context & speed ...]", strlen(result));
+        m->content = ds.data;
+    } else {
+        m->content = strdup(result ? result : "");
+    }
 }
 
 void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const char *summary) {
@@ -1377,6 +1384,84 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
             ast_msg->tool_calls[i].arguments_json = strdup(resp.tool_calls[i].arguments_json);
         }
     }
+
+    agent->turn_count++;
+    agent->turns_since_save++;
+
+    return resp;
+}
+
+ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char *instruction) {
+    if (instruction && strlen(instruction) > 0) {
+        belya_agent_add_message(agent, "user", instruction);
+    }
+
+    // Build messages array (Zone 1 Pinned Prefix, Zone 2 Append-Only History)
+    JsonValue *messages_arr = json_create_array();
+    for (size_t i = 0; i < agent->msg_count; i++) {
+        JsonValue *m = json_create_object();
+        json_obj_add(m, "role", json_create_string(agent->messages[i].role));
+        if (i == 0) {
+            DynString sys_content = dyn_str_new();
+            dyn_str_append(&sys_content, agent->messages[0].content);
+            if (agent->gateway && agent->gateway->model) {
+                const char *provider = (agent->gateway->endpoint && strstr(agent->gateway->endpoint, "openrouter.ai") != NULL) ? "OpenRouter Cloud" : "Local Metal Ollama";
+                dyn_str_appendf(&sys_content, "\n\n=== Active Runtime Engine ===\nActive Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
+                                agent->gateway->model, provider, agent->gateway->model, provider);
+            }
+            json_obj_add(m, "content", json_create_string(sys_content.data));
+            dyn_str_free(&sys_content);
+        } else {
+            json_obj_add(m, "content", json_create_string(agent->messages[i].content));
+        }
+        if (agent->messages[i].tool_call_id) {
+            json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
+        }
+        if (i == 0 && agent->gateway && agent->gateway->prompt_caching) {
+            JsonValue *cc = json_create_object();
+            json_obj_add(cc, "type", json_create_string("ephemeral"));
+            json_obj_add(m, "cache_control", cc);
+        }
+        if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+            JsonValue *tcs = json_create_array();
+            for (size_t k = 0; k < agent->messages[i].tool_call_count; k++) {
+                JsonValue *tc = json_create_object();
+                json_obj_add(tc, "id", json_create_string(agent->messages[i].tool_calls[k].id));
+                json_obj_add(tc, "type", json_create_string("function"));
+                JsonValue *fn = json_create_object();
+                json_obj_add(fn, "name", json_create_string(agent->messages[i].tool_calls[k].name));
+                json_obj_add(fn, "arguments", json_create_string(agent->messages[i].tool_calls[k].arguments_json));
+                json_obj_add(tc, "function", fn);
+                json_arr_add(tcs, tc);
+            }
+            json_obj_add(m, "tool_calls", tcs);
+        }
+        json_arr_add(messages_arr, m);
+    }
+
+    // Explicitly pass tools_schema = NULL to force conversational synthesis
+    ModelGatewayResponse resp = agent->gateway->chat_complete(agent->gateway, messages_arr, NULL);
+
+    agent->total_prompt_tokens += resp.prompt_tokens;
+    agent->total_completion_tokens += resp.completion_tokens;
+    agent->total_cached_tokens += resp.cached_tokens;
+
+    json_free(messages_arr);
+
+    // Append Assistant response to history
+    if (agent->msg_count >= agent->msg_cap) {
+        agent->msg_cap *= 2;
+        BelyaMessage *new_msgs = realloc(agent->messages, sizeof(BelyaMessage) * agent->msg_cap);
+        if (!new_msgs) {
+            fprintf(stderr, "[Fatal] Out of memory in belya_agent_step_forced_text\n");
+            abort();
+        }
+        agent->messages = new_msgs;
+    }
+    BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
+    memset(ast_msg, 0, sizeof(BelyaMessage));
+    ast_msg->role = strdup("assistant");
+    ast_msg->content = strdup(resp.content ? resp.content : "");
 
     agent->turn_count++;
     agent->turns_since_save++;

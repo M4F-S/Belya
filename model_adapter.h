@@ -33,6 +33,7 @@ typedef struct ModelGateway {
     bool prompt_caching;
     TokenStreamCallback stream_cb;
     void *stream_userdata;
+    void *curl_handle; // Persistent CURL handle for HTTP Keep-Alive
     ModelGatewayResponse (*chat_complete)(struct ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema);
 } ModelGateway;
 

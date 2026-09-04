@@ -833,6 +833,31 @@ void test_progressive_disclosure_manifest(void) {
     printf("  -> Progressive Disclosure Manifest PASSED\n");
 }
 
+void test_forced_synthesis_and_keepalive(void) {
+    printf("[Test] Forced Synthesis on Step Exhaustion & Persistent Keep-Alive...\n");
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:9999/mock/v1", "test-key", "mock-model");
+    assert(gw != NULL);
+    assert(gw->curl_handle == NULL); // Lazy init on first request
+
+    BelyaAgent *agent = belya_agent_init(gw, "test_synthesis.sqlite", "You are an AI assistant.");
+    assert(agent != NULL);
+
+    // Verify tool output truncation in context (>2500 bytes capped)
+    char large_tool_out[5000];
+    memset(large_tool_out, 'X', sizeof(large_tool_out) - 1);
+    large_tool_out[sizeof(large_tool_out) - 1] = '\0';
+    belya_agent_add_tool_result(agent, "call_test1", "bash", large_tool_out);
+
+    assert(agent->msg_count == 2);
+    assert(strlen(agent->messages[1].content) < 3000);
+    assert(strstr(agent->messages[1].content, "[... Output truncated to 2500 bytes") != NULL);
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_synthesis.sqlite");
+    printf("  -> Forced Synthesis & Keep-Alive PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -855,6 +880,7 @@ int main(void) {
     test_tool_scavenger_deep_stress();
     test_multi_checkpoint_rollback_integrity();
     test_progressive_disclosure_manifest();
-    printf("================ All Tests Passed Successfully (20/20 - 100%%) ================\n\n");
+    test_forced_synthesis_and_keepalive();
+    printf("================ All Tests Passed Successfully (21/21 - 100%%) ================\n\n");
     return 0;
 }

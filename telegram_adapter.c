@@ -575,28 +575,43 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     continue;
                 }
 
+                if (strcmp(text, "/restart") == 0) {
+                    telegram_bot_send_message(bot, chat_id_str, "🔄 Reloading Belya service via systemd (launching updated binary)...");
+                    sleep(1);
+                    exit(0); // Systemd Restart=always will relaunch immediately with freshly compiled binary
+                }
+
                 // Process User Turn
                 printf("\033[1;35m[Telegram Input from %s]:\033[0m %s\n", chat_id_str, text);
                 belya_agent_add_message(harness->agent, "user", text);
 
                 bool turn_running = true;
-                int max_steps = 30;
+                int max_steps = 10; // Adaptive high-speed step budget
                 double status_msg_id = 0;
                 char last_status_text[256] = {0};
                 char *final_response_text = NULL;
+                DynString accum_content = dyn_str_new();
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                     ModelGatewayResponse resp = belya_agent_step(harness->agent);
 
-                    if (!resp.has_tool_call) {
-                        // The model has produced conversational text / final response
-                        if (resp.content && strlen(resp.content) > 0) {
+                    if (resp.content && strlen(resp.content) > 0) {
+                        if (!resp.has_tool_call) {
+                            // Pure conversational response - save as final
                             if (final_response_text) free(final_response_text);
                             final_response_text = strdup(resp.content);
+                            turn_running = false;
+                        } else {
+                            // Accumulate reasoning and partial explanations alongside tool calls
+                            if (accum_content.len > 0) dyn_str_append(&accum_content, "\n\n");
+                            dyn_str_append(&accum_content, resp.content);
                         }
+                    } else if (!resp.has_tool_call) {
                         turn_running = false;
-                    } else {
+                    }
+
+                    if (resp.has_tool_call) {
                         // The model dispatched one or more tool calls
                         for (size_t k = 0; k < resp.tool_call_count; k++) {
                             ModelParsedToolCall *tc = &resp.tool_calls[k];
@@ -654,17 +669,22 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         }
                     }
                     model_gateway_response_free(&resp);
-                }
 
-                // If max_steps ran out while still executing tools, get one final model response
-                if (max_steps <= 0 && turn_running) {
-                    telegram_bot_send_chat_action(bot, chat_id_str, "typing");
-                    ModelGatewayResponse final_resp = belya_agent_step(harness->agent);
-                    if (final_resp.content && strlen(final_resp.content) > 0) {
-                        if (final_response_text) free(final_response_text);
-                        final_response_text = strdup(final_resp.content);
+                    // If steps are running out, trigger forced synthesis with tools disabled
+                    if (turn_running && (max_steps <= 1 || g_telegram_interrupted)) {
+                        telegram_bot_send_chat_action(bot, chat_id_str, "typing");
+                        ModelGatewayResponse final_resp = belya_agent_step_forced_text(
+                            harness->agent,
+                            "Synthesize your complete, detailed answer and findings to the user now without calling any more tools."
+                        );
+                        if (final_resp.content && strlen(final_resp.content) > 0) {
+                            if (final_response_text) free(final_response_text);
+                            final_response_text = strdup(final_resp.content);
+                        }
+                        model_gateway_response_free(&final_resp);
+                        turn_running = false;
+                        break;
                     }
-                    model_gateway_response_free(&final_resp);
                 }
 
                 // Clean up ephemeral status message and send the clean final response
@@ -675,9 +695,12 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 if (final_response_text && strlen(final_response_text) > 0) {
                     telegram_bot_send_chunks(bot, chat_id_str, final_response_text);
                     free(final_response_text);
+                } else if (accum_content.len > 0) {
+                    telegram_bot_send_chunks(bot, chat_id_str, accum_content.data);
                 } else {
                     telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
                 }
+                dyn_str_free(&accum_content);
 
             }
 
