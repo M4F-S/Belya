@@ -1337,6 +1337,78 @@ void test_subagent_recursion_guard(void) {
     printf("  -> Subagent Recursion Guard PASSED\n");
 }
 
+void test_self_telemetry_and_proprioception(void) {
+    printf("[Test] Self-Telemetry, RSS Calculation & Proprioception...\n");
+    double rss_mb = belya_get_current_rss_mb();
+    assert(rss_mb >= 0.0);
+    assert(rss_mb < 2048.0); // Should be well within reasonable bounds
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test Telemetry System");
+
+    // Add sample messages to check token estimation
+    belya_agent_add_message(agent, "user", "Hello Belya, how is your memory and step budget?");
+    size_t est_tokens = belya_agent_total_tokens(agent);
+    assert(est_tokens > 0);
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    printf("  -> Self-Telemetry & Proprioception PASSED (RSS: %.2f MB)\n", rss_mb);
+}
+
+void test_metacognitive_circuit_breaker_and_verification_guard(void) {
+    printf("[Test] Metacognitive Circuit Breaker & Verification Guard...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test System");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    belya_harness_reset_turn_state(h);
+    assert(h->consecutive_tool_failures == 0);
+    assert(h->files_modified_in_turn == false);
+    assert(h->verification_performed_in_turn == false);
+
+    // 1. First failure
+    char *breaker_msg = NULL;
+    const char *bad_args = "{\"command\": \"cat /tmp/nonexistent_file_xyz.txt\"}";
+    bool tripped = belya_harness_record_tool_observation(h, "bash", bad_args, "Error: cat: /tmp/nonexistent_file_xyz.txt: No such file or directory", &breaker_msg);
+    assert(!tripped);
+    assert(breaker_msg == NULL);
+    assert(h->consecutive_tool_failures == 1);
+    assert(h->verification_performed_in_turn == true); // bash counts as inspection/verification
+
+    // 2. Second failure with identical args
+    tripped = belya_harness_record_tool_observation(h, "bash", bad_args, "Error: cat: /tmp/nonexistent_file_xyz.txt: No such file or directory", &breaker_msg);
+    assert(!tripped);
+    assert(breaker_msg == NULL);
+    assert(h->consecutive_tool_failures == 2);
+
+    // 3. Third failure with identical args -> Must trip circuit breaker!
+    tripped = belya_harness_record_tool_observation(h, "bash", bad_args, "Error: cat: /tmp/nonexistent_file_xyz.txt: No such file or directory", &breaker_msg);
+    assert(tripped);
+    assert(breaker_msg != NULL);
+    assert(strstr(breaker_msg, "[METACOGNITIVE CIRCUIT BREAKER]") != NULL);
+    assert(strstr(breaker_msg, "3 times consecutively") != NULL);
+    assert(h->consecutive_tool_failures == 0); // Auto-reset after tripping
+    free(breaker_msg);
+
+    // 4. Test code modification tracking
+    tripped = belya_harness_record_tool_observation(h, "write_file", "{\"path\": \"/tmp/foo.txt\"}", "File written successfully", &breaker_msg);
+    assert(!tripped);
+    assert(h->files_modified_in_turn == true);
+    assert(h->consecutive_tool_failures == 0);
+
+    // 5. Test turn reset
+    belya_harness_reset_turn_state(h);
+    assert(h->files_modified_in_turn == false);
+    assert(h->verification_performed_in_turn == false);
+    assert(h->verification_guard_tripped == false);
+    assert(h->consecutive_tool_failures == 0);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> Metacognitive Circuit Breaker & Verification Guard PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -1364,6 +1436,8 @@ int main(void) {
     test_all_17_tools_exhaustive();
     test_skills_lifecycle_and_auto_injection();
     test_subagent_recursion_guard();
-    printf("================ All Tests Passed Successfully (25/25 - 100%%) ================\n\n");
+    test_self_telemetry_and_proprioception();
+    test_metacognitive_circuit_breaker_and_verification_guard();
+    printf("================ All Tests Passed Successfully (27/27 - 100%%) ================\n\n");
     return 0;
 }

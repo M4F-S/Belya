@@ -51,6 +51,7 @@ void belya_agent_clear_history(BelyaAgent *agent);
 
 // Token Budgeting & Estimation
 size_t belya_agent_total_tokens(const BelyaAgent *agent);
+double belya_get_current_rss_mb(void);
 
 // Gomaa Memory Timeline
 void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const char *summary);

@@ -592,12 +592,23 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 char *final_response_text = NULL;
                 DynString accum_content = dyn_str_new();
 
+                belya_harness_reset_turn_state(harness);
+
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
                     telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                     ModelGatewayResponse resp = belya_agent_step(harness->agent);
 
                     if (resp.content && strlen(resp.content) > 0) {
                         if (!resp.has_tool_call) {
+                            // Check verification guard before concluding
+                            if (harness->files_modified_in_turn && !harness->verification_performed_in_turn && !harness->verification_guard_tripped && max_steps > 1) {
+                                harness->verification_guard_tripped = true;
+                                belya_agent_add_message(harness->agent, "user",
+                                    "[HARNESS VERIFICATION GUARD]: Files were modified during this turn, but no test, build, or verification command has been executed. "
+                                    "Run a verification step (e.g. compile, run tests, or inspect diff) to verify the changes before concluding.");
+                                model_gateway_response_free(&resp);
+                                continue;
+                            }
                             // Pure conversational response - save as final
                             if (final_response_text) free(final_response_text);
                             final_response_text = strdup(resp.content);
@@ -608,6 +619,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             dyn_str_append(&accum_content, resp.content);
                         }
                     } else if (!resp.has_tool_call) {
+                        if (harness->files_modified_in_turn && !harness->verification_performed_in_turn && !harness->verification_guard_tripped && max_steps > 1) {
+                            harness->verification_guard_tripped = true;
+                            belya_agent_add_message(harness->agent, "user",
+                                "[HARNESS VERIFICATION GUARD]: Files were modified during this turn, but no test, build, or verification command has been executed. "
+                                "Run a verification step (e.g. compile, run tests, or inspect diff) to verify the changes before concluding.");
+                            model_gateway_response_free(&resp);
+                            continue;
+                        }
                         turn_running = false;
                     }
 
@@ -664,7 +683,12 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             g_active_custom_script_path = NULL;
                             json_free(args_parsed);
 
-                            belya_agent_add_tool_result(harness->agent, tc->id, tc->name, obs ? obs : "Success");
+                            char *breaker_alert = NULL;
+                            bool tripped = belya_harness_record_tool_observation(harness, tc->name, tc->arguments_json, obs, &breaker_alert);
+                            const char *final_obs = tripped ? breaker_alert : (obs ? obs : "Success");
+
+                            belya_agent_add_tool_result(harness->agent, tc->id, tc->name, final_obs);
+                            if (breaker_alert) free(breaker_alert);
                             if (obs) free(obs);
                         }
                     }

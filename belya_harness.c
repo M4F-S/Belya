@@ -2022,8 +2022,76 @@ void belya_harness_repl(BelyaHarness *h) {
     }
 }
 
+void belya_harness_reset_turn_state(BelyaHarness *h) {
+    if (!h) return;
+    h->files_modified_in_turn = false;
+    h->verification_performed_in_turn = false;
+    h->verification_guard_tripped = false;
+    h->consecutive_tool_failures = 0;
+    memset(h->last_failed_tool, 0, sizeof(h->last_failed_tool));
+    memset(h->last_failed_args, 0, sizeof(h->last_failed_args));
+}
+
+bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_name, const char *args_json, const char *observation, char **out_breaker_msg) {
+    if (!h || !tool_name) return false;
+    if (out_breaker_msg) *out_breaker_msg = NULL;
+
+    // Track modifications and verification actions
+    if (strcmp(tool_name, "write_file") == 0 || strcmp(tool_name, "edit_file") == 0 || strcmp(tool_name, "apply_patch") == 0) {
+        h->files_modified_in_turn = true;
+    }
+    if (strcmp(tool_name, "bash") == 0 || strcmp(tool_name, "git_diff") == 0 || strcmp(tool_name, "git_status") == 0) {
+        h->verification_performed_in_turn = true;
+    }
+
+    bool is_failure = false;
+    if (observation) {
+        if (strncmp(observation, "Error:", 6) == 0 || strncmp(observation, "error:", 6) == 0 ||
+            strstr(observation, "failed") != NULL || strstr(observation, "exit status") != NULL) {
+            is_failure = true;
+        }
+    } else {
+        is_failure = true;
+    }
+
+    if (is_failure) {
+        char args_prefix[256];
+        snprintf(args_prefix, sizeof(args_prefix), "%.255s", args_json ? args_json : "");
+        if (strcmp(h->last_failed_tool, tool_name) == 0 && strcmp(h->last_failed_args, args_prefix) == 0) {
+            h->consecutive_tool_failures++;
+        } else {
+            strncpy(h->last_failed_tool, tool_name, sizeof(h->last_failed_tool) - 1);
+            h->last_failed_tool[sizeof(h->last_failed_tool) - 1] = '\0';
+            strncpy(h->last_failed_args, args_prefix, sizeof(h->last_failed_args) - 1);
+            h->last_failed_args[sizeof(h->last_failed_args) - 1] = '\0';
+            h->consecutive_tool_failures = 1;
+        }
+
+        if (h->consecutive_tool_failures >= 3) {
+            DynString cb = dyn_str_new();
+            dyn_str_appendf(&cb, "%s\n\n[METACOGNITIVE CIRCUIT BREAKER]: You have attempted tool '%s' with identical/failing arguments 3 times consecutively. "
+                                 "STOP repeating this action. Step back, re-evaluate assumptions, inspect error details, or switch to an alternate strategy.",
+                            observation ? observation : "Tool returned empty observation", tool_name);
+            if (out_breaker_msg) *out_breaker_msg = cb.data;
+            else dyn_str_free(&cb);
+            h->consecutive_tool_failures = 0; // Trip and reset
+            return true;
+        }
+    } else {
+        h->consecutive_tool_failures = 0;
+        memset(h->last_failed_tool, 0, sizeof(h->last_failed_tool));
+        memset(h->last_failed_args, 0, sizeof(h->last_failed_args));
+    }
+    return false;
+}
+
 void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
     if (!h || !prompt || strlen(prompt) == 0) return;
+
+    belya_harness_reset_turn_state(h);
+
+    // Ephemeral Git checkpoint before turn starts
+    belya_agent_create_checkpoint(h->agent, "pre_turn_auto");
 
     belya_agent_add_message(h->agent, "user", prompt);
 
@@ -2038,6 +2106,17 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
         ModelGatewayResponse resp = belya_agent_step(h->agent);
 
         if (!resp.has_tool_call) {
+            // Deterministic Verification Guard
+            if (h->files_modified_in_turn && !h->verification_performed_in_turn && !h->verification_guard_tripped) {
+                h->verification_guard_tripped = true;
+                model_gateway_response_free(&resp);
+                printf("\033[1;33m[Harness Verification Guard]: Nudging agent to verify file modifications...\033[0m\n");
+                belya_agent_add_message(h->agent, "user",
+                    "[HARNESS VERIFICATION GUARD]: Files were modified during this turn, but no test, build, or verification command has been executed. "
+                    "Run a verification step (e.g. compile, run tests, or inspect diff) to verify the changes before concluding.");
+                continue;
+            }
+
             if (!h->agent->gateway->streaming || (resp.content && (strncmp(resp.content, "API Error", 9) == 0 || strncmp(resp.content, "Network Error", 13) == 0 || strncmp(resp.content, "Empty response", 14) == 0 || strncmp(resp.content, "Error:", 6) == 0))) {
                 printf("\n\033[1;34m[Belya]\033[0m\n%s\n\n", resp.content ? resp.content : "");
             } else {
@@ -2088,8 +2167,16 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                 g_active_custom_script_path = NULL;
                 json_free(args_parsed);
 
-                printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", observation ? strlen(observation) : 0);
-                belya_agent_add_tool_result(h->agent, tc->id, tc->name, observation);
+                char *breaker_alert = NULL;
+                bool tripped = belya_harness_record_tool_observation(h, tc->name, tc->arguments_json, observation, &breaker_alert);
+                const char *final_obs = tripped ? breaker_alert : (observation ? observation : "Success");
+
+                printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", final_obs ? strlen(final_obs) : 0);
+                if (tripped) {
+                    printf("\033[1;35m[Metacognitive Circuit Breaker Tripped]: Loop interrupted!\033[0m\n");
+                }
+                belya_agent_add_tool_result(h->agent, tc->id, tc->name, final_obs);
+                if (breaker_alert) free(breaker_alert);
                 if (observation) free(observation);
             }
         }

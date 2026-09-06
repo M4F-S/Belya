@@ -42,7 +42,9 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [7. Persistent HTTP Keep-Alive & Sockets](#7-persistent-http-keep-alive--sockets)
   - [8. Forced Text Synthesis Engine](#8-forced-text-synthesis-engine)
   - [9. Context Pruning & Head-Tail Truncation](#9-context-pruning--head-tail-truncation)
-- [Automated Test Suite (25/25 Comprehensive Tests)](#automated-test-suite-2525-comprehensive-tests)
+  - [10. Self-Telemetry, Metacognitive Circuit Breaker & Verification Guard](#10-self-telemetry-metacognitive-circuit-breaker--verification-guard)
+- [Automated Test Suite (27/27 Comprehensive Tests)](#automated-test-suite-2727-comprehensive-tests)
+- [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
 - [License](#license)
@@ -496,9 +498,15 @@ When an autonomous tool loop approaches step exhaustion (e.g. `max_steps <= 1` o
 ### 9. Context Pruning & Tool Truncation
 In large repos, commands like `find /`, recursive `ls`, or verbose compiler outputs can produce tens of thousands of bytes. `belya_agent_add_tool_result()` automatically truncates tool outputs exceeding 2,500 bytes and appends an explicit diagnostic note (`[... Output truncated to 2500 bytes ...]`), preserving prompt cache tightness and ensuring sub-200ms Time-To-First-Token (TTFT).
 
+### 10. Self-Telemetry, Metacognitive Circuit Breaker & Verification Guard
+To achieve true operational self-awareness without compromising determinism or inflating memory:
+- **Dynamic Proprioceptive Self-Telemetry:** Belya continuously tracks its own PID, operating system architecture, and resident set size (`getrusage` RSS), injecting real-time state into **Zone 3 Ephemeral Context** on every turn. This provides the model with direct proprioception without busting Zone 1 prompt cache prefixes.
+- **Metacognitive Circuit Breaker:** When an agent attempts an identical failing tool call 3 times consecutively, the harness trips an active circuit breaker, interrupting the doom-loop and directing the agent to re-evaluate assumptions and change strategy.
+- **Deterministic Verification Guard:** If files are modified (`write_file`, `edit_file`, `apply_patch`), Belya tracks code modification and intercepts turn completion if no verification or build step (`bash` test runner, `git_diff`) was executed, ensuring code is verified before concluding.
+
 ---
 
-## Automated Test Suite (25/25 Comprehensive Tests)
+## Automated Test Suite (27/27 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -557,7 +565,11 @@ make test
   -> Skills Lifecycle & Auto-Injection PASSED
 [Test] Subagent Recursion Guard & Sandbox Tool Isolation...
   -> Subagent Recursion Guard PASSED
-================ All Tests Passed Successfully (25/25 - 100%) ================
+[Test] Self-Telemetry, RSS Calculation & Proprioception...
+  -> Self-Telemetry & Proprioception PASSED (RSS: 4.2 MB)
+[Test] Metacognitive Circuit Breaker & Verification Guard...
+  -> Metacognitive Circuit Breaker & Verification Guard PASSED
+================ All Tests Passed Successfully (27/27 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
@@ -569,7 +581,16 @@ gcc -Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -D_POSIX_C_SOURCE=20
     belya_agent.c belya_harness.c telegram_adapter.c -lcurl -lsqlite3
 ./belya_test_asan
 ```
-**Result**: 25/25 tests pass with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: 27/27 tests pass with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+
+---
+
+## Belya-Evolve: Metamorphic Research Sandbox
+
+To preserve the production determinism of Core Belya while exploring advanced metamorphic self-mutation, Belya maintains an isolated research subproject at [`belya-evolve/`](belya-evolve/):
+* **Safety Virtualization:** Enforces mandatory isolation (`BELYA_EVOLVE_SANDBOX=1`). Self-mutation directly on the host or production daemon is strictly prohibited.
+* **Autonomous Ouroboros Loop:** Candidate mutations undergo automated pre-flight compilation under AddressSanitizer and run the full 27-test suite in a temporary jail (`/tmp/belya_evolve_sandbox`) before fitness scoring.
+* **Darwinian Retention:** Candidate variants that pass all tests with 0 leaks and achieve higher execution fitness are tracked in dedicated research branches without endangering production stability.
 
 ---
 

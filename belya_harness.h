@@ -34,6 +34,16 @@ struct BelyaHarness {
     size_t mcp_server_count;
     BelyaPermissionPromptFn permission_prompt_fn;
     void *permission_userdata;
+
+    // Metacognitive Circuit Breaker state
+    char last_failed_tool[64];
+    char last_failed_args[256];
+    int consecutive_tool_failures;
+
+    // Deterministic Verification Guard state
+    bool files_modified_in_turn;
+    bool verification_performed_in_turn;
+    bool verification_guard_tripped;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
@@ -43,6 +53,8 @@ void belya_harness_load_custom_tools(BelyaHarness *h);
 bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd);
 void belya_harness_repl(BelyaHarness *h);
 void belya_harness_execute_turn(BelyaHarness *h, const char *prompt);
+void belya_harness_reset_turn_state(BelyaHarness *h);
+bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_name, const char *args_json, const char *observation, char **out_breaker_msg);
 void belya_harness_free(BelyaHarness *h);
 
 extern const char *g_active_custom_script_path;

@@ -1,6 +1,27 @@
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE 1
+#endif
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include "belya_agent.h"
 #include <time.h>
 #include <ctype.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
+double belya_get_current_rss_mb(void) {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) == 0) {
+#if defined(__APPLE__)
+        return (double)ru.ru_maxrss / (1024.0 * 1024.0);
+#else
+        return (double)ru.ru_maxrss / 1024.0;
+#endif
+    }
+    return 0.0;
+}
 
 static void free_single_message(BelyaMessage *m) {
     if (!m) return;
@@ -1317,6 +1338,36 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         free(active_skill);
     }
 
+    // Zone 3b: Inject Ephemeral Self-Telemetry & Proprioception Banner
+    {
+        JsonValue *telem_msg = json_create_object();
+        json_obj_add(telem_msg, "role", json_create_string("system"));
+        DynString telem_ds = dyn_str_new();
+        size_t est_tok = belya_agent_total_tokens(agent);
+        size_t max_tok = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
+        double tok_pct = ((double)est_tok / (double)max_tok) * 100.0;
+        dyn_str_append(&telem_ds, "=== Belya Internal Self-Telemetry & Proprioception ===\n");
+        dyn_str_appendf(&telem_ds, "PID: %d | Host: %s | Active RSS: %.2f MB | Turn: %zu | Context: ~%zu / %zu tokens (%.1f%%) | Registered Tools: %zu\n",
+            (int)getpid(),
+#if defined(__APPLE__)
+            "macOS (Darwin)",
+#elif defined(__linux__)
+            "Linux (POSIX)",
+#else
+            "POSIX",
+#endif
+            belya_get_current_rss_mb(),
+            agent->turn_count,
+            est_tok,
+            max_tok,
+            tok_pct,
+            agent->schema_count);
+        dyn_str_append(&telem_ds, "Operational Rule: Monitor your turn budget and memory footprint. Verify changes before concluding.");
+        json_obj_add(telem_msg, "content", json_create_string(telem_ds.data));
+        dyn_str_free(&telem_ds);
+        json_arr_add(messages_arr, telem_msg);
+    }
+
     // If model does not support API tools (like deepseek-r1 in Ollama), inject tool instructions in system message
     if (agent->gateway && agent->gateway->model && strstr(agent->gateway->model, "deepseek-r1") != NULL && agent->schema_count > 0) {
         JsonValue *tool_guide_msg = json_create_object();
@@ -1482,6 +1533,36 @@ ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char 
             json_obj_add(m, "tool_calls", tcs);
         }
         json_arr_add(messages_arr, m);
+    }
+
+    // Zone 3b: Inject Ephemeral Self-Telemetry & Proprioception Banner
+    {
+        JsonValue *telem_msg = json_create_object();
+        json_obj_add(telem_msg, "role", json_create_string("system"));
+        DynString telem_ds = dyn_str_new();
+        size_t est_tok = belya_agent_total_tokens(agent);
+        size_t max_tok = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
+        double tok_pct = ((double)est_tok / (double)max_tok) * 100.0;
+        dyn_str_append(&telem_ds, "=== Belya Internal Self-Telemetry & Proprioception ===\n");
+        dyn_str_appendf(&telem_ds, "PID: %d | Host: %s | Active RSS: %.2f MB | Turn: %zu | Context: ~%zu / %zu tokens (%.1f%%) | Registered Tools: %zu\n",
+            (int)getpid(),
+#if defined(__APPLE__)
+            "macOS (Darwin)",
+#elif defined(__linux__)
+            "Linux (POSIX)",
+#else
+            "POSIX",
+#endif
+            belya_get_current_rss_mb(),
+            agent->turn_count,
+            est_tok,
+            max_tok,
+            tok_pct,
+            agent->schema_count);
+        dyn_str_append(&telem_ds, "Operational Rule: Monitor your turn budget and memory footprint. Verify changes before concluding.");
+        json_obj_add(telem_msg, "content", json_create_string(telem_ds.data));
+        dyn_str_free(&telem_ds);
+        json_arr_add(messages_arr, telem_msg);
     }
 
     // Explicitly pass tools_schema = NULL to force conversational synthesis
