@@ -21,3 +21,7 @@ test_broken.c
 *.dSYM/
 .env
 run.sh
+
+# Private session progress & docs
+docs/
+
