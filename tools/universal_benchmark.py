@@ -405,25 +405,352 @@ test_word_count.o: test_word_count.c word_count.h
 clean:
 \trm -f *.o test_runner
 """
+    },
+    {
+        "name": "collatz_conjecture",
+        "title": "Collatz Conjecture",
+        "description": "Calculate the number of steps to reach 1 using 3n+1 rules. Return -1 for invalid input (<= 0).",
+        "header_name": "collatz_conjecture.h",
+        "header": """#ifndef COLLATZ_CONJECTURE_H
+#define COLLATZ_CONJECTURE_H
+
+int steps(int start);
+
+#endif
+""",
+        "test_name": "test_collatz_conjecture.c",
+        "test_code": """#include "collatz_conjecture.h"
+#include <assert.h>
+#include <stdio.h>
+
+int main(void) {
+    printf("[Test] Collatz Conjecture Suite...\\n");
+    assert(steps(1) == 0);
+    assert(steps(16) == 4);
+    assert(steps(12) == 9);
+    assert(steps(1000000) == 152);
+    assert(steps(0) == -1);
+    assert(steps(-15) == -1);
+    printf("  -> Collatz Conjecture PASSED!\\n");
+    return 0;
+}
+""",
+        "makefile": """CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fsanitize=address,undefined
+
+test: collatz_conjecture.o test_collatz_conjecture.o
+\t$(CC) $(CFLAGS) -o test_runner test_collatz_conjecture.o collatz_conjecture.o
+\t./test_runner
+
+collatz_conjecture.o: collatz_conjecture.c collatz_conjecture.h
+\t$(CC) $(CFLAGS) -c collatz_conjecture.c -o collatz_conjecture.o
+
+test_collatz_conjecture.o: test_collatz_conjecture.c collatz_conjecture.h
+\t$(CC) $(CFLAGS) -c test_collatz_conjecture.c -o test_collatz_conjecture.o
+
+clean:
+\trm -f *.o test_runner
+"""
+    },
+    {
+        "name": "hamming",
+        "title": "Hamming Distance",
+        "description": "Calculate the Hamming distance between two DNA strands. Return -1 if lengths differ or if either string is NULL.",
+        "header_name": "hamming.h",
+        "header": """#ifndef HAMMING_H
+#define HAMMING_H
+
+int compute(const char *lhs, const char *rhs);
+
+#endif
+""",
+        "test_name": "test_hamming.c",
+        "test_code": """#include "hamming.h"
+#include <assert.h>
+#include <stdio.h>
+
+int main(void) {
+    printf("[Test] Hamming Distance Suite...\\n");
+    assert(compute("", "") == 0);
+    assert(compute("A", "A") == 0);
+    assert(compute("G", "T") == 1);
+    assert(compute("GGACTGAAATCTG", "GGACTGAAATCTG") == 0);
+    assert(compute("GGACGGATTCTG", "AGGACGGATTCT") == 9);
+    assert(compute("AATG", "AAA") == -1);
+    assert(compute("ATA", "AGTG") == -1);
+    assert(compute(NULL, "A") == -1);
+    assert(compute("A", NULL) == -1);
+    printf("  -> Hamming Distance PASSED!\\n");
+    return 0;
+}
+""",
+        "makefile": """CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fsanitize=address,undefined
+
+test: hamming.o test_hamming.o
+\t$(CC) $(CFLAGS) -o test_runner test_hamming.o hamming.o
+\t./test_runner
+
+hamming.o: hamming.c hamming.h
+\t$(CC) $(CFLAGS) -c hamming.c -o hamming.o
+
+test_hamming.o: test_hamming.c hamming.h
+\t$(CC) $(CFLAGS) -c test_hamming.c -o test_hamming.o
+
+clean:
+\trm -f *.o test_runner
+"""
+    },
+    {
+        "name": "armstrong_numbers",
+        "title": "Armstrong Numbers",
+        "description": "Determine whether a given number is an Armstrong number (sum of digits raised to the power of number of digits).",
+        "header_name": "armstrong_numbers.h",
+        "header": """#ifndef ARMSTRONG_NUMBERS_H
+#define ARMSTRONG_NUMBERS_H
+
+#include <stdbool.h>
+
+bool is_armstrong_number(int candidate);
+
+#endif
+""",
+        "test_name": "test_armstrong_numbers.c",
+        "test_code": """#include "armstrong_numbers.h"
+#include <assert.h>
+#include <stdio.h>
+
+int main(void) {
+    printf("[Test] Armstrong Numbers Suite...\\n");
+    assert(is_armstrong_number(0) == true);
+    assert(is_armstrong_number(5) == true);
+    assert(is_armstrong_number(10) == false);
+    assert(is_armstrong_number(153) == true);
+    assert(is_armstrong_number(100) == false);
+    assert(is_armstrong_number(9474) == true);
+    assert(is_armstrong_number(9475) == false);
+    assert(is_armstrong_number(9926315) == true);
+    assert(is_armstrong_number(-153) == false);
+    printf("  -> Armstrong Numbers PASSED!\\n");
+    return 0;
+}
+""",
+        "makefile": """CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fsanitize=address,undefined
+
+test: armstrong_numbers.o test_armstrong_numbers.o
+\t$(CC) $(CFLAGS) -o test_runner test_armstrong_numbers.o armstrong_numbers.o -lm
+\t./test_runner
+
+armstrong_numbers.o: armstrong_numbers.c armstrong_numbers.h
+\t$(CC) $(CFLAGS) -c armstrong_numbers.c -o armstrong_numbers.o
+
+test_armstrong_numbers.o: test_armstrong_numbers.c armstrong_numbers.h
+\t$(CC) $(CFLAGS) -c test_armstrong_numbers.c -o test_armstrong_numbers.o
+
+clean:
+\trm -f *.o test_runner
+"""
+    },
+    {
+        "name": "allergies",
+        "title": "Allergies",
+        "description": "Given a person's allergy score, determine whether or not they're allergic to a given item, and their full list of allergies.",
+        "header_name": "allergies.h",
+        "header": """#ifndef ALLERGIES_H
+#define ALLERGIES_H
+
+#include <stdbool.h>
+
+typedef enum {
+    ALLERGEN_EGGS = 1,
+    ALLERGEN_PEANUTS = 2,
+    ALLERGEN_SHELLFISH = 4,
+    ALLERGEN_STRAWBERRIES = 8,
+    ALLERGEN_TOMATOES = 16,
+    ALLERGEN_CHOCOLATE = 32,
+    ALLERGEN_POLLEN = 64,
+    ALLERGEN_CATS = 128,
+    ALLERGEN_COUNT = 8
+} allergen_t;
+
+typedef struct {
+    int count;
+    allergen_t allergens[ALLERGEN_COUNT];
+} allergen_list_t;
+
+bool is_allergic_to(allergen_t allergen, int score);
+allergen_list_t get_allergens(int score);
+
+#endif
+""",
+        "test_name": "test_allergies.c",
+        "test_code": """#include "allergies.h"
+#include <assert.h>
+#include <stdio.h>
+
+int main(void) {
+    printf("[Test] Allergies Suite...\\n");
+    assert(!is_allergic_to(ALLERGEN_PEANUTS, 0));
+    assert(is_allergic_to(ALLERGEN_EGGS, 1));
+    assert(is_allergic_to(ALLERGEN_PEANUTS, 2));
+    assert(is_allergic_to(ALLERGEN_EGGS, 3));
+    assert(is_allergic_to(ALLERGEN_PEANUTS, 3));
+    assert(!is_allergic_to(ALLERGEN_SHELLFISH, 3));
+
+    allergen_list_t list0 = get_allergens(0);
+    assert(list0.count == 0);
+
+    allergen_list_t list1 = get_allergens(1);
+    assert(list1.count == 1);
+    assert(list1.allergens[0] == ALLERGEN_EGGS);
+
+    allergen_list_t list_all = get_allergens(255);
+    assert(list_all.count == 8);
+
+    assert(is_allergic_to(ALLERGEN_EGGS, 257));
+    allergen_list_t list_part = get_allergens(5);
+    assert(list_part.count == 2);
+    assert(list_part.allergens[0] == ALLERGEN_EGGS);
+    assert(list_part.allergens[1] == ALLERGEN_SHELLFISH);
+
+    printf("  -> Allergies PASSED!\\n");
+    return 0;
+}
+""",
+        "makefile": """CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fsanitize=address,undefined
+
+test: allergies.o test_allergies.o
+\t$(CC) $(CFLAGS) -o test_runner test_allergies.o allergies.o
+\t./test_runner
+
+allergies.o: allergies.c allergies.h
+\t$(CC) $(CFLAGS) -c allergies.c -o allergies.o
+
+test_allergies.o: test_allergies.c allergies.h
+\t$(CC) $(CFLAGS) -c test_allergies.c -o test_allergies.o
+
+clean:
+\trm -f *.o test_runner
+"""
+    },
+    {
+        "name": "linked_list",
+        "title": "Doubly Linked List",
+        "description": "Implement a doubly linked list with push, pop, shift, unshift, count, delete, and memory cleanup.",
+        "header_name": "linked_list.h",
+        "header": """#ifndef LINKED_LIST_H
+#define LINKED_LIST_H
+
+#include <stddef.h>
+
+typedef int ll_data_t;
+struct list;
+
+struct list *list_create(void);
+size_t list_count(const struct list *list);
+void list_push(struct list *list, ll_data_t item_data);
+ll_data_t list_pop(struct list *list);
+void list_unshift(struct list *list, ll_data_t item_data);
+ll_data_t list_shift(struct list *list);
+void list_delete(struct list *list, ll_data_t value);
+void list_destroy(struct list *list);
+
+#endif
+""",
+        "test_name": "test_linked_list.c",
+        "test_code": """#include "linked_list.h"
+#include <assert.h>
+#include <stdio.h>
+
+int main(void) {
+    printf("[Test] Doubly Linked List Suite...\\n");
+    struct list *l = list_create();
+    assert(l != NULL);
+    assert(list_count(l) == 0);
+
+    // Push & Pop (LIFO at back)
+    list_push(l, 10);
+    list_push(l, 20);
+    assert(list_count(l) == 2);
+    assert(list_pop(l) == 20);
+    assert(list_pop(l) == 10);
+    assert(list_count(l) == 0);
+
+    // Unshift & Shift (LIFO at front)
+    list_unshift(l, 100);
+    list_unshift(l, 200);
+    assert(list_count(l) == 2);
+    assert(list_shift(l) == 200);
+    assert(list_shift(l) == 100);
+    assert(list_count(l) == 0);
+
+    // FIFO Queue (push back, shift front)
+    list_push(l, 1);
+    list_push(l, 2);
+    assert(list_shift(l) == 1);
+    assert(list_shift(l) == 2);
+    assert(list_count(l) == 0);
+
+    // Delete value
+    list_push(l, 10);
+    list_push(l, 20);
+    list_push(l, 30);
+    list_push(l, 20);
+    assert(list_count(l) == 4);
+    list_delete(l, 20);
+    assert(list_count(l) == 3);
+    assert(list_pop(l) == 20);
+    assert(list_pop(l) == 30);
+    assert(list_pop(l) == 10);
+    assert(list_count(l) == 0);
+
+    list_destroy(l);
+    printf("  -> Doubly Linked List PASSED!\\n");
+    return 0;
+}
+""",
+        "makefile": """CC = gcc
+CFLAGS = -Wall -Wextra -std=c99 -fsanitize=address,undefined
+
+test: linked_list.o test_linked_list.o
+\t$(CC) $(CFLAGS) -o test_runner test_linked_list.o linked_list.o
+\t./test_runner
+
+linked_list.o: linked_list.c linked_list.h
+\t$(CC) $(CFLAGS) -c linked_list.c -o linked_list.o
+
+test_linked_list.o: test_linked_list.c linked_list.h
+\t$(CC) $(CFLAGS) -c test_linked_list.c -o test_linked_list.o
+
+clean:
+\trm -f *.o test_runner
+"""
     }
 ]
 
-def run_benchmark():
+def run_benchmark(selected=None):
     if BASE_DIR.exists():
         shutil.rmtree(BASE_DIR)
     BASE_DIR.mkdir(parents=True, exist_ok=True)
+
+    targets = [b for b in BENCHMARKS if b["name"] == selected] if selected else BENCHMARKS
+    if not targets:
+        print(f"Error: No benchmark challenge found matching '{selected}'. Use --list to view options.")
+        return []
 
     print("==========================================================================")
     print("      BELYA AUTONOMOUS UNIVERSAL BENCHMARK (AIDER / EXERCISM C SUITE)      ")
     print("==========================================================================")
     print(f"Belya Binary: {BELYA_BIN}")
-    print(f"Total Standardized Challenges: {len(BENCHMARKS)}")
+    print(f"Total Standardized Challenges to Run: {len(targets)} (out of {len(BENCHMARKS)} available)")
     print("Compiler Flags: -Wall -Wextra -std=c99 -fsanitize=address,undefined")
     print("==========================================================================\n")
 
     results = []
 
-    for idx, bench in enumerate(BENCHMARKS, 1):
+    for idx, bench in enumerate(targets, 1):
         b_name = bench["name"]
         b_dir = BASE_DIR / b_name
         b_dir.mkdir(parents=True, exist_ok=True)
@@ -514,4 +841,17 @@ def run_benchmark():
     return results
 
 if __name__ == "__main__":
-    run_benchmark()
+    import argparse
+    parser = argparse.ArgumentParser(description="Belya Universal Coding Benchmark Suite (Exercism C Battery)")
+    parser.add_argument("--list", action="store_true", help="List available benchmark challenges")
+    parser.add_argument("--challenge", type=str, default=None, help="Run a specific challenge by name")
+    parser.add_argument("--all", action="store_true", help="Run all challenges (default)")
+    args = parser.parse_args()
+
+    if args.list:
+        print("\nAvailable Universal Benchmark Challenges (Exercism C Battery):")
+        for idx, b in enumerate(BENCHMARKS, 1):
+            print(f"  {idx:2d}. {b['name']:<22} - {b['title']}")
+        print(f"\nTotal: {len(BENCHMARKS)} challenges.")
+    else:
+        run_benchmark(selected=args.challenge)

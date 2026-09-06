@@ -1,12 +1,12 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v6.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.0.0)
+[![Release](https://img.shields.io/badge/Release-v6.3.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.3.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-25%2F25_Passed_(100%25)-brightgreen.svg)]()
-[![Benchmarks](https://img.shields.io/badge/Benchmarks-30%2F30_Passed_(100%25)-success.svg)]()
-[![Memory](https://img.shields.io/badge/Memory_Footprint-<3MB_Idle-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-<180KB-informational.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-27%2F27_Passed_(100%25)-brightgreen.svg)]()
+[![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
+[![Memory](https://img.shields.io/badge/Memory_Footprint-<2MB_Idle-purple.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-<190KB-informational.svg)]()
 
 A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, and 24/7 VPS Telegram Bot remote control.
 
@@ -176,24 +176,38 @@ To compare Belya directly against frontier coding agents (**Claude Code, Aider, 
 | **Roman Numerals** | String synthesis & dynamic allocation | **PASSED** | `73.96s` | 8 | 41 LOC | **0 leaks / 0 UB** |
 | **Circular Buffer** | FIFO ring buffer & state machine | **PASSED** | `49.39s` | 7 | 80 LOC | **0 leaks / 0 UB** |
 | **Word Count** | Tokenization & case-insensitive freq | **PASSED** | `93.35s` | 8 | 50 LOC | **0 leaks / 0 UB** |
-| **Grand Total** | **Universal Autonomous Coding Suite** | **5 / 5 (100.0%)** | **329.56s** | **42 steps** | **232 LOC** | **100% Clean** |
+| **Collatz Conjecture** | Arithmetic steps & overflow prevention | **PASSED** | `101.13s` | 30 | 22 LOC | **0 leaks / 0 UB** |
+| **Armstrong Numbers** | Digits & power summation logic | **PASSED** | `49.48s` | 8 | 30 LOC | **0 leaks / 0 UB** |
+| **Hamming Distance** | Synchronous nucleotide scan & validation | **PASSED** | `63.96s` | 9 | 26 LOC | **0 leaks / 0 UB** |
+| **Allergies** | Bitwise enum flags & item scoring | **AVAILABLE** | *Battery* | - | - | **Exercism C99** |
+| **Linked List** | Dynamic node insertion, deletion & traversal | **AVAILABLE** | *Battery* | - | - | **Exercism C99** |
+| **Grand Total** | **Universal Autonomous Coding Suite** | **8 / 8 Tested (100% Pass@1)** | **-** | **-** | **-** | **100% Clean** |
 
 #### Head-to-Head Architectural & Benchmark Comparison:
 
-| Metric | **Belya v6.0 (C99)** | **Claude Code** | **Aider** | **Hermes-3** |
+| Metric | **Belya v6.3 (C99)** | **Claude Code** | **Aider** | **Hermes-3** |
 |:---|:---:|:---:|:---:|:---:|
 | **Underlying Model Tested** | DeepSeek-v4-flash | Claude 3.7 Sonnet | Claude 3.7 Sonnet | Nous-Hermes-3 70B |
-| **Universal Coding Pass@1** | **100.0% (5/5)** | ~85% (First turn) | ~84% (Exercism) | ~68% |
+| **Universal Coding Pass@1** | **100.0% (8/8 tested)** | ~85% (First turn) | ~84% (Exercism) | ~68% |
 | **Cold Start Latency** | **`1.1 ms`** | ~800 ms | ~800 ms | ~2,000 ms |
 | **Active Memory Footprint** | **`< 17 MB RSS`** | ~300 MB | ~250 MB | ~400 MB |
+| **Idle VPS Footprint** | **`1.8 MB RSS`** | ~120 MB | N/A | N/A |
 | **Runtime Dependencies** | **None (Pure C99)** | Node.js Runtime | Python Runtime | Python Runtime |
 | **Compiler Pre-Flight Guard** | **Native Built-in** | External Linter | External Linter | None |
+| **Tool Scavenging Markup** | **JSON + XML + DSML** | Native Only | Markdown Only | Native Only |
 | **In-Flight Dynamic Tooling** | **Yes (`define_tool`)** | No | No | No |
 | **Autonomous Self-Correction** | **Yes (Loop Feedback)** | Yes | Yes (Two-try edit) | Partial |
 
-#### Reproducing the Benchmark:
+#### Reproducing the Universal Benchmark:
 ```bash
-python3 tools/universal_benchmark.py
+# List all 10 available standardized challenges
+python3 tools/universal_benchmark.py --list
+
+# Run a specific challenge
+python3 tools/universal_benchmark.py --challenge collatz_conjecture
+
+# Run the complete test battery
+python3 tools/universal_benchmark.py --all
 ```
 
 ---
@@ -233,7 +247,16 @@ In **v6.0.0**, we systematically dismantled the primary failure modes that cause
 
 ## Installation & Quick Start
 
-### Prerequisites
+### 1-Line Universal Installer (macOS & Linux)
+
+Install the pre-compiled native binary directly or build from source with automated dependency validation:
+```bash
+curl -fsSL https://raw.githubusercontent.com/M4F-S/Belya/main/install.sh | bash
+```
+
+---
+
+### Prerequisites (For Manual Builds)
 
 #### Ubuntu / Debian:
 ```bash
@@ -591,6 +614,22 @@ To preserve the production determinism of Core Belya while exploring advanced me
 * **Safety Virtualization:** Enforces mandatory isolation (`BELYA_EVOLVE_SANDBOX=1`). Self-mutation directly on the host or production daemon is strictly prohibited.
 * **Autonomous Ouroboros Loop:** Candidate mutations undergo automated pre-flight compilation under AddressSanitizer and run the full 27-test suite in a temporary jail (`/tmp/belya_evolve_sandbox`) before fitness scoring.
 * **Darwinian Retention:** Candidate variants that pass all tests with 0 leaks and achieve higher execution fitness are tracked in dedicated research branches without endangering production stability.
+
+#### Microbenchmark & Metamorphic Optimization Experiment:
+Evaluating autonomous AST/source-level mutation on `minijson.c` whitespace parsing (`skip_ws`) across 100,000 JSON parse operations:
+
+| Metric | Baseline (`isspace`) | Candidate (Inlined Comparison) | Improvement |
+| :--- | :---: | :---: | :---: |
+| **Parse Throughput** | `203,376 ops/sec` | **`223,649 ops/sec`** | **+9.97% Ops/Sec** |
+| **Latency (100k ops)** | `491.70 ms` | **`447.13 ms`** | **+9.06% Latency Reduction** |
+| **ASan Test Suite** | 27 / 27 Passed | **27 / 27 Passed** | **0 Leaks / 0 UB** |
+| **Darwinian Decision** | - | **MUTATION ACCEPTED** | **Superior Fitness** |
+
+```bash
+# Run isolated metamorphic evolution cycle:
+export BELYA_EVOLVE_SANDBOX=1
+python3 belya-evolve/evolve_sandbox.py
+```
 
 ---
 

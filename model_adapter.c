@@ -46,6 +46,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
             // 1. Reasoning Tokens
             const char *reasoning = json_obj_get_str(delta, "reasoning_content");
             if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
+            if (!reasoning) reasoning = json_obj_get_str(delta, "reasoning");
             if (reasoning && strlen(reasoning) > 0) {
                 dyn_str_append(&ctx->accum_reasoning, reasoning);
                 if (ctx->gw->stream_cb) {
@@ -335,22 +336,26 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             res.cached_tokens = stream_ctx.cached_tokens;
 
             if (!res.content && !res.has_tool_call) {
-                // If stream was empty, check if raw_fallback was an error json
-                JsonValue *err_root = json_parse(stream_ctx.raw_fallback.data);
-                if (err_root) {
-                    JsonValue *err_obj = json_obj_get(err_root, "error");
-                    if (err_obj) {
-                        const char *m = json_obj_get_str(err_obj, "message");
-                        DynString err_ds = dyn_str_new();
-                        dyn_str_appendf(&err_ds, "API Error (HTTP %ld): %s", http_code, m ? m : "Unknown error");
-                        res.content = err_ds.data;
+                if (res.reasoning_content && strlen(res.reasoning_content) > 0) {
+                    res.content = strdup(res.reasoning_content);
+                } else {
+                    // If stream was empty, check if raw_fallback was an error json
+                    JsonValue *err_root = json_parse(stream_ctx.raw_fallback.data);
+                    if (err_root) {
+                        JsonValue *err_obj = json_obj_get(err_root, "error");
+                        if (err_obj) {
+                            const char *m = json_obj_get_str(err_obj, "message");
+                            DynString err_ds = dyn_str_new();
+                            dyn_str_appendf(&err_ds, "API Error (HTTP %ld): %s", http_code, m ? m : "Unknown error");
+                            res.content = err_ds.data;
+                        }
+                        json_free(err_root);
                     }
-                    json_free(err_root);
-                }
-                if (!res.content) {
-                    DynString empty_ds = dyn_str_new();
-                    dyn_str_appendf(&empty_ds, "Empty response from stream (HTTP %ld).", http_code);
-                    res.content = empty_ds.data;
+                    if (!res.content) {
+                        DynString empty_ds = dyn_str_new();
+                        dyn_str_appendf(&empty_ds, "Empty response from stream (HTTP %ld).", http_code);
+                        res.content = empty_ds.data;
+                    }
                 }
             }
             dyn_str_free(&stream_ctx.raw_fallback);
@@ -513,6 +518,81 @@ static void try_add_scavenged_call(const char *json_str, const char *const *know
     json_free(root);
 }
 
+static void scavenge_dsml_tool_calls(const char *src, const char *const *known_tools, size_t known_count,
+                                     ModelParsedToolCall **out_calls, size_t *count, size_t *cap) {
+    if (!src) return;
+    const char *p = src;
+    while ((p = strstr(p, "invoke name=\"")) != NULL) {
+        const char *name_start = p + strlen("invoke name=\"");
+        const char *name_end = strchr(name_start, '"');
+        if (!name_end) break;
+        size_t nlen = (size_t)(name_end - name_start);
+        char tname[64] = {0};
+        if (nlen < sizeof(tname)) {
+            memcpy(tname, name_start, nlen);
+            tname[nlen] = '\0';
+        }
+
+        const char *inv_end = strstr(name_end, "invoke>");
+        if (!inv_end) break;
+
+        JsonValue *args_obj = json_create_object();
+        const char *param_p = name_end;
+        while ((param_p = strstr(param_p, "parameter name=\"")) != NULL && param_p < inv_end) {
+            const char *pk_start = param_p + strlen("parameter name=\"");
+            const char *pk_end = strchr(pk_start, '"');
+            if (!pk_end || pk_end > inv_end) break;
+            size_t pk_len = (size_t)(pk_end - pk_start);
+            char pkey[64] = {0};
+            if (pk_len < sizeof(pkey)) {
+                memcpy(pkey, pk_start, pk_len);
+                pkey[pk_len] = '\0';
+            }
+
+            const char *val_start = strchr(pk_end, '>');
+            if (!val_start || val_start > inv_end) break;
+            val_start++;
+
+            const char *val_end = strstr(val_start, "parameter>");
+            if (!val_end || val_end > inv_end) break;
+            const char *real_val_end = val_end;
+            while (real_val_end > val_start && *(real_val_end - 1) != '<') {
+                real_val_end--;
+            }
+            if (real_val_end > val_start && *(real_val_end - 1) == '<') {
+                real_val_end--;
+            }
+
+            size_t val_len = (size_t)(real_val_end - val_start);
+            char *val_str = malloc(val_len + 1);
+            if (val_str) {
+                memcpy(val_str, val_start, val_len);
+                val_str[val_len] = '\0';
+                json_obj_add(args_obj, pkey, json_create_string(val_str));
+                free(val_str);
+            }
+
+            param_p = val_end + strlen("parameter>");
+        }
+
+        if (is_known_tool(tname, known_tools, known_count)) {
+            char *args_json = json_serialize(args_obj);
+            if (*count >= *cap) {
+                *cap = (*cap == 0) ? 4 : (*cap * 2);
+                *out_calls = realloc(*out_calls, sizeof(ModelParsedToolCall) * (*cap));
+            }
+            char id_buf[64];
+            snprintf(id_buf, sizeof(id_buf), "dsml_%zu", *count + 1);
+            (*out_calls)[*count].id = strdup(id_buf);
+            (*out_calls)[*count].name = strdup(tname);
+            (*out_calls)[*count].arguments_json = args_json ? args_json : strdup("{}");
+            (*count)++;
+        }
+        json_free(args_obj);
+        p = inv_end + strlen("invoke>");
+    }
+}
+
 size_t model_gateway_scavenge_tool_calls(const char *content, const char *reasoning,
                                          const char *const *known_tool_names, size_t known_count,
                                          ModelParsedToolCall **out_calls) {
@@ -526,6 +606,9 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
         const char *src = sources[s];
         if (!src || strlen(src) == 0) continue;
         size_t initial_count = count;
+
+        // 0. Check for DSML XML tool calls (<｜DSML｜invoke... or <invoke...)
+        scavenge_dsml_tool_calls(src, known_tool_names, known_count, out_calls, &count, &cap);
 
         // 1. Check for <tool_call> ... </tool_call> tags
         const char *p = src;
