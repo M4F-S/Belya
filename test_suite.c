@@ -842,20 +842,116 @@ void test_forced_synthesis_and_keepalive(void) {
     BelyaAgent *agent = belya_agent_init(gw, "test_synthesis.sqlite", "You are an AI assistant.");
     assert(agent != NULL);
 
-    // Verify tool output truncation in context (>2500 bytes capped)
-    char large_tool_out[5000];
+    // Verify tool output truncation in context (>8000 bytes default or TOOL_OUTPUT_LIMIT capped)
+    char large_tool_out[12000];
     memset(large_tool_out, 'X', sizeof(large_tool_out) - 1);
     large_tool_out[sizeof(large_tool_out) - 1] = '\0';
     belya_agent_add_tool_result(agent, "call_test1", "bash", large_tool_out);
 
     assert(agent->msg_count == 2);
-    assert(strlen(agent->messages[1].content) < 3000);
-    assert(strstr(agent->messages[1].content, "[... Output truncated to 2500 bytes") != NULL);
+    assert(strlen(agent->messages[1].content) <= 8500);
+    assert(strstr(agent->messages[1].content, "[... Output truncated:") != NULL);
 
     belya_agent_free(agent);
     model_gateway_free(gw);
     unlink("test_synthesis.sqlite");
     printf("  -> Forced Synthesis & Keep-Alive PASSED\n");
+}
+
+void test_v6_enhancements(void) {
+    printf("[Test] v6.0 Resilient Edit Fallback, Regex Search & Diagnostics...\n");
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:9999/mock/v1", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "v6 system");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Whitespace-normalized fallback edit test
+    const char *test_code = "int calculate_sum(int a, int b) {\n    int res = a + b;\n    return res;\n}\n";
+    FILE *f = fopen("test_whitespace_edit.c", "wb");
+    assert(f != NULL);
+    fwrite(test_code, 1, strlen(test_code), f);
+    fclose(f);
+
+    // Simulate LLM edit request with different indentation (tabs or different spaces)
+    JsonValue *edit_args = json_create_object();
+    json_obj_add(edit_args, "path", json_create_string("test_whitespace_edit.c"));
+    json_obj_add(edit_args, "old_text", json_create_string("int calculate_sum(int a, int b) {\n\t\tint res = a + b;\n\t\treturn res;\n}\n"));
+    json_obj_add(edit_args, "new_text", json_create_string("int calculate_sum(int a, int b) {\n    return a + b;\n}\n"));
+
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, "edit_file") == 0) {
+            char *res = h->tools[i].callback(agent, edit_args);
+            assert(res != NULL);
+            assert(strstr(res, "successfully edited") != NULL);
+            free(res);
+            break;
+        }
+    }
+    json_free(edit_args);
+
+    // Verify file contents after edit
+    FILE *rf = fopen("test_whitespace_edit.c", "rb");
+    assert(rf != NULL);
+    char buf[512] = {0};
+    fread(buf, 1, sizeof(buf) - 1, rf);
+    fclose(rf);
+    unlink("test_whitespace_edit.c");
+    assert(strstr(buf, "return a + b;") != NULL);
+
+    // 2. POSIX Regex search_files test
+    FILE *f_reg = fopen("test_regex_file.txt", "wb");
+    assert(f_reg != NULL);
+    const char *reg_content = "error_code: 404\nstatus: OK\nerror_code: 500\nuser_id: 12345\n";
+    fwrite(reg_content, 1, strlen(reg_content), f_reg);
+    fclose(f_reg);
+
+    JsonValue *s_args = json_create_object();
+    json_obj_add(s_args, "pattern", json_create_string("error_code: [0-9]{3}"));
+    json_obj_add(s_args, "path", json_create_string("."));
+    json_obj_add(s_args, "file_glob", json_create_string("test_regex_file.txt"));
+    json_obj_add(s_args, "regex", json_create_bool(true));
+
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, "search_files") == 0) {
+            char *res = h->tools[i].callback(agent, s_args);
+            assert(res != NULL);
+            assert(strstr(res, "404") != NULL);
+            assert(strstr(res, "500") != NULL);
+            free(res);
+            break;
+        }
+    }
+    json_free(s_args);
+    unlink("test_regex_file.txt");
+
+    // 3. Diagnostic near-match preview on edit failure
+    FILE *f_diag = fopen("test_diag.txt", "wb");
+    assert(f_diag != NULL);
+    const char *diag_sample = "header_line\nimportant_token_alpha = 100\nfooter_line\n";
+    fwrite(diag_sample, 1, strlen(diag_sample), f_diag);
+    fclose(f_diag);
+
+    JsonValue *bad_edit = json_create_object();
+    json_obj_add(bad_edit, "path", json_create_string("test_diag.txt"));
+    json_obj_add(bad_edit, "old_text", json_create_string("important_token_alpha = 9999"));
+    json_obj_add(bad_edit, "new_text", json_create_string("something_else"));
+
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, "edit_file") == 0) {
+            char *res = h->tools[i].callback(agent, bad_edit);
+            assert(res != NULL);
+            assert(strstr(res, "old_text was not found") != NULL);
+            assert(strstr(res, "Similar lines found in file") != NULL);
+            assert(strstr(res, "important_token_alpha") != NULL);
+            free(res);
+            break;
+        }
+    }
+    json_free(bad_edit);
+    unlink("test_diag.txt");
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> v6.0 Enhancements PASSED\n");
 }
 
 int main(void) {
@@ -881,6 +977,7 @@ int main(void) {
     test_multi_checkpoint_rollback_integrity();
     test_progressive_disclosure_manifest();
     test_forced_synthesis_and_keepalive();
-    printf("================ All Tests Passed Successfully (21/21 - 100%%) ================\n\n");
+    test_v6_enhancements();
+    printf("================ All Tests Passed Successfully (22/22 - 100%%) ================\n\n");
     return 0;
 }

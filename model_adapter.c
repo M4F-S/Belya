@@ -265,6 +265,13 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             dyn_str_free(&stream_ctx.raw_fallback);
             dyn_str_free(&non_stream_body);
 
+            for (size_t k = 0; k < stream_ctx.tool_call_count; k++) {
+                if (stream_ctx.tool_calls[k].id) free(stream_ctx.tool_calls[k].id);
+                if (stream_ctx.tool_calls[k].name) free(stream_ctx.tool_calls[k].name);
+                if (stream_ctx.tool_calls[k].arguments_json) free(stream_ctx.tool_calls[k].arguments_json);
+            }
+            if (stream_ctx.tool_calls) free(stream_ctx.tool_calls);
+
             if (code == CURLE_COULDNT_CONNECT && strstr(self->endpoint, "localhost") != NULL) {
                 DynString err_ds = dyn_str_new();
                 dyn_str_appendf(&err_ds, "Connection Error: Failed to connect to local Ollama server at '%s'. Please ensure 'ollama serve' is running in another terminal.", self->endpoint);
@@ -291,6 +298,14 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             dyn_str_free(&stream_ctx.accum_reasoning);
             dyn_str_free(&stream_ctx.raw_fallback);
             dyn_str_free(&non_stream_body);
+
+            for (size_t k = 0; k < stream_ctx.tool_call_count; k++) {
+                if (stream_ctx.tool_calls[k].id) free(stream_ctx.tool_calls[k].id);
+                if (stream_ctx.tool_calls[k].name) free(stream_ctx.tool_calls[k].name);
+                if (stream_ctx.tool_calls[k].arguments_json) free(stream_ctx.tool_calls[k].arguments_json);
+            }
+            if (stream_ctx.tool_calls) free(stream_ctx.tool_calls);
+
             sleep(sleep_sec);
             sleep_sec *= 2;
             continue;

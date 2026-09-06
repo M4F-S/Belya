@@ -24,7 +24,7 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     agent->gateway = gw;
     agent->msg_cap = 64;
     agent->messages = calloc(agent->msg_cap, sizeof(BelyaMessage));
-    agent->max_context_messages = 50;
+    agent->max_context_messages = 80;
     
     const char *tok_budget_env = getenv("MAX_CONTEXT_TOKENS");
     agent->max_context_tokens = (tok_budget_env && atoi(tok_budget_env) > 0) ? (size_t)atoi(tok_budget_env) : 128000;
@@ -39,7 +39,7 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
                                 ? (size_t)atoi(comp_pct_env) : 80;
     const char *comp_keep_env = getenv("COMPACTION_KEEP");
     agent->compaction_keep = (comp_keep_env && atoi(comp_keep_env) > 0)
-                             ? (size_t)atoi(comp_keep_env) : 10;
+                             ? (size_t)atoi(comp_keep_env) : 20;
 
     // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
@@ -125,20 +125,26 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     } else {
         dyn_str_append(&sys,
             "Role & Objective:\n"
-            "Act as BelyaAgent, an expert systems engineer and autonomous execution engine running natively on the host system (macOS / Linux) with full POSIX, bash, and filesystem access. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
+            "Act as BelyaAgent, an expert systems engineer and autonomous execution engine running natively on the host system (macOS / Linux) with full POSIX, bash, and filesystem access. Your goal is to complete the task with absolute accuracy, zero assumptions, and strict verification.\n\n"
             "Core Rules:\n"
             "1. Host Access & Native Execution Mandate: You run natively on the host system with direct POSIX, bash, filesystem, and shell execution privileges. NEVER claim you lack access to the computer, terminal, files, GUI, or operating system. If a task requires terminal manipulation, system configuration, file operations, or running commands, invoke your `bash` or native tools immediately.\n"
             "2. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
-            "3. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources (official documentation, academic papers, or trusted industry standards).\n"
+            "3. Research Deeply: Conduct thorough research using primary sources, official documentation, and local source trees.\n"
             "4. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n"
             "5. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
             "6. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
             "Execution Protocol:\n"
-            "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan based on your findings.\n"
-            "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye. Identify potential edge cases, hidden flaws, or weak assumptions.\n"
-            "3. Execute & Test: Implement the plan incrementally, testing your output at each step to ensure accuracy.\n"
-            "4. Autonomous Self-Correction: When a compiler watchdog or test fails, immediately analyze the diagnostic trace, inspect line numbers, and patch the bug autonomously without asking for permission.\n"
-            "5. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.\n\n"
+            "1. OBSERVE: Before modifying any file, ALWAYS call read_file first to verify its exact current contents. Do not guess line numbers, indentation, or whitespace.\n"
+            "2. THINK: State your hypothesis and reasoning in your response text BEFORE calling any tool. Explain WHY you chose this action.\n"
+            "3. ACT: Execute one focused tool call at a time. Check the result before proceeding.\n"
+            "4. VERIFY: After editing code, run the compiler or test suite to confirm your change works. If it fails, re-read the file and try a different approach.\n"
+            "5. If you fail an edit 3 times, STOP retrying the same approach. Re-read the file with read_file, identify what changed, and formulate a completely new strategy.\n"
+            "6. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.\n\n"
+            "Tool Constraints:\n"
+            "- edit_file: old_text must EXACTLY match the file content character-for-character, including all leading spaces, tabs, and newlines. ALWAYS read_file first.\n"
+            "- bash: Do NOT run interactive commands (vim, nano, top, less, man, sudo). They will hang. Use cat, head, tail, sed, awk, grep instead.\n"
+            "- search_files: Returns max 50 matches. Use file_glob or regex to narrow scope.\n"
+            "- For large files (>200 lines), use read_file with offset and limit parameters.\n\n"
             "You are BelyaAgent, an autonomous software engine. Use your tools sequentially to solve tasks."
         );
     }
@@ -227,10 +233,24 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
     memset(m, 0, sizeof(BelyaMessage));
     m->role = strdup("tool");
     m->tool_call_id = strdup(tool_call_id ? tool_call_id : "call_default");
-    if (result && strlen(result) > 2500) {
+    const char *limit_env = getenv("TOOL_OUTPUT_LIMIT");
+    size_t limit_bytes = (limit_env && atoi(limit_env) > 500) ? (size_t)atoi(limit_env) : 8000;
+
+    if (result && strlen(result) > limit_bytes) {
+        size_t total_len = strlen(result);
+        size_t half = limit_bytes / 2;
+        size_t head_len = half > 1500 ? (half - 500) : half;
+        size_t tail_len = half > 1500 ? (half + 500) : half;
+        if (head_len + tail_len > limit_bytes) {
+            head_len = limit_bytes / 2;
+            tail_len = limit_bytes - head_len;
+        }
+
         DynString ds = dyn_str_new();
-        dyn_str_append_len(&ds, result, 2500);
-        dyn_str_appendf(&ds, "\n\n[... Output truncated to 2500 bytes of %zu total bytes to preserve context & speed ...]", strlen(result));
+        dyn_str_append_len(&ds, result, head_len);
+        dyn_str_appendf(&ds, "\n\n[... Output truncated: %zu bytes omitted of %zu total bytes to preserve context & speed ...]\n\n",
+                        total_len - (head_len + tail_len), total_len);
+        dyn_str_append_len(&ds, result + (total_len - tail_len), tail_len);
         m->content = ds.data;
     } else {
         m->content = strdup(result ? result : "");
@@ -484,6 +504,18 @@ size_t belya_agent_total_tokens(const BelyaAgent *agent) {
                 if (agent->messages[i].tool_calls[k].arguments_json) {
                     total += count_estimated_tokens(agent->messages[i].tool_calls[k].arguments_json);
                 }
+            }
+        }
+    }
+    for (size_t s = 0; s < agent->schema_count; s++) {
+        total += 8; // schema envelope overhead
+        if (agent->schemas[s].name) total += count_estimated_tokens(agent->schemas[s].name);
+        if (agent->schemas[s].description) total += count_estimated_tokens(agent->schemas[s].description);
+        if (agent->schemas[s].parameters_schema) {
+            char *serialized = json_serialize(agent->schemas[s].parameters_schema);
+            if (serialized) {
+                total += count_estimated_tokens(serialized);
+                free(serialized);
             }
         }
     }
@@ -1328,13 +1360,26 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     agent->total_completion_tokens += resp.completion_tokens;
     agent->total_cached_tokens += resp.cached_tokens;
 
-    // Tool Scavenger Fallback (Always on): Scan reasoning and content for JSON tool calls if standard tool_calls is empty
+    // Tool Scavenger Fallback: Scan content and reasoning for JSON tool calls if standard tool_calls is empty.
+    // For models that support native tools, avoid scanning reasoning content so hypothetical thoughts are not executed.
+    // For models like deepseek-r1 where tools schema is stripped, reasoning scan is preserved.
     if (!resp.has_tool_call && (resp.content != NULL || resp.reasoning_content != NULL) && agent->schema_count > 0) {
         const char *known_names[64];
         for (size_t s = 0; s < agent->schema_count && s < 64; s++) {
             known_names[s] = agent->schemas[s].name;
         }
-        size_t scavenged = model_gateway_scavenge_tool_calls(resp.content, resp.reasoning_content,
+
+        bool scan_reasoning = true;
+        if (agent->gateway && agent->gateway->model) {
+            bool is_r1 = (strstr(agent->gateway->model, "deepseek-r1") != NULL);
+            if (!is_r1 && resp.content != NULL && strlen(resp.content) > 0) {
+                // If model has native tool capabilities and produced content, prioritize content over hypothetical reasoning
+                scan_reasoning = false;
+            }
+        }
+
+        size_t scavenged = model_gateway_scavenge_tool_calls(resp.content,
+                                                             scan_reasoning ? resp.reasoning_content : NULL,
                                                              known_names, agent->schema_count,
                                                              &resp.tool_calls);
         if (scavenged > 0) {

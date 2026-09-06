@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fnmatch.h>
 #include <strings.h>
+#include <regex.h>
 #include <curl/curl.h>
 
 static BelyaHarness *g_harness = NULL;
@@ -337,12 +338,98 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     content[read_bytes] = '\0';
     fclose(f);
     char *pos = strstr(content, old_text);
+    size_t matched_span_len = strlen(old_text);
+
+    // Fallback: If exact match fails, try whitespace-normalized line matching
     if (!pos) {
-        free(content);
-        return strdup("Error: old_text was not found in the target file.");
+        // Split content and old_text into lines and compare stripped lines
+        const char *c_ptr = content;
+        while (*c_ptr) {
+            const char *cand = c_ptr;
+            const char *o_ptr = old_text;
+            const char *cur_line_file = cand;
+            bool full_match = true;
+
+            while (*o_ptr) {
+                // Read a stripped line from old_text
+                while (*o_ptr == ' ' || *o_ptr == '\t' || *o_ptr == '\r') o_ptr++;
+                const char *o_start = o_ptr;
+                while (*o_ptr && *o_ptr != '\n') o_ptr++;
+                const char *o_end = o_ptr;
+                while (o_end > o_start && (*(o_end - 1) == ' ' || *(o_end - 1) == '\t' || *(o_end - 1) == '\r')) o_end--;
+                size_t o_len = o_end - o_start;
+                if (*o_ptr == '\n') o_ptr++;
+
+                // Read a stripped line from file content candidate
+                while (*cur_line_file == ' ' || *cur_line_file == '\t' || *cur_line_file == '\r') cur_line_file++;
+                const char *f_start = cur_line_file;
+                while (*cur_line_file && *cur_line_file != '\n') cur_line_file++;
+                const char *f_end = cur_line_file;
+                while (f_end > f_start && (*(f_end - 1) == ' ' || *(f_end - 1) == '\t' || *(f_end - 1) == '\r')) f_end--;
+                size_t f_len = f_end - f_start;
+                if (*cur_line_file == '\n') cur_line_file++;
+
+                if (o_len != f_len || (o_len > 0 && strncmp(o_start, f_start, o_len) != 0)) {
+                    full_match = false;
+                    break;
+                }
+            }
+
+            if (full_match && (cur_line_file > cand)) {
+                pos = (char *)cand;
+                matched_span_len = cur_line_file - cand;
+                break;
+            }
+
+            // Advance candidate to next line
+            while (*c_ptr && *c_ptr != '\n') c_ptr++;
+            if (*c_ptr == '\n') c_ptr++;
+        }
     }
 
-    char *second_pos = strstr(pos + strlen(old_text), old_text);
+    if (!pos) {
+        // Extract anchor token or up to first 24 chars for line search
+        char sample_token[64] = {0};
+        size_t sidx = 0;
+        const char *token_p = old_text;
+        while (*token_p == ' ' || *token_p == '\t' || *token_p == '\r' || *token_p == '\n') token_p++;
+        while (*token_p && *token_p != ' ' && *token_p != '\t' && *token_p != '=' && *token_p != '(' && *token_p != '\n' && sidx < sizeof(sample_token) - 1) {
+            sample_token[sidx++] = *token_p++;
+        }
+        sample_token[sidx] = '\0';
+
+        DynString err = dyn_str_new();
+        dyn_str_append(&err, "Error: old_text was not found in the target file.");
+        if (sidx >= 3) {
+            dyn_str_append(&err, "\nSimilar lines found in file for reference:\n");
+            size_t ln = 1;
+            int found_count = 0;
+            const char *scan = content;
+            while (*scan && found_count < 3) {
+                const char *ln_start = scan;
+                while (*scan && *scan != '\n') scan++;
+                size_t cur_ln_len = scan - ln_start;
+                char line_buf[256];
+                size_t copy_sz = cur_ln_len < sizeof(line_buf) - 1 ? cur_ln_len : sizeof(line_buf) - 1;
+                memcpy(line_buf, ln_start, copy_sz);
+                line_buf[copy_sz] = '\0';
+
+                if (strstr(line_buf, sample_token)) {
+                    dyn_str_appendf(&err, "  Line %zu: %s\n", ln, line_buf);
+                    found_count++;
+                }
+                ln++;
+                if (*scan == '\n') scan++;
+            }
+            if (found_count == 0) {
+                dyn_str_append(&err, "  (No lines containing search anchor found. Call read_file to inspect exact current text.)\n");
+            }
+        }
+        free(content);
+        return err.data;
+    }
+
+    char *second_pos = strstr(pos + matched_span_len, old_text);
     if (second_pos) {
         size_t l1 = 1, l2 = 1;
         for (const char *p = content; p < pos; p++) if (*p == '\n') l1++;
@@ -354,7 +441,7 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     }
 
     size_t prefix_len = pos - content;
-    size_t old_len = strlen(old_text);
+    size_t old_len = matched_span_len;
     size_t new_len = strlen(new_text);
     size_t suffix_len = read_bytes - (prefix_len + old_len);
 
@@ -451,11 +538,14 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
 
             char *match = strstr(cur_doc, search_str);
             if (!match) {
+                DynString err = dyn_str_new();
+                dyn_str_appendf(&err, "Error: Search block mismatch during patch application. Expected content:\n%.200s%s\nThis text was not found in '%s'. Call read_file to verify current content.",
+                                search_str, (strlen(search_str) > 200) ? "\n... [truncated]" : "", path);
                 free(search_str);
                 free(rep_str);
                 if (cur_doc != orig) free(cur_doc);
                 free(orig);
-                return strdup("Error: Search block mismatch during patch application.");
+                return err.data;
             }
 
             size_t pre_len = match - cur_doc;
@@ -519,7 +609,7 @@ static char *tool_list_dir(BelyaAgent *agent, const JsonValue *args) {
     return ds.data;
 }
 
-static void search_files_recursive(const char *dir_path, const char *pattern, const char *glob_pat, DynString *out, int *match_count) {
+static void search_files_recursive(const char *dir_path, const char *pattern, const char *glob_pat, bool is_regex, regex_t *preg, DynString *out, int *match_count) {
     if (*match_count >= 50) return;
     DIR *d = opendir(dir_path);
     if (!d) return;
@@ -538,7 +628,7 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
         if (stat(sub_path, &st) == -1) continue;
 
         if (S_ISDIR(st.st_mode)) {
-            search_files_recursive(sub_path, pattern, glob_pat, out, match_count);
+            search_files_recursive(sub_path, pattern, glob_pat, is_regex, preg, out, match_count);
         } else if (S_ISREG(st.st_mode)) {
             if (glob_pat && strlen(glob_pat) > 0) {
                 if (fnmatch(glob_pat, dir->d_name, 0) != 0) continue;
@@ -558,7 +648,14 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
             size_t line_num = 1;
             while (fgets(line, sizeof(line), f)) {
                 if (*match_count >= 50) break;
-                if (strstr(line, pattern)) {
+                bool matched = false;
+                if (is_regex && preg) {
+                    matched = (regexec(preg, line, 0, NULL, 0) == 0);
+                } else {
+                    matched = (strstr(line, pattern) != NULL);
+                }
+
+                if (matched) {
                     line[strcspn(line, "\r\n")] = '\0';
                     dyn_str_appendf(out, "%s:%zu: %s\n", sub_path, line_num, line);
                     (*match_count)++;
@@ -576,6 +673,7 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
     const char *pattern = json_obj_get_str(args, "pattern");
     const char *path = json_obj_get_str(args, "path");
     const char *glob_pat = json_obj_get_str(args, "file_glob");
+    bool use_regex = json_obj_get_bool(args, "regex", false);
 
     if (!pattern || strlen(pattern) == 0) {
         return strdup("Error: Missing search pattern argument.");
@@ -584,9 +682,22 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
         path = g_harness ? g_harness->cwd : ".";
     }
 
+    regex_t reg;
+    regex_t *preg = NULL;
+    if (use_regex) {
+        if (regcomp(&reg, pattern, REG_EXTENDED | REG_NOSUB) != 0) {
+            return strdup("Error: Invalid regular expression pattern.");
+        }
+        preg = &reg;
+    }
+
     DynString out = dyn_str_new();
     int match_count = 0;
-    search_files_recursive(path, pattern, glob_pat, &out, &match_count);
+    search_files_recursive(path, pattern, glob_pat, use_regex, preg, &out, &match_count);
+
+    if (preg) {
+        regfree(preg);
+    }
 
     if (match_count == 0) {
         dyn_str_appendf(&out, "No matches found for '%s' in '%s'.", pattern, path);
@@ -1184,7 +1295,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     g_harness = h;
 
     // 1. bash
-    belya_harness_register_tool(h, "bash", "Execute shell commands in the host system", 
+    belya_harness_register_tool(h, "bash", "Execute a non-interactive shell command. Do NOT use vim/nano/top/less/sudo/man (they will hang). Timeout: 30s. Use cat/grep/sed/awk for file ops.", 
         build_string_param_schema("command", "The bash command string to execute"), PERM_ALLOW, tool_bash);
 
     // 2. read_file
@@ -1207,7 +1318,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     JsonValue *r_req = json_create_array();
     json_arr_add(r_req, json_create_string("path"));
     json_obj_add(read_params, "required", r_req);
-    belya_harness_register_tool(h, "read_file", "Read contents from a file with optional line ranges", read_params, PERM_ALLOW, tool_read_file);
+    belya_harness_register_tool(h, "read_file", "Read file contents with line numbers. ALWAYS call before edit_file. Use offset+limit for files >200 lines.", read_params, PERM_ALLOW, tool_read_file);
 
     // 3. write_file
     JsonValue *write_params = json_create_object();
@@ -1224,7 +1335,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(w_req, json_create_string("path"));
     json_arr_add(w_req, json_create_string("content"));
     json_obj_add(write_params, "required", w_req);
-    belya_harness_register_tool(h, "write_file", "Write contents to a file path", write_params, PERM_ALLOW, tool_write_file);
+    belya_harness_register_tool(h, "write_file", "Write or overwrite entire contents to a file path (runs pre-flight syntax check on C/C++ files)", write_params, PERM_ALLOW, tool_write_file);
 
     // 4. edit_file
     JsonValue *edit_params = json_create_object();
@@ -1235,11 +1346,11 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_obj_add(e_props, "path", e_path);
     JsonValue *e_old = json_create_object();
     json_obj_add(e_old, "type", json_create_string("string"));
-    json_obj_add(e_old, "description", json_create_string("Existing text substring to replace"));
+    json_obj_add(e_old, "description", json_create_string("Existing text substring to replace (must match file contents character-for-character)"));
     json_obj_add(e_props, "old_text", e_old);
     JsonValue *e_new = json_create_object();
     json_obj_add(e_new, "type", json_create_string("string"));
-    json_obj_add(e_new, "description", json_create_string("New text to replace old_text with"));
+    json_obj_add(e_new, "description", json_create_string("New replacement text"));
     json_obj_add(e_props, "new_text", e_new);
     JsonValue *e_vc = json_create_object();
     json_obj_add(e_vc, "type", json_create_string("boolean"));
@@ -1251,7 +1362,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(e_req, json_create_string("old_text"));
     json_arr_add(e_req, json_create_string("new_text"));
     json_obj_add(edit_params, "required", e_req);
-    belya_harness_register_tool(h, "edit_file", "Perform exact search-and-replace edit on a file (with optional verify_compile guard)", edit_params, PERM_ALLOW, tool_edit_file);
+    belya_harness_register_tool(h, "edit_file", "Exact search-and-replace edit. old_text must match character-for-character including indentation. Always call read_file first.", edit_params, PERM_ALLOW, tool_edit_file);
 
     // 5. apply_patch
     JsonValue *patch_params = json_create_object();
@@ -1269,7 +1380,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(p_req, json_create_string("path"));
     json_arr_add(p_req, json_create_string("patch"));
     json_obj_add(patch_params, "required", p_req);
-    belya_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch to a file", patch_params, PERM_ALLOW, tool_apply_patch);
+    belya_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch. Atomic: all SEARCH hunks must match exactly or whole patch is rejected.", patch_params, PERM_ALLOW, tool_apply_patch);
 
     // 6. list_dir
     belya_harness_register_tool(h, "list_dir", "List files and directories in path",
@@ -1291,11 +1402,15 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_obj_add(s_glob, "type", json_create_string("string"));
     json_obj_add(s_glob, "description", json_create_string("Optional file glob pattern (e.g. *.c, *.h)"));
     json_obj_add(s_props, "file_glob", s_glob);
+    JsonValue *s_reg = json_create_object();
+    json_obj_add(s_reg, "type", json_create_string("boolean"));
+    json_obj_add(s_reg, "description", json_create_string("Optional flag to treat pattern as POSIX extended regular expression"));
+    json_obj_add(s_props, "regex", s_reg);
     json_obj_add(s_params, "properties", s_props);
     JsonValue *s_req = json_create_array();
     json_arr_add(s_req, json_create_string("pattern"));
     json_obj_add(s_params, "required", s_req);
-    belya_harness_register_tool(h, "search_files", "Search for text patterns recursively across files", s_params, PERM_ALLOW, tool_search_files);
+    belya_harness_register_tool(h, "search_files", "Search for text or patterns recursively across files (grep-like). Returns up to 50 matches.", s_params, PERM_ALLOW, tool_search_files);
 
     // 8. git_status
     JsonValue *gs_params = json_create_object();

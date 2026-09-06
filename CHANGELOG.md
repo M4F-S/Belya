@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v6.0.0] — 2026-09-06
+### 🚀 Added & Enhanced
+- **Resilient Edit Fallback & Diagnostic Nearest Matches (`belya_harness.c`):**
+  - Implemented automatic whitespace-normalized fallback line matching in `edit_file`. If exact byte-for-byte `strstr()` fails due to tab vs. space or trailing whitespace discrepancies, line-by-line whitespace normalization resolves the hunk cleanly.
+  - Implemented diagnostic near-match reporting: when an edit target cannot be located, Belya scans the file for candidate lines containing the search anchor and reports line numbers and code previews directly back to the model.
+- **POSIX Extended Regex Search Engine (`belya_harness.c`):**
+  - Added optional `regex: true` parameter to `search_files` tool utilizing POSIX `regcomp`/`regexec` with zero external dependencies.
+- **Head-Tail Tool Output Truncation & Token Schema Awareness (`belya_agent.c`):**
+  - Replaced hard 2.5KB head-only truncation with configurable head-tail truncation (`TOOL_OUTPUT_LIMIT`, default 8KB) keeping both initial logs and the trailing compiler errors.
+  - Added tool schema parameter token estimation to `belya_agent_total_tokens()`, eliminating context budget undercounting.
+  - Raised default context threshold to 80 messages and compaction retention to 20 messages.
+- **Model-Aware Tool Scavenger Guard (`belya_agent.c`):**
+  - Restructured `belya_agent_step` scavenger invocation to avoid executing hypothetical thoughts from `<think>` reasoning blocks on models with native tool calling capabilities, while preserving compatibility with DeepSeek-R1.
+- **Memory Leak Elimination on HTTP Retries (`model_adapter.c`):**
+  - Ensured all accumulated `tool_calls` buffers are deterministically freed upon network failure and HTTP 429/500 retries.
+- **Actionable Execution Protocol & Mechanical Tool Constraints (`main.c`, `belya_agent.c`, `belya_harness.c`):**
+  - Replaced abstract philosophical instructions with strict OBSERVE → THINK → ACT → VERIFY loop and explicit read-before-edit constraints across all system prompts and tool schemas.
+- **Test Suite Expansion (`test_suite.c`):**
+  - Added Test 22: `test_v6_enhancements` verifying resilient whitespace edits, regex searches, and diagnostic failure reporting (22/22 tests passing at 100% under AddressSanitizer and UBSan).
+
+---
+
 ## [v5.2.0] — 2026-09-04
 ### 🚀 Added
 - **Persistent HTTP Keep-Alive Connection Pool (`model_adapter.c`, `model_adapter.h`):**
