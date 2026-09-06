@@ -797,6 +797,7 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
     dyn_str_free(&sys);
 
+    BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init(sub_agent);
     belya_agent_add_message(sub_agent, "user", task);
 
@@ -842,6 +843,7 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     }
 
     belya_harness_free(sub_harness);
+    g_harness = saved_harness;
     model_gateway_free(sub_gw);
 
     DynString envelope = dyn_str_new();

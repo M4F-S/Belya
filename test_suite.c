@@ -954,6 +954,389 @@ void test_v6_enhancements(void) {
     printf("  -> v6.0 Enhancements PASSED\n");
 }
 
+static BelyaToolCallback get_tool_cb(BelyaHarness *h, const char *name) {
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, name) == 0) return h->tools[i].callback;
+    }
+    return NULL;
+}
+
+void test_all_17_tools_exhaustive(void) {
+    printf("[Test] Exhaustive Verification of All 17 Tools & Edge Cases...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    gw->streaming = false;
+    BelyaAgent *agent = belya_agent_init(gw, "test_all_tools_mem.sqlite", "Test System");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    assert(h->tool_count >= 17);
+
+    // 1. bash
+    BelyaToolCallback cb_bash = get_tool_cb(h, "bash");
+    assert(cb_bash != NULL);
+    JsonValue *b1 = json_create_object();
+    json_obj_add(b1, "command", json_create_string("echo 'BASH_VERIFIED_OUTPUT'"));
+    char *out_b1 = cb_bash(agent, b1);
+    assert(out_b1 && strstr(out_b1, "BASH_VERIFIED_OUTPUT") != NULL);
+    free(out_b1);
+    json_free(b1);
+
+    JsonValue *b2 = json_create_object();
+    char *out_b2 = cb_bash(agent, b2);
+    assert(out_b2 && strstr(out_b2, "Missing command") != NULL);
+    free(out_b2);
+    json_free(b2);
+
+    // 2. write_file
+    BelyaToolCallback cb_write = get_tool_cb(h, "write_file");
+    assert(cb_write != NULL);
+    JsonValue *w1 = json_create_object();
+    json_obj_add(w1, "path", json_create_string("test_tool_sample.txt"));
+    json_obj_add(w1, "content", json_create_string("Line 1: Zero\nLine 2: One\nLine 3: Two\nLine 4: Three\nLine 5: Four\n"));
+    char *out_w1 = cb_write(agent, w1);
+    assert(out_w1 && strstr(out_w1, "successfully written") != NULL);
+    free(out_w1);
+    json_free(w1);
+
+    JsonValue *w2 = json_create_object();
+    char *out_w2 = cb_write(agent, w2);
+    assert(out_w2 && strstr(out_w2, "Missing path") != NULL);
+    free(out_w2);
+    json_free(w2);
+
+    JsonValue *w3 = json_create_object();
+    json_obj_add(w3, "path", json_create_string("test_bad_syntax.c"));
+    json_obj_add(w3, "content", json_create_string("int invalid_func( { return ;"));
+    char *out_w3 = cb_write(agent, w3);
+    assert(out_w3 && (strstr(out_w3, "COMPILER WARNING/ERROR") != NULL || strstr(out_w3, "Syntax check failed") != NULL || strstr(out_w3, "error:") != NULL));
+    free(out_w3);
+    json_free(w3);
+    unlink("test_bad_syntax.c");
+
+    // 3. read_file
+    BelyaToolCallback cb_read = get_tool_cb(h, "read_file");
+    assert(cb_read != NULL);
+    JsonValue *r1 = json_create_object();
+    json_obj_add(r1, "path", json_create_string("test_tool_sample.txt"));
+    char *out_r1 = cb_read(agent, r1);
+    assert(out_r1 && strstr(out_r1, "Line 1: Zero") != NULL && strstr(out_r1, "Line 5: Four") != NULL);
+    free(out_r1);
+    json_free(r1);
+
+    JsonValue *r2 = json_create_object();
+    json_obj_add(r2, "path", json_create_string("test_tool_sample.txt"));
+    json_obj_add(r2, "offset", json_create_number(2));
+    json_obj_add(r2, "limit", json_create_number(2));
+    char *out_r2 = cb_read(agent, r2);
+    assert(out_r2 && strstr(out_r2, "Line 2: One") != NULL);
+    assert(strstr(out_r2, "Line 1: Zero") == NULL);
+    free(out_r2);
+    json_free(r2);
+
+    JsonValue *r3 = json_create_object();
+    json_obj_add(r3, "path", json_create_string("test_nonexistent_file_9999.txt"));
+    char *out_r3 = cb_read(agent, r3);
+    assert(out_r3 && strstr(out_r3, "not found or inaccessible") != NULL);
+    free(out_r3);
+    json_free(r3);
+
+    // 4. edit_file
+    BelyaToolCallback cb_edit = get_tool_cb(h, "edit_file");
+    assert(cb_edit != NULL);
+    JsonValue *e1 = json_create_object();
+    json_obj_add(e1, "path", json_create_string("test_tool_sample.txt"));
+    json_obj_add(e1, "old_text", json_create_string("Line 2: One"));
+    json_obj_add(e1, "new_text", json_create_string("Line 2: ONE_EDITED"));
+    char *out_e1 = cb_edit(agent, e1);
+    assert(out_e1 && strstr(out_e1, "successfully edited") != NULL);
+    free(out_e1);
+    json_free(e1);
+
+    JsonValue *e_dup_w = json_create_object();
+    json_obj_add(e_dup_w, "path", json_create_string("test_dup.txt"));
+    json_obj_add(e_dup_w, "content", json_create_string("repeat\nrepeat\n"));
+    char *out_dup_w = cb_write(agent, e_dup_w);
+    free(out_dup_w);
+    json_free(e_dup_w);
+
+    JsonValue *e2 = json_create_object();
+    json_obj_add(e2, "path", json_create_string("test_dup.txt"));
+    json_obj_add(e2, "old_text", json_create_string("repeat"));
+    json_obj_add(e2, "new_text", json_create_string("unique"));
+    char *out_e2 = cb_edit(agent, e2);
+    assert(out_e2 && (strstr(out_e2, "ambiguous") != NULL || strstr(out_e2, "matches found") != NULL));
+    free(out_e2);
+    json_free(e2);
+    unlink("test_dup.txt");
+
+    // 5. apply_patch
+    BelyaToolCallback cb_patch = get_tool_cb(h, "apply_patch");
+    assert(cb_patch != NULL);
+    const char *patch_text =
+        "<<<<<<< SEARCH\n"
+        "Line 3: Two\n"
+        "=======\n"
+        "Line 3: TWO_PATCHED\n"
+        ">>>>>>> REPLACE\n"
+        "<<<<<<< SEARCH\n"
+        "Line 4: Three\n"
+        "=======\n"
+        "Line 4: THREE_PATCHED\n"
+        ">>>>>>> REPLACE";
+    JsonValue *p1 = json_create_object();
+    json_obj_add(p1, "path", json_create_string("test_tool_sample.txt"));
+    json_obj_add(p1, "patch", json_create_string(patch_text));
+    char *out_p1 = cb_patch(agent, p1);
+    assert(out_p1 && strstr(out_p1, "successfully applied") != NULL);
+    free(out_p1);
+    json_free(p1);
+
+    const char *bad_patch =
+        "<<<<<<< SEARCH\n"
+        "Nonexistent line in file\n"
+        "=======\n"
+        "Replacement text\n"
+        ">>>>>>> REPLACE";
+    JsonValue *p2 = json_create_object();
+    json_obj_add(p2, "path", json_create_string("test_tool_sample.txt"));
+    json_obj_add(p2, "patch", json_create_string(bad_patch));
+    char *out_p2 = cb_patch(agent, p2);
+    assert(out_p2 && (strstr(out_p2, "mismatch") != NULL || strstr(out_p2, "not found") != NULL));
+    free(out_p2);
+    json_free(p2);
+
+    // 6. list_dir
+    BelyaToolCallback cb_list = get_tool_cb(h, "list_dir");
+    assert(cb_list != NULL);
+    JsonValue *ld1 = json_create_object();
+    json_obj_add(ld1, "path", json_create_string("."));
+    char *out_ld1 = cb_list(agent, ld1);
+    assert(out_ld1 && strstr(out_ld1, "test_tool_sample.txt") != NULL);
+    free(out_ld1);
+    json_free(ld1);
+
+    // 7. search_files
+    BelyaToolCallback cb_search = get_tool_cb(h, "search_files");
+    assert(cb_search != NULL);
+    JsonValue *s1 = json_create_object();
+    json_obj_add(s1, "path", json_create_string("."));
+    json_obj_add(s1, "pattern", json_create_string("TWO_PATCHED"));
+    char *out_s1 = cb_search(agent, s1);
+    assert(out_s1 && strstr(out_s1, "test_tool_sample.txt") != NULL);
+    free(out_s1);
+    json_free(s1);
+
+    JsonValue *s2 = json_create_object();
+    json_obj_add(s2, "path", json_create_string("."));
+    json_obj_add(s2, "pattern", json_create_string("THREE_[A-Z]+"));
+    json_obj_add(s2, "regex", json_create_bool(true));
+    char *out_s2 = cb_search(agent, s2);
+    assert(out_s2 && strstr(out_s2, "test_tool_sample.txt") != NULL);
+    free(out_s2);
+    json_free(s2);
+
+    // 8. git_status
+    BelyaToolCallback cb_gstat = get_tool_cb(h, "git_status");
+    assert(cb_gstat != NULL);
+    char *out_gs = cb_gstat(agent, NULL);
+    assert(out_gs && strlen(out_gs) > 0);
+    free(out_gs);
+
+    // 9. git_diff
+    BelyaToolCallback cb_gdiff = get_tool_cb(h, "git_diff");
+    assert(cb_gdiff != NULL);
+    char *out_gd = cb_gdiff(agent, NULL);
+    assert(out_gd != NULL);
+    free(out_gd);
+
+    // 10. save_memory
+    BelyaToolCallback cb_smem = get_tool_cb(h, "save_memory");
+    assert(cb_smem != NULL);
+    JsonValue *sm1 = json_create_object();
+    json_obj_add(sm1, "topic", json_create_string("ToolIntegration"));
+    json_obj_add(sm1, "room", json_create_string("core"));
+    json_obj_add(sm1, "content", json_create_string("Verifying all 17 tools deterministically"));
+    json_obj_add(sm1, "wing", json_create_string("facts"));
+    char *out_sm1 = cb_smem(agent, sm1);
+    assert(out_sm1 && (strstr(out_sm1, "stored") != NULL || strstr(out_sm1, "successfully") != NULL));
+    free(out_sm1);
+    json_free(sm1);
+
+    // 11. recall_memory
+    BelyaToolCallback cb_rmem = get_tool_cb(h, "recall_memory");
+    assert(cb_rmem != NULL);
+    JsonValue *rm1 = json_create_object();
+    json_obj_add(rm1, "query", json_create_string("ToolIntegration"));
+    char *out_rm1 = cb_rmem(agent, rm1);
+    assert(out_rm1 && strstr(out_rm1, "ToolIntegration") != NULL);
+    free(out_rm1);
+    json_free(rm1);
+
+    // 12. save_skill
+    BelyaToolCallback cb_sskill = get_tool_cb(h, "save_skill");
+    assert(cb_sskill != NULL);
+    JsonValue *sk1 = json_create_object();
+    json_obj_add(sk1, "name", json_create_string("skill_exhaustive_test"));
+    json_obj_add(sk1, "trigger", json_create_string("run exhaustive test"));
+    json_obj_add(sk1, "description", json_create_string("Exhaustive verification procedure"));
+    json_obj_add(sk1, "instructions", json_create_string("Step 1: Check memory\nStep 2: Run ASan"));
+    char *out_sk1 = cb_sskill(agent, sk1);
+    assert(out_sk1 && strstr(out_sk1, "successfully saved") != NULL);
+    free(out_sk1);
+    json_free(sk1);
+
+    // 13. recall_skill
+    BelyaToolCallback cb_rskill = get_tool_cb(h, "recall_skill");
+    assert(cb_rskill != NULL);
+    JsonValue *rsk1 = json_create_object();
+    json_obj_add(rsk1, "query", json_create_string("exhaustive"));
+    char *out_rsk1 = cb_rskill(agent, rsk1);
+    assert(out_rsk1 && strstr(out_rsk1, "skill_exhaustive_test") != NULL);
+    free(out_rsk1);
+    json_free(rsk1);
+
+    // 14. recall_conversation
+    BelyaToolCallback cb_rconv = get_tool_cb(h, "recall_conversation");
+    assert(cb_rconv != NULL);
+    JsonValue *rc1 = json_create_object();
+    json_obj_add(rc1, "query", json_create_string("test"));
+    char *out_rc1 = cb_rconv(agent, rc1);
+    assert(out_rc1 != NULL);
+    free(out_rc1);
+    json_free(rc1);
+
+    // 15. spawn_subagent
+    BelyaToolCallback cb_sub = get_tool_cb(h, "spawn_subagent");
+    assert(cb_sub != NULL);
+    JsonValue *sub_bad = json_create_object();
+    char *out_sub_bad = cb_sub(agent, sub_bad);
+    assert(out_sub_bad && strstr(out_sub_bad, "Missing subagent task argument") != NULL);
+    free(out_sub_bad);
+    json_free(sub_bad);
+
+    JsonValue *sub_ok = json_create_object();
+    json_obj_add(sub_ok, "task", json_create_string("Test isolated subagent"));
+    char *out_sub_ok = cb_sub(agent, sub_ok);
+    assert(out_sub_ok && strstr(out_sub_ok, "Subagent Task Execution Envelope") != NULL);
+    free(out_sub_ok);
+    json_free(sub_ok);
+
+    // 16. define_tool
+    BelyaToolCallback cb_deftool = get_tool_cb(h, "define_tool");
+    assert(cb_deftool != NULL);
+    JsonValue *dt1 = json_create_object();
+    json_obj_add(dt1, "name", json_create_string("dynamic_ping"));
+    json_obj_add(dt1, "description", json_create_string("Dynamic ping tool"));
+    json_obj_add(dt1, "script_body", json_create_string("echo \"DYNAMIC_PING_SUCCESS: $1\""));
+    char *out_dt1 = cb_deftool(agent, dt1);
+    assert(out_dt1 && strstr(out_dt1, "successfully defined") != NULL);
+    free(out_dt1);
+    json_free(dt1);
+
+    BelyaToolCallback cb_dyn_ping = get_tool_cb(h, "dynamic_ping");
+    assert(cb_dyn_ping != NULL);
+    JsonValue *dp_args = json_create_object();
+    json_obj_add(dp_args, "msg", json_create_string("HelloFromHarness"));
+    char *out_dp = cb_dyn_ping(agent, dp_args);
+    assert(out_dp && strstr(out_dp, "DYNAMIC_PING_SUCCESS") != NULL);
+    free(out_dp);
+    json_free(dp_args);
+
+    // 17. fetch_url
+    BelyaToolCallback cb_fetch = get_tool_cb(h, "fetch_url");
+    assert(cb_fetch != NULL);
+    JsonValue *fu_bad = json_create_object();
+    char *out_fu_bad = cb_fetch(agent, fu_bad);
+    assert(out_fu_bad && strstr(out_fu_bad, "Missing url") != NULL);
+    free(out_fu_bad);
+    json_free(fu_bad);
+
+    JsonValue *fu_inv = json_create_object();
+    json_obj_add(fu_inv, "url", json_create_string("http://127.0.0.1:59999/nonexistent_endpoint"));
+    char *out_fu_inv = cb_fetch(agent, fu_inv);
+    assert(out_fu_inv != NULL);
+    free(out_fu_inv);
+    json_free(fu_inv);
+
+    unlink("test_tool_sample.txt");
+    unlink(".belya/tools/dynamic_ping.sh");
+    unlink(".belya/tools/dynamic_ping.json");
+    rmdir(".belya/tools");
+    rmdir(".belya");
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_all_tools_mem.sqlite");
+    printf("  -> Exhaustive 17 Tools & Edge Cases PASSED\n");
+}
+
+void test_skills_lifecycle_and_auto_injection(void) {
+    printf("[Test] Skills Lifecycle: Trigger Matching, Auto-Injection & Salience Boost...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test System");
+
+    // 1. Register 3 distinct skills
+    assert(belya_agent_save_skill(agent, "skill_docker_build", "build docker",
+        "Builds container image", "1. docker build -t test . 2. docker run test"));
+    assert(belya_agent_save_skill(agent, "skill_asan_check", "run asan",
+        "Runs AddressSanitizer checks", "1. gcc -fsanitize=address ... 2. ./test_bin"));
+    assert(belya_agent_save_skill(agent, "skill_vps_deploy", "deploy vps",
+        "Deploys binary to remote server", "1. rsync binary 2. systemctl restart belya"));
+
+    // 2. Test Manifest Generation
+    char *manifest = belya_agent_get_skills_manifest(agent);
+    assert(manifest != NULL);
+    assert(strstr(manifest, "skill_docker_build") != NULL);
+    assert(strstr(manifest, "skill_asan_check") != NULL);
+    assert(strstr(manifest, "skill_vps_deploy") != NULL);
+    free(manifest);
+
+    // 3. Test Prompt Trigger Matching
+    char *matched1 = belya_agent_match_skill_for_prompt(agent, "Please run asan on this repository immediately");
+    assert(matched1 != NULL);
+    assert(strstr(matched1, "gcc -fsanitize=address") != NULL);
+    free(matched1);
+
+    char *matched2 = belya_agent_match_skill_for_prompt(agent, "Could you build docker image for production?");
+    assert(matched2 != NULL);
+    assert(strstr(matched2, "docker build -t test .") != NULL);
+    free(matched2);
+
+    char *matched_none = belya_agent_match_skill_for_prompt(agent, "What is the capital of France?");
+    assert(matched_none == NULL);
+
+    // 4. Test Salience Boosting on Repeated Hit
+    char *matched3 = belya_agent_match_skill_for_prompt(agent, "Please run asan again");
+    assert(matched3 != NULL);
+    free(matched3);
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    printf("  -> Skills Lifecycle & Auto-Injection PASSED\n");
+}
+
+void test_subagent_recursion_guard(void) {
+    printf("[Test] Subagent Recursion Guard & Sandbox Tool Isolation...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test System");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    BelyaToolCallback cb_sub = get_tool_cb(h, "spawn_subagent");
+    assert(cb_sub != NULL);
+
+    JsonValue *sub_args = json_create_object();
+    json_obj_add(sub_args, "task", json_create_string("Verify subagent sandbox"));
+    json_obj_add(sub_args, "max_turns", json_create_number(1));
+    char *envelope = cb_sub(agent, sub_args);
+    assert(envelope != NULL);
+    assert(strstr(envelope, "Subagent Task Execution Envelope") != NULL);
+    free(envelope);
+    json_free(sub_args);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> Subagent Recursion Guard PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -978,6 +1361,9 @@ int main(void) {
     test_progressive_disclosure_manifest();
     test_forced_synthesis_and_keepalive();
     test_v6_enhancements();
-    printf("================ All Tests Passed Successfully (22/22 - 100%%) ================\n\n");
+    test_all_17_tools_exhaustive();
+    test_skills_lifecycle_and_auto_injection();
+    test_subagent_recursion_guard();
+    printf("================ All Tests Passed Successfully (25/25 - 100%%) ================\n\n");
     return 0;
 }

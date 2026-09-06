@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/badge/Release-v6.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-22%2F22_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-25%2F25_Passed_(100%25)-brightgreen.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-30%2F30_Passed_(100%25)-success.svg)]()
 [![Memory](https://img.shields.io/badge/Memory_Footprint-<3MB_Idle-purple.svg)]()
 [![Binary](https://img.shields.io/badge/Binary_Size-<180KB-informational.svg)]()
