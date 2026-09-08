@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
     }
 
     if (telegram_mode) {
-        gateway->streaming = false;
+        gateway->streaming = true;
     }
 
     // 2. Initialize Belya Agent with persistent SQLite memory & Strategic Execution Directives
