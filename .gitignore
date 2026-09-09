@@ -28,3 +28,6 @@ __pycache__/
 # Private session progress & docs
 docs/
 
+# Evolution outputs
+reports/
+patches/
