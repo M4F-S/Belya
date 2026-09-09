@@ -16,7 +16,7 @@ typedef struct {
 
 static inline DynString dyn_str_new(void) {
     DynString ds;
-    ds.cap = 512;
+    ds.cap = 1024;
     ds.len = 0;
     ds.data = malloc(ds.cap);
     if (ds.data) ds.data[0] = '\0';
