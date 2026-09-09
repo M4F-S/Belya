@@ -407,6 +407,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         "/status - System status & token budget\n"
                         "/cache - Prompt cache economics & hit rates\n"
                         "/tools - List registered VPS tools\n"
+                        "/agency - Multi-agent orchestration pipeline\n"
                         "/skills - Search or inspect procedural skills\n"
                         "/checkpoint - Create Git & memory checkpoint\n"
                         "/rollback - Restore previous checkpoint\n"
@@ -579,6 +580,40 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     telegram_bot_send_message(bot, chat_id_str, "🔄 Reloading Belya service via systemd (launching updated binary)...");
                     sleep(1);
                     exit(0); // Systemd Restart=always will relaunch immediately with freshly compiled binary
+                }
+
+                if (strncmp(text, "/agency", 7) == 0) {
+                    const char *task = strlen(text) > 7 ? text + 7 : "";
+                    while (*task == ' ') task++;
+                    if (strlen(task) == 0) {
+                        char *manifests = belya_agent_list_manifests(harness->agent);
+                        DynString resp = dyn_str_new();
+                        dyn_str_append(&resp, "🏛️ <b>Belya Agency Architecture:</b>\n\n");
+                        dyn_str_append(&resp, manifests ? manifests : "No subagents registered.\n");
+                        dyn_str_append(&resp, "\nUsage: <code>/agency &lt;task description&gt;</code>");
+                        telegram_bot_send_chunks(bot, chat_id_str, resp.data);
+                        dyn_str_free(&resp);
+                        if (manifests) free(manifests);
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "🚀 Dispatching Belya Agency Chief-of-Staff triage and pipeline...");
+                        char **pipeline = NULL;
+                        size_t count = 0;
+                        char *direct = NULL;
+                        belya_agency_triage(harness, task, &pipeline, &count, &direct);
+                        if (direct) {
+                            telegram_bot_send_message(bot, chat_id_str, direct);
+                            free(direct);
+                        } else if (count > 0) {
+                            char *report = belya_agency_execute_pipeline(harness, task, (const char **)pipeline, count);
+                            if (report) {
+                                telegram_bot_send_chunks(bot, chat_id_str, report);
+                                free(report);
+                            }
+                            for (size_t k = 0; k < count; k++) free(pipeline[k]);
+                            free(pipeline);
+                        }
+                    }
+                    continue;
                 }
 
                 // Process User Turn

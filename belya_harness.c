@@ -63,12 +63,69 @@ static char *preflight_syntax_check(const char *path) {
     return diag.data;
 }
 
+bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_name) {
+    if (!tool_name) return false;
+    if (!whitelist || strlen(whitelist) == 0 || strcmp(whitelist, "*") == 0 || strcmp(whitelist, "all") == 0) {
+        return true;
+    }
+
+    char *wl_copy = strdup(whitelist);
+    if (!wl_copy) return false;
+
+    bool matched = false;
+    char *token_ctx = NULL;
+    char *tok = strtok_r(wl_copy, ",; \t\r\n", &token_ctx);
+    while (tok) {
+        while (*tok == ' ' || *tok == '\t') tok++;
+        char *end = tok + strlen(tok) - 1;
+        while (end >= tok && isspace((unsigned char)*end)) *end-- = '\0';
+
+        if (strcasecmp(tok, tool_name) == 0) {
+            matched = true;
+            break;
+        }
+        // Common tool aliases
+        if ((strcasecmp(tok, "grep_search") == 0 && strcmp(tool_name, "search_files") == 0) ||
+            (strcasecmp(tok, "find_by_name") == 0 && (strcmp(tool_name, "list_dir") == 0 || strcmp(tool_name, "search_files") == 0)) ||
+            (strcasecmp(tok, "replace_file_content") == 0 && strcmp(tool_name, "edit_file") == 0)) {
+            matched = true;
+            break;
+        }
+        tok = strtok_r(NULL, ",; \t\r\n", &token_ctx);
+    }
+    free(wl_copy);
+    return matched;
+}
+
 // Built-in Native Tools
 
 static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *cmd = json_obj_get_str(args, "command");
     if (!cmd) return strdup("Error: Missing command argument.");
+
+    // Tester Restricted Execution Guard: allow only test and build commands
+    if (g_harness && g_harness->bash_restricted) {
+        const char *t = cmd;
+        while (*t == ' ' || *t == '\t') t++;
+        bool allowed = false;
+        const char *allowed_cmds[] = {
+            "make", "./belya_test", "gcc", "clang", "ctest", "git status", "git diff", "cat ", "ls", "pwd", "echo", NULL
+        };
+        for (int i = 0; allowed_cmds[i]; i++) {
+            if (strncmp(t, allowed_cmds[i], strlen(allowed_cmds[i])) == 0 ||
+                strstr(t, "make test") != NULL ||
+                strstr(t, "./belya_test") != NULL) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) {
+            DynString err = dyn_str_new();
+            dyn_str_appendf(&err, "Error: Tester role bash execution is restricted to build/test validation targets (e.g. make test, make, ./belya_test). Unauthorized command rejected: '%s'", cmd);
+            return err.data;
+        }
+    }
 
     // Handle cd built-in directly to maintain working directory persistence
     if (strncmp(cmd, "cd ", 3) == 0 || strcmp(cmd, "cd") == 0) {
@@ -962,6 +1019,282 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     return envelope.data;
 }
 
+// ==================== Belya Agency Subagent Dispatch, Rollback Guard & Triage ====================
+
+static bool str_contains_ci(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    size_t hlen = strlen(haystack);
+    size_t nlen = strlen(needle);
+    if (nlen > hlen) return false;
+    for (size_t i = 0; i <= hlen - nlen; i++) {
+        if (strncasecmp(haystack + i, needle, nlen) == 0) return true;
+    }
+    return false;
+}
+
+char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *role_name, const char *task, const char *extra_context) {
+    if (!parent_harness || !parent_harness->agent || !role_name || !task) {
+        return strdup("Error: Invalid arguments for subagent dispatch.");
+    }
+
+    // 1. Resolve agent manifest
+    BelyaAgentManifest *manifest = belya_agent_get_manifest(parent_harness->agent, role_name);
+    if (!manifest) {
+        manifest = belya_agent_route_manifest(parent_harness->agent, role_name);
+    }
+
+    const char *whitelist = manifest ? manifest->tools : "read_file";
+    int max_turns = (manifest && manifest->max_turns > 0) ? manifest->max_turns : 5;
+    const char *inst = manifest ? manifest->instructions : "You are a specialized autonomous engineering subagent.";
+    const char *model = (manifest && strcmp(manifest->model, "inherit") != 0) 
+                        ? manifest->model : parent_harness->agent->gateway->model;
+
+    // 2. Check if subagent has write permissions
+    bool has_write = belya_harness_is_tool_whitelisted(whitelist, "write_file") ||
+                     belya_harness_is_tool_whitelisted(whitelist, "edit_file") ||
+                     belya_harness_is_tool_whitelisted(whitelist, "apply_patch");
+
+    // 3. Per-Subagent Git Rollback Guard: Snapshot HEAD SHA
+    char snapshot_sha[128] = {0};
+    bool git_repo_available = false;
+    if (has_write) {
+        FILE *p = popen("git rev-parse HEAD 2>/dev/null", "r");
+        if (p) {
+            if (fgets(snapshot_sha, sizeof(snapshot_sha), p)) {
+                snapshot_sha[strcspn(snapshot_sha, "\r\n")] = '\0';
+                if (strlen(snapshot_sha) == 40) {
+                    git_repo_available = true;
+                }
+            }
+            pclose(p);
+        }
+    }
+
+    // 4. Construct specialized system prompt
+    DynString sys = dyn_str_new();
+    dyn_str_appendf(&sys, "Role: %s Subagent (%s)\n%s", role_name, manifest ? manifest->role : role_name, inst);
+    if (extra_context && strlen(extra_context) > 0) {
+        dyn_str_append(&sys, "\n\nAdditional Technical Context:\n");
+        dyn_str_append(&sys, extra_context);
+    }
+
+    // 5. Initialize isolated subagent and bounded harness
+    ModelGateway *sub_gw = model_gateway_init(parent_harness->agent->gateway->endpoint, parent_harness->agent->gateway->api_key, model);
+    sub_gw->streaming = false; // Run silent to avoid stdout collision
+
+    BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
+    dyn_str_free(&sys);
+
+    BelyaHarness *saved_harness = g_harness;
+    BelyaHarness *sub_harness = belya_harness_init_bounded(sub_agent, whitelist, role_name);
+
+    belya_agent_add_message(sub_agent, "user", task);
+
+    int turns = max_turns;
+    DynString tool_log = dyn_str_new();
+    DynString final_ans = dyn_str_new();
+    bool running = true;
+    size_t tool_executions = 0;
+    bool subagent_failed = false;
+
+    while (running && turns-- > 0) {
+        ModelGatewayResponse resp = belya_agent_step(sub_agent);
+        if (!resp.has_tool_call) {
+            if (resp.content) dyn_str_append(&final_ans, resp.content);
+            running = false;
+        } else {
+            for (size_t i = 0; i < resp.tool_call_count; i++) {
+                ModelParsedToolCall *tc = &resp.tool_calls[i];
+                BelyaRegisteredTool *matched = NULL;
+                for (size_t t = 0; t < sub_harness->tool_count; t++) {
+                    if (strcmp(sub_harness->tools[t].name, tc->name) == 0 &&
+                        strcmp(tc->name, "spawn_subagent") != 0 &&
+                        strcmp(tc->name, "dispatch_agent") != 0) {
+                        matched = &sub_harness->tools[t];
+                        break;
+                    }
+                }
+                if (matched && matched->callback) {
+                    JsonValue *p_args = json_parse(tc->arguments_json);
+                    char *obs = matched->callback(sub_agent, p_args);
+                    json_free(p_args);
+
+                    char *breaker_alert = NULL;
+                    bool tripped = belya_harness_record_tool_observation(sub_harness, tc->name, tc->arguments_json, obs, &breaker_alert);
+                    const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
+
+                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, final_obs);
+                    dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", final_obs ? final_obs : "");
+                    tool_executions++;
+
+                    if (tripped) {
+                        subagent_failed = true;
+                    }
+                    if (breaker_alert) free(breaker_alert);
+                    if (obs) free(obs);
+                } else {
+                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, "Error: Tool not permitted by role security policy.");
+                    dyn_str_appendf(&tool_log, "• [%s] => BLOCKED by role whitelist\n", tc->name);
+                }
+            }
+        }
+        model_gateway_response_free(&resp);
+    }
+
+    // Failure checks: exhausted turn limit or consecutive failures
+    if (running && turns <= 0) {
+        subagent_failed = true;
+    }
+    if (sub_harness->consecutive_tool_failures >= 3) {
+        subagent_failed = true;
+    }
+
+    // 6. Git Rollback Guard Execution
+    bool rolled_back = false;
+    if (has_write && git_repo_available) {
+        if (subagent_failed) {
+            char reset_cmd[256];
+            snprintf(reset_cmd, sizeof(reset_cmd), "git reset --hard %s 2>/dev/null && git clean -fd 2>/dev/null", snapshot_sha);
+            int ret = system(reset_cmd);
+            (void)ret;
+            rolled_back = true;
+
+            char log_msg[256];
+            snprintf(log_msg, sizeof(log_msg), "Subagent '%s' failed; rolled back to snapshot %.8s", role_name, snapshot_sha);
+            belya_agent_log_timeline(parent_harness->agent, "subagent_rollback", log_msg);
+        } else {
+            char log_msg[256];
+            snprintf(log_msg, sizeof(log_msg), "Subagent '%s' completed successfully; changes preserved", role_name);
+            belya_agent_log_timeline(parent_harness->agent, "subagent_commit", log_msg);
+        }
+    }
+
+    // 7. Format output envelope
+    DynString envelope = dyn_str_new();
+    dyn_str_appendf(&envelope, "=== Belya Agency Subagent Execution Envelope ===\n");
+    dyn_str_appendf(&envelope, "Role: %s | Permitted Tools: [%s]\n", role_name, whitelist);
+    dyn_str_appendf(&envelope, "Status: %s\n", subagent_failed ? "FAILED (Rolled Back)" : "SUCCESS");
+    dyn_str_appendf(&envelope, "Tools Executed: %zu\n", tool_executions);
+    if (rolled_back) {
+        dyn_str_appendf(&envelope, "Git Rollback Guard: ACTIVATED (Reverted working tree to snapshot %.8s)\n", snapshot_sha);
+    }
+    if (tool_log.len > 0) {
+        dyn_str_append(&envelope, "\nExecution Trace:\n");
+        dyn_str_append(&envelope, tool_log.data);
+    }
+    dyn_str_appendf(&envelope, "\nFinal Output:\n%s", final_ans.len > 0 ? final_ans.data : "(Subagent completed without output text)");
+
+    dyn_str_free(&tool_log);
+    dyn_str_free(&final_ans);
+    belya_harness_free(sub_harness);
+    g_harness = saved_harness;
+    model_gateway_free(sub_gw);
+    if (manifest) belya_agent_manifest_free(manifest);
+
+    return envelope.data;
+}
+
+static char *tool_dispatch_agent(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *role = json_obj_get_str(args, "role");
+    const char *task = json_obj_get_str(args, "task");
+    const char *context = json_obj_get_str(args, "context");
+
+    if (!role || !task) return strdup("Error: Missing role or task argument for dispatch_agent.");
+    if (!g_harness) return strdup("Error: Harness execution environment not available.");
+
+    return belya_agency_dispatch_subagent(g_harness, role, task, context);
+}
+
+bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***out_pipeline, size_t *out_count, char **out_direct_reply) {
+    if (!harness || !user_input || !out_pipeline || !out_count) return false;
+    *out_pipeline = NULL;
+    *out_count = 0;
+    if (out_direct_reply) *out_direct_reply = NULL;
+
+    const char *p = user_input;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+
+    // 1. Conversational Fast-Path: greetings & simple queries
+    const char *greetings[] = {
+        "hi", "hello", "hey", "good morning", "good evening", "status", "who are you", "help", "/help", NULL
+    };
+    for (int i = 0; greetings[i]; i++) {
+        if (strcasecmp(p, greetings[i]) == 0) {
+            if (out_direct_reply) {
+                *out_direct_reply = strdup("Hello! I am Belya Agency, an autonomous multi-agent engineering harness. I coordinate Architect, Builder, Reviewer, and Tester subagents to solve complex engineering tasks.");
+            }
+            return true;
+        }
+    }
+
+    // 2. Intent Classification for Subagent Pipeline
+    bool is_test = (str_contains_ci(p, "test") || str_contains_ci(p, "benchmark") || str_contains_ci(p, "verify"));
+    bool is_review = (str_contains_ci(p, "review") || str_contains_ci(p, "audit") || str_contains_ci(p, "diff"));
+    bool is_research = (str_contains_ci(p, "explain") || str_contains_ci(p, "how does") || str_contains_ci(p, "what is") || str_contains_ci(p, "investigate") || str_contains_ci(p, "research") || str_contains_ci(p, "find "));
+
+    char **pipeline = NULL;
+    size_t count = 0;
+
+    if (is_review && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
+        count = 1;
+        pipeline = malloc(sizeof(char *) * count);
+        pipeline[0] = strdup("reviewer");
+    } else if (is_test && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
+        count = 1;
+        pipeline = malloc(sizeof(char *) * count);
+        pipeline[0] = strdup("tester");
+    } else if (is_research && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
+        count = 1;
+        pipeline = malloc(sizeof(char *) * count);
+        pipeline[0] = strdup("architect");
+    } else {
+        // Standard Full Engineering Pipeline: Architect -> Builder -> Tester
+        count = 3;
+        pipeline = malloc(sizeof(char *) * count);
+        pipeline[0] = strdup("architect");
+        pipeline[1] = strdup("builder");
+        pipeline[2] = strdup("tester");
+    }
+
+    *out_pipeline = pipeline;
+    *out_count = count;
+    return true;
+}
+
+char *belya_agency_execute_pipeline(BelyaHarness *harness, const char *prompt, const char **pipeline, size_t count) {
+    if (!harness || !prompt || !pipeline || count == 0) return NULL;
+
+    DynString report = dyn_str_new();
+    dyn_str_appendf(&report, "🚀 [Belya Agency Multi-Agent Pipeline: %zu Stages]\nSequence: ", count);
+    for (size_t i = 0; i < count; i++) {
+        dyn_str_appendf(&report, "%s%s", pipeline[i], (i + 1 < count) ? " -> " : "\n\n");
+    }
+
+    DynString accumulated_context = dyn_str_new();
+    dyn_str_appendf(&accumulated_context, "Original Mission: %s\n", prompt);
+
+    for (size_t i = 0; i < count; i++) {
+        const char *role = pipeline[i];
+        printf("\n\033[1;36m[Agency Pipeline Stage %zu/%zu]: Dispatching %s...\033[0m\n", i + 1, count, role);
+        dyn_str_appendf(&report, "--- Stage %zu: %s ---\n", i + 1, role);
+
+        char *stage_out = belya_agency_dispatch_subagent(harness, role, prompt, accumulated_context.data);
+        if (stage_out) {
+            dyn_str_append(&report, stage_out);
+            dyn_str_append(&report, "\n\n");
+
+            dyn_str_appendf(&accumulated_context, "\n--- Stage %zu (%s) Output ---\n%s\n", i + 1, role, stage_out);
+            free(stage_out);
+        }
+    }
+
+    dyn_str_free(&accumulated_context);
+    return report.data;
+}
+
+// ==================== End Belya Agency Functions ====================
+
 static size_t fetch_url_curl_sink(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total = size * nmemb;
     DynString *ds = (DynString *)userdata;
@@ -1390,16 +1723,37 @@ static JsonValue *build_string_param_schema(const char *prop_name, const char *p
     return p;
 }
 
-BelyaHarness *belya_harness_init(BelyaAgent *agent) {
+BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name) {
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     h->agent = agent;
+    if (role_name) {
+        strncpy(h->active_role, role_name, sizeof(h->active_role) - 1);
+        if (strcmp(role_name, "tester") == 0) {
+            h->bash_restricted = true;
+        }
+    }
+    if (tools_whitelist) {
+        strncpy(h->tools_whitelist, tools_whitelist, sizeof(h->tools_whitelist) - 1);
+        if (strstr(tools_whitelist, "restricted_bash") != NULL) {
+            h->bash_restricted = true;
+        }
+    }
     if (getcwd(h->cwd, sizeof(h->cwd)) == NULL) {
         strncpy(h->cwd, ".", sizeof(h->cwd));
     }
     g_harness = h;
 
+#define REGISTER_IF_PERMITTED(t_name, t_desc, t_schema, t_sec, t_fn) \
+    do { \
+        if (belya_harness_is_tool_whitelisted(tools_whitelist, t_name)) { \
+            belya_harness_register_tool(h, t_name, t_desc, t_schema, t_sec, t_fn); \
+        } else if (t_schema) { \
+            json_free(t_schema); \
+        } \
+    } while (0)
+
     // 1. bash
-    belya_harness_register_tool(h, "bash", "Execute a non-interactive shell command. Do NOT use vim/nano/top/less/sudo/man (they will hang). Timeout: 30s. Use cat/grep/sed/awk for file ops.", 
+    REGISTER_IF_PERMITTED("bash", "Execute a non-interactive shell command. Do NOT use vim/nano/top/less/sudo/man (they will hang). Timeout: 30s. Use cat/grep/sed/awk for file ops.", 
         build_string_param_schema("command", "The bash command string to execute"), PERM_ALLOW, tool_bash);
 
     // 2. read_file
@@ -1422,7 +1776,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     JsonValue *r_req = json_create_array();
     json_arr_add(r_req, json_create_string("path"));
     json_obj_add(read_params, "required", r_req);
-    belya_harness_register_tool(h, "read_file", "Read file contents with line numbers. ALWAYS call before edit_file. Use offset+limit for files >200 lines.", read_params, PERM_ALLOW, tool_read_file);
+    REGISTER_IF_PERMITTED("read_file", "Read file contents with line numbers. ALWAYS call before edit_file. Use offset+limit for files >200 lines.", read_params, PERM_ALLOW, tool_read_file);
 
     // 3. write_file
     JsonValue *write_params = json_create_object();
@@ -1439,7 +1793,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(w_req, json_create_string("path"));
     json_arr_add(w_req, json_create_string("content"));
     json_obj_add(write_params, "required", w_req);
-    belya_harness_register_tool(h, "write_file", "Write or overwrite entire contents to a file path (runs pre-flight syntax check on C/C++ files)", write_params, PERM_ALLOW, tool_write_file);
+    REGISTER_IF_PERMITTED("write_file", "Write or overwrite entire contents to a file path (runs pre-flight syntax check on C/C++ files)", write_params, PERM_ALLOW, tool_write_file);
 
     // 4. edit_file
     JsonValue *edit_params = json_create_object();
@@ -1466,7 +1820,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(e_req, json_create_string("old_text"));
     json_arr_add(e_req, json_create_string("new_text"));
     json_obj_add(edit_params, "required", e_req);
-    belya_harness_register_tool(h, "edit_file", "Exact search-and-replace edit. old_text must match character-for-character including indentation. Always call read_file first.", edit_params, PERM_ALLOW, tool_edit_file);
+    REGISTER_IF_PERMITTED("edit_file", "Exact search-and-replace edit. old_text must match character-for-character including indentation. Always call read_file first.", edit_params, PERM_ALLOW, tool_edit_file);
 
     // 5. apply_patch
     JsonValue *patch_params = json_create_object();
@@ -1484,10 +1838,10 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(p_req, json_create_string("path"));
     json_arr_add(p_req, json_create_string("patch"));
     json_obj_add(patch_params, "required", p_req);
-    belya_harness_register_tool(h, "apply_patch", "Apply multi-hunk structured replacement patch. Atomic: all SEARCH hunks must match exactly or whole patch is rejected.", patch_params, PERM_ALLOW, tool_apply_patch);
+    REGISTER_IF_PERMITTED("apply_patch", "Apply multi-hunk structured replacement patch. Atomic: all SEARCH hunks must match exactly or whole patch is rejected.", patch_params, PERM_ALLOW, tool_apply_patch);
 
     // 6. list_dir
-    belya_harness_register_tool(h, "list_dir", "List files and directories in path",
+    REGISTER_IF_PERMITTED("list_dir", "List files and directories in path",
         build_string_param_schema("path", "Directory path"), PERM_ALLOW, tool_list_dir);
 
     // 7. search_files
@@ -1514,7 +1868,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     JsonValue *s_req = json_create_array();
     json_arr_add(s_req, json_create_string("pattern"));
     json_obj_add(s_params, "required", s_req);
-    belya_harness_register_tool(h, "search_files", "Search for text or patterns recursively across files (grep-like). Returns up to 50 matches.", s_params, PERM_ALLOW, tool_search_files);
+    REGISTER_IF_PERMITTED("search_files", "Search for text or patterns recursively across files (grep-like). Returns up to 50 matches.", s_params, PERM_ALLOW, tool_search_files);
 
     // 8. git_status
     JsonValue *gs_params = json_create_object();
@@ -1525,7 +1879,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_obj_add(gs_path, "description", json_create_string("Optional target repository directory path (default: current workspace)"));
     json_obj_add(gs_props, "path", gs_path);
     json_obj_add(gs_params, "properties", gs_props);
-    belya_harness_register_tool(h, "git_status", "Check Git repository branch, staged changes, and cleanliness status", gs_params, PERM_ALLOW, tool_git_status);
+    REGISTER_IF_PERMITTED("git_status", "Check Git repository branch, staged changes, and cleanliness status", gs_params, PERM_ALLOW, tool_git_status);
 
     // 9. git_diff
     JsonValue *gd_params = json_create_object();
@@ -1540,7 +1894,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_obj_add(gd_path, "description", json_create_string("Optional specific file path to diff"));
     json_obj_add(gd_props, "path", gd_path);
     json_obj_add(gd_params, "properties", gd_props);
-    belya_harness_register_tool(h, "git_diff", "View Git working copy or staged diffs", gd_params, PERM_ALLOW, tool_git_diff);
+    REGISTER_IF_PERMITTED("git_diff", "View Git working copy or staged diffs", gd_params, PERM_ALLOW, tool_git_diff);
 
     // 10. save_memory
     JsonValue *mem_params = json_create_object();
@@ -1553,10 +1907,10 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_obj_add(m_cnt, "type", json_create_string("string"));
     json_obj_add(m_props, "content", m_cnt);
     json_obj_add(mem_params, "properties", m_props);
-    belya_harness_register_tool(h, "save_memory", "Save a verified skill or trajectory to SQLite memory", mem_params, PERM_ALLOW, tool_save_memory);
+    REGISTER_IF_PERMITTED("save_memory", "Save a verified skill or trajectory to SQLite memory", mem_params, PERM_ALLOW, tool_save_memory);
 
     // 11. recall_memory
-    belya_harness_register_tool(h, "recall_memory", "Search SQLite memory for past solutions and skills",
+    REGISTER_IF_PERMITTED("recall_memory", "Search SQLite memory for past solutions and skills",
         build_string_param_schema("query", "Search term"), PERM_ALLOW, tool_recall_memory);
 
     // 12. spawn_subagent
@@ -1579,7 +1933,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     JsonValue *sub_req = json_create_array();
     json_arr_add(sub_req, json_create_string("task"));
     json_obj_add(sub_params, "required", sub_req);
-    belya_harness_register_tool(h, "spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
+    REGISTER_IF_PERMITTED("spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
 
     // 13. define_tool (Self-Tooling Dynamic Evolution)
     JsonValue *def_params = json_create_object();
@@ -1603,7 +1957,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(d_req, json_create_string("description"));
     json_arr_add(d_req, json_create_string("script_body"));
     json_obj_add(def_params, "required", d_req);
-    belya_harness_register_tool(h, "define_tool", "Dynamically create, persist, and register a new executable tool (parameters mapped to $PARAM_<NAME>, $1, $2, and $TOOL_ARGS_JSON)", def_params, PERM_ALLOW, tool_define_tool);
+    REGISTER_IF_PERMITTED("define_tool", "Dynamically create, persist, and register a new executable tool (parameters mapped to $PARAM_<NAME>, $1, $2, and $TOOL_ARGS_JSON)", def_params, PERM_ALLOW, tool_define_tool);
 
     // 14. fetch_url (Native REST Web Client: GET, POST, PUT, DELETE, PATCH, Headers, Body)
     JsonValue *http_params = json_create_object();
@@ -1629,7 +1983,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     JsonValue *hp_req = json_create_array();
     json_arr_add(hp_req, json_create_string("url"));
     json_obj_add(http_params, "required", hp_req);
-    belya_harness_register_tool(h, "fetch_url", "Send HTTP/REST requests (GET, POST, PUT, DELETE) with headers and payload", http_params, PERM_ALLOW, tool_fetch_url);
+    REGISTER_IF_PERMITTED("fetch_url", "Send HTTP/REST requests (GET, POST, PUT, DELETE) with headers and payload", http_params, PERM_ALLOW, tool_fetch_url);
 
     // 15. save_skill (Procedural Skill Curation)
     JsonValue *sk_params = json_create_object();
@@ -1656,20 +2010,51 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     json_arr_add(sk_req, json_create_string("name"));
     json_arr_add(sk_req, json_create_string("instructions"));
     json_obj_add(sk_params, "required", sk_req);
-    belya_harness_register_tool(h, "save_skill", "Save a reusable procedural workflow skill into agent memory", sk_params, PERM_ALLOW, tool_save_skill);
+    REGISTER_IF_PERMITTED("save_skill", "Save a reusable procedural workflow skill into agent memory", sk_params, PERM_ALLOW, tool_save_skill);
 
     // 16. recall_skill
-    belya_harness_register_tool(h, "recall_skill", "Search and inspect saved procedural skills from memory",
+    REGISTER_IF_PERMITTED("recall_skill", "Search and inspect saved procedural skills from memory",
         build_string_param_schema("query", "Search term or trigger keyword"), PERM_ALLOW, tool_recall_skill);
 
     // 17. recall_conversation (Historical Cross-Session Memory)
-    belya_harness_register_tool(h, "recall_conversation", "Search past conversation messages and history across all historical sessions",
+    REGISTER_IF_PERMITTED("recall_conversation", "Search past conversation messages and history across all historical sessions",
         build_string_param_schema("query", "Keywords or topics from past conversations"), PERM_ALLOW, tool_recall_conversation);
 
-    // Load any previously defined custom tools
-    belya_harness_load_custom_tools(h);
+    // 18. dispatch_agent (Belya Agency Multi-Agent Orchestration)
+    JsonValue *da_params = json_create_object();
+    json_obj_add(da_params, "type", json_create_string("object"));
+    JsonValue *da_props = json_create_object();
+    JsonValue *da_role = json_create_object();
+    json_obj_add(da_role, "type", json_create_string("string"));
+    json_obj_add(da_role, "description", json_create_string("Target subagent role (architect, builder, reviewer, tester, triage)"));
+    json_obj_add(da_props, "role", da_role);
+    JsonValue *da_task = json_create_object();
+    json_obj_add(da_task, "type", json_create_string("string"));
+    json_obj_add(da_task, "description", json_create_string("Clear actionable objective or mission"));
+    json_obj_add(da_props, "task", da_task);
+    JsonValue *da_ctx = json_create_object();
+    json_obj_add(da_ctx, "type", json_create_string("string"));
+    json_obj_add(da_ctx, "description", json_create_string("Optional architectural or technical context"));
+    json_obj_add(da_props, "context", da_ctx);
+    json_obj_add(da_params, "properties", da_props);
+    JsonValue *da_req = json_create_array();
+    json_arr_add(da_req, json_create_string("role"));
+    json_arr_add(da_req, json_create_string("task"));
+    json_obj_add(da_params, "required", da_req);
+    REGISTER_IF_PERMITTED("dispatch_agent", "Dispatch a specialized autonomous engineering subagent with least-privilege bounding and Git rollback guard", da_params, PERM_ALLOW, tool_dispatch_agent);
+
+    // Load any previously defined custom tools if whitelist is unrestricted
+    if (!tools_whitelist) {
+        belya_harness_load_custom_tools(h);
+    }
+
+#undef REGISTER_IF_PERMITTED
 
     return h;
+}
+
+BelyaHarness *belya_harness_init(BelyaAgent *agent) {
+    return belya_harness_init_bounded(agent, NULL, NULL);
 }
 
 void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, BelyaToolCallback fn) {
@@ -1775,6 +2160,7 @@ static void print_help(BelyaHarness *h) {
     printf("  /key <api_key>   Dynamically set or update API key (for OpenRouter / cloud providers)\n");
     printf("  /cwd [path]      View or change working directory\n");
     printf("  /mcp <command>   Connect to an external MCP stdio server\n");
+    printf("  /agency [task]   Execute task via Belya Agency multi-agent pipeline (or list subagents)\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
@@ -1804,7 +2190,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/help", "/status", "/tools", "/rules", "/timeline",
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
-            "/compact", "/memory", "/model", "/openrouter", "/ollama", "/key", "/cwd", "/mcp", NULL
+            "/compact", "/memory", "/model", "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -2113,6 +2499,35 @@ void belya_harness_repl(BelyaHarness *h) {
                     belya_harness_connect_mcp(h, cmd);
                 } else {
                     printf("Usage: /mcp <server_command> (e.g. /mcp npx -y @modelcontextprotocol/server-filesystem .)\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/agency", 7) == 0) {
+                const char *task = strlen(input_buf) > 7 ? input_buf + 7 : "";
+                while (*task == ' ') task++;
+                if (strlen(task) == 0) {
+                    char *manifests = belya_agent_list_manifests(h->agent);
+                    printf("\n\033[1;36m=== Belya Agency Multi-Agent Architecture ===\033[0m\n");
+                    printf("%s\n", manifests ? manifests : "No subagent manifests registered.\n");
+                    if (manifests) free(manifests);
+                    printf("Usage: /agency <task description>\n\n");
+                } else {
+                    char **pipeline = NULL;
+                    size_t count = 0;
+                    char *direct = NULL;
+                    belya_agency_triage(h, task, &pipeline, &count, &direct);
+                    if (direct) {
+                        printf("\n\033[1;34m[Belya Triage]\033[0m %s\n\n", direct);
+                        free(direct);
+                    } else if (count > 0) {
+                        char *report = belya_agency_execute_pipeline(h, task, (const char **)pipeline, count);
+                        if (report) {
+                            printf("\n%s\n", report);
+                            free(report);
+                        }
+                        for (size_t i = 0; i < count; i++) free(pipeline[i]);
+                        free(pipeline);
+                    }
                 }
                 continue;
             }

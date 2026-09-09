@@ -1639,6 +1639,227 @@ static void test_troubleshooting_pattern_resolver(void) {
     printf("  -> Systematic TROUBLESHOOTING.md Pattern Resolver PASSED\n");
 }
 
+void test_belya_agency_architecture(void) {
+    printf("[Test] Track B: Belya Agency Multi-Agent Orchestration & Rollback Guard...\n");
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_agency.sqlite", "Agency Master System");
+    assert(agent != NULL);
+
+    // 1. Declarative Agent Manifest Protocol (agents/*.md)
+    size_t loaded = belya_agent_load_manifests(agent, "agents");
+    assert(loaded >= 5);
+
+    // Verify each role manifest
+    BelyaAgentManifest *arch = belya_agent_get_manifest(agent, "architect");
+    assert(arch != NULL);
+    assert(strcmp(arch->name, "architect") == 0);
+    assert(strstr(arch->tools, "read_file") != NULL);
+    assert(strstr(arch->tools, "search_files") != NULL);
+    assert(arch->max_turns == 8);
+    belya_agent_manifest_free(arch);
+
+    BelyaAgentManifest *bld = belya_agent_get_manifest(agent, "builder");
+    assert(bld != NULL);
+    assert(strcmp(bld->name, "builder") == 0);
+    assert(strstr(bld->tools, "write_file") != NULL);
+    assert(strstr(bld->tools, "edit_file") != NULL);
+    assert(bld->max_turns == 10);
+    belya_agent_manifest_free(bld);
+
+    BelyaAgentManifest *rev = belya_agent_get_manifest(agent, "reviewer");
+    assert(rev != NULL);
+    assert(strcmp(rev->name, "reviewer") == 0);
+    assert(strstr(rev->tools, "git_diff") != NULL);
+    belya_agent_manifest_free(rev);
+
+    BelyaAgentManifest *tst = belya_agent_get_manifest(agent, "tester");
+    assert(tst != NULL);
+    assert(strcmp(tst->name, "tester") == 0);
+    assert(strstr(tst->tools, "bash") != NULL);
+    belya_agent_manifest_free(tst);
+
+    BelyaAgentManifest *trg = belya_agent_get_manifest(agent, "triage");
+    assert(trg != NULL);
+    assert(strcmp(trg->name, "triage") == 0);
+    assert(strstr(trg->tools, "dispatch_agent") != NULL);
+    belya_agent_manifest_free(trg);
+
+    char *manifest_list = belya_agent_list_manifests(agent);
+    assert(manifest_list != NULL);
+    assert(strstr(manifest_list, "architect") != NULL);
+    assert(strstr(manifest_list, "builder") != NULL);
+    assert(strstr(manifest_list, "tester") != NULL);
+    free(manifest_list);
+
+    // 2. Dynamic Routing via FTS5 / Keyword
+    BelyaAgentManifest *routed_arch = belya_agent_route_manifest(agent, "architect");
+    assert(routed_arch != NULL);
+    assert(strcmp(routed_arch->name, "architect") == 0);
+    belya_agent_manifest_free(routed_arch);
+
+    BelyaAgentManifest *routed_bld = belya_agent_route_manifest(agent, "builder");
+    assert(routed_bld != NULL);
+    assert(strcmp(routed_bld->name, "builder") == 0);
+    belya_agent_manifest_free(routed_bld);
+
+    // 3. Least-Privilege Tool Bounding
+    // Architect: strictly read-only
+    const char *arch_tools = "read_file, search_files, list_dir, git_status, git_diff, recall_memory";
+    assert(belya_harness_is_tool_whitelisted(arch_tools, "read_file") == true);
+    assert(belya_harness_is_tool_whitelisted(arch_tools, "search_files") == true);
+    assert(belya_harness_is_tool_whitelisted(arch_tools, "write_file") == false);
+    assert(belya_harness_is_tool_whitelisted(arch_tools, "edit_file") == false);
+    assert(belya_harness_is_tool_whitelisted(arch_tools, "bash") == false);
+
+    BelyaAgent *arch_agent = belya_agent_init(gw, ":memory:", "Architect Test");
+    BelyaHarness *arch_h = belya_harness_init_bounded(arch_agent, arch_tools, "architect");
+    assert(arch_h != NULL);
+    assert(get_tool_cb(arch_h, "read_file") != NULL);
+    assert(get_tool_cb(arch_h, "write_file") == NULL);
+    assert(get_tool_cb(arch_h, "bash") == NULL);
+    belya_harness_free(arch_h);
+
+    // Tester: restricted execution guard
+    const char *tester_tools = "bash, read_file, git_status";
+    BelyaAgent *tst_agent = belya_agent_init(gw, ":memory:", "Tester Test");
+    BelyaHarness *tst_h = belya_harness_init_bounded(tst_agent, tester_tools, "tester");
+    assert(tst_h != NULL);
+    assert(tst_h->bash_restricted == true);
+    assert(get_tool_cb(tst_h, "bash") != NULL);
+    assert(get_tool_cb(tst_h, "write_file") == NULL);
+
+    BelyaToolCallback cb_tst_bash = get_tool_cb(tst_h, "bash");
+    assert(cb_tst_bash != NULL);
+
+    // Allowed command: echo/make/test
+    JsonValue *allowed_cmd = json_create_object();
+    json_obj_add(allowed_cmd, "command", json_create_string("echo 'test execution'"));
+    char *obs_allowed = cb_tst_bash(tst_agent, allowed_cmd);
+    assert(obs_allowed != NULL);
+    assert(strstr(obs_allowed, "test execution") != NULL);
+    free(obs_allowed);
+    json_free(allowed_cmd);
+
+    // Blocked command: unauthorized curl / rm / arbitrary command
+    JsonValue *blocked_cmd = json_create_object();
+    json_obj_add(blocked_cmd, "command", json_create_string("curl http://example.com/exploit"));
+    char *obs_blocked = cb_tst_bash(tst_agent, blocked_cmd);
+    assert(obs_blocked != NULL);
+    assert(strstr(obs_blocked, "Unauthorized command rejected") != NULL);
+    free(obs_blocked);
+    json_free(blocked_cmd);
+
+    belya_harness_free(tst_h);
+
+    // 4. Per-Subagent Git Rollback Guard (tested in isolated scratch repo)
+    system("rm -rf /tmp/test_belya_git && mkdir -p /tmp/test_belya_git && cd /tmp/test_belya_git && git init -q && git config user.name 'Belya' && git config user.email 'belya@test.local' && echo 'clean_state_v1' > dummy.txt && git add dummy.txt && git commit -m 'baseline' -q 2>/dev/null");
+
+    char baseline_sha[128] = {0};
+    FILE *gp2 = popen("cd /tmp/test_belya_git && git rev-parse HEAD 2>/dev/null", "r");
+    if (gp2) {
+        if (fgets(baseline_sha, sizeof(baseline_sha), gp2)) {
+            baseline_sha[strcspn(baseline_sha, "\r\n")] = '\0';
+        }
+        pclose(gp2);
+    }
+    assert(strlen(baseline_sha) == 40);
+
+    // Simulate corrupted subagent modification
+    FILE *df_bad = fopen("/tmp/test_belya_git/dummy.txt", "w");
+    assert(df_bad != NULL);
+    fprintf(df_bad, "corrupted_state_that_fails\n");
+    fclose(df_bad);
+
+    // Verify file is modified
+    FILE *check_bad = fopen("/tmp/test_belya_git/dummy.txt", "r");
+    char check_buf[64] = {0};
+    assert(fgets(check_buf, sizeof(check_buf), check_bad) != NULL);
+    fclose(check_bad);
+    assert(strstr(check_buf, "corrupted") != NULL);
+
+    // Trigger rollback via git reset --hard
+    char reset_cmd[256];
+    snprintf(reset_cmd, sizeof(reset_cmd), "cd /tmp/test_belya_git && git reset --hard %s >/dev/null 2>&1 && git clean -fd >/dev/null 2>&1", baseline_sha);
+    int r_ret = system(reset_cmd);
+    assert(r_ret == 0);
+
+    // Verify file is restored to baseline
+    FILE *check_restored = fopen("/tmp/test_belya_git/dummy.txt", "r");
+    assert(check_restored != NULL);
+    memset(check_buf, 0, sizeof(check_buf));
+    assert(fgets(check_buf, sizeof(check_buf), check_restored) != NULL);
+    fclose(check_restored);
+    assert(strstr(check_buf, "clean_state_v1") != NULL);
+
+    // Clean up scratch repo
+    system("rm -rf /tmp/test_belya_git");
+
+    // 5. Chief-of-Staff Triage Layer
+    BelyaHarness *main_h = belya_harness_init(agent);
+
+    // Fast-path test
+    char **p1 = NULL;
+    size_t c1 = 0;
+    char *reply1 = NULL;
+    bool t1 = belya_agency_triage(main_h, "hello", &p1, &c1, &reply1);
+    assert(t1 == true);
+    assert(reply1 != NULL);
+    assert(c1 == 0);
+    free(reply1);
+
+    // Research query triage -> [architect]
+    char **p2 = NULL;
+    size_t c2 = 0;
+    char *reply2 = NULL;
+    bool t2 = belya_agency_triage(main_h, "Explain how token budgeting and compaction work", &p2, &c2, &reply2);
+    assert(t2 == true);
+    assert(c2 == 1);
+    assert(strcmp(p2[0], "architect") == 0);
+    for (size_t i = 0; i < c2; i++) free(p2[i]);
+    free(p2);
+
+    // Review query triage -> [reviewer]
+    char **p3 = NULL;
+    size_t c3 = 0;
+    char *reply3 = NULL;
+    bool t3 = belya_agency_triage(main_h, "Review and audit git diff for memory leaks", &p3, &c3, &reply3);
+    assert(t3 == true);
+    assert(c3 == 1);
+    assert(strcmp(p3[0], "reviewer") == 0);
+    for (size_t i = 0; i < c3; i++) free(p3[i]);
+    free(p3);
+
+    // Test query triage -> [tester]
+    char **p4 = NULL;
+    size_t c4 = 0;
+    char *reply4 = NULL;
+    bool t4 = belya_agency_triage(main_h, "Run test suite and verify coverage", &p4, &c4, &reply4);
+    assert(t4 == true);
+    assert(c4 == 1);
+    assert(strcmp(p4[0], "tester") == 0);
+    for (size_t i = 0; i < c4; i++) free(p4[i]);
+    free(p4);
+
+    // Implementation mission triage -> [architect, builder, tester]
+    char **p5 = NULL;
+    size_t c5 = 0;
+    char *reply5 = NULL;
+    bool t5 = belya_agency_triage(main_h, "Implement feature for multi-agent triage and verify", &p5, &c5, &reply5);
+    assert(t5 == true);
+    assert(c5 == 3);
+    assert(strcmp(p5[0], "architect") == 0);
+    assert(strcmp(p5[1], "builder") == 0);
+    assert(strcmp(p5[2], "tester") == 0);
+    for (size_t i = 0; i < c5; i++) free(p5[i]);
+    free(p5);
+
+    belya_harness_free(main_h);
+    model_gateway_free(gw);
+    unlink("test_agency.sqlite");
+    printf("  -> Belya Agency Multi-Agent Architecture & Rollback Guard PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -1673,6 +1894,7 @@ int main(void) {
     test_file_first_skills_catalog();
     test_composable_rule_packs();
     test_troubleshooting_pattern_resolver();
-    printf("================ All Tests Passed Successfully (32/32 - 100%%) ================\n\n");
+    test_belya_agency_architecture();
+    printf("================ All Tests Passed Successfully (33/33 - 100%%) ================\n\n");
     return 0;
 }

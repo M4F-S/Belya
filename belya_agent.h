@@ -88,6 +88,23 @@ bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, co
 // Historical Conversation Memory Search
 char *belya_agent_search_conversations(BelyaAgent *agent, const char *query);
 
+// Declarative Agent Manifest Protocol (Belya Agency)
+typedef struct {
+    char *name;
+    char *role;
+    char *tools;          /* Comma-separated whitelist of allowed tools */
+    char *model;
+    int max_turns;
+    char *instructions;
+} BelyaAgentManifest;
+
+size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir);
+bool belya_agent_save_manifest(BelyaAgent *agent, const char *name, const char *role, const char *tools, const char *model, int max_turns, const char *instructions);
+BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name);
+BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *query);
+void belya_agent_manifest_free(BelyaAgentManifest *manifest);
+char *belya_agent_list_manifests(BelyaAgent *agent);
+
 ModelGatewayResponse belya_agent_step(BelyaAgent *agent);
 ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char *instruction);
 void belya_agent_free(BelyaAgent *agent);
