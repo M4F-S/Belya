@@ -1,6 +1,7 @@
 # Binaries & Object files
 *.o
 belya
+almaz
 belya_test
 belya_test_asan
 belya_benchmark
