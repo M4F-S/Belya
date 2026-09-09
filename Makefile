@@ -2,14 +2,14 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O2 -std=c99 -D_POSIX_C_SOURCE=200809L
 LIBS = -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c main.c
 OBJS = $(SRCS:.c=.o)
 TARGET = belya
 
-TEST_SRCS = linenoise.c minijson.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c test_suite.c
 TEST_TARGET = belya_test
 
-BENCHMARK_SRCS = linenoise.c minijson.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c benchmark_runner.c
+BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
 all: $(TARGET)

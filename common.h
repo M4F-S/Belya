@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <ctype.h>
 
 typedef struct {
     char *data;
@@ -175,6 +176,20 @@ static inline char *extract_json_object(const char *text, size_t *out_next_offse
         p++;
     }
     return NULL;
+}
+
+static inline bool contains_case_insensitive(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    if (needle[0] == '\0') return true;
+    size_t nlen = strlen(needle);
+    for (const char *h = haystack; *h; h++) {
+        size_t i = 0;
+        while (i < nlen && h[i] && tolower((unsigned char)h[i]) == tolower((unsigned char)needle[i])) {
+            i++;
+        }
+        if (i == nlen) return true;
+    }
+    return false;
 }
 
 #endif

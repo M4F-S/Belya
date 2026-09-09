@@ -200,31 +200,133 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-static bool is_path_safe(const char *path) {
+bool is_path_jailed(const char *path, const char *workspace_root, bool is_write) {
     if (!path || path[0] == '\0') return false;
+
     // Reject paths with explicit directory traversal
-    if (strstr(path, "..")) return false;
+    if (strstr(path, "..") != NULL) return false;
 
-    char cwd[4096];
-    if (!getcwd(cwd, sizeof(cwd))) return false;
+    // Determine and canonicalize workspace root
+    char root_buf[4096];
+    char canonical_root[4096];
+    if (workspace_root && workspace_root[0] != '\0') {
+        strncpy(root_buf, workspace_root, sizeof(root_buf) - 1);
+        root_buf[sizeof(root_buf) - 1] = '\0';
+    } else {
+        if (!getcwd(root_buf, sizeof(root_buf))) return false;
+    }
 
-    // Resolve path to absolute, following symlinks
-    char *resolved = realpath(path, NULL);
-    if (!resolved) {
-        // File doesn't exist yet (e.g. write_file creates new file).
-        // Already blocked '..' and absolute paths above — safe to allow.
+    if (!realpath(root_buf, canonical_root)) {
+        strncpy(canonical_root, root_buf, sizeof(canonical_root) - 1);
+        canonical_root[sizeof(canonical_root) - 1] = '\0';
+    }
+    size_t root_len = strlen(canonical_root);
+
+    // If writing: strictly forbidden outside workspace root
+    if (is_write) {
+        char resolved[4096];
+        if (realpath(path, resolved)) {
+            if (strncmp(resolved, canonical_root, root_len) == 0 &&
+                (resolved[root_len] == '/' || resolved[root_len] == '\0')) {
+                return true;
+            }
+            return false;
+        }
+
+        // File doesn't exist yet: verify its parent directory is within workspace root
+        char temp_path[4096];
+        strncpy(temp_path, path, sizeof(temp_path) - 1);
+        temp_path[sizeof(temp_path) - 1] = '\0';
+
+        char *last_slash = strrchr(temp_path, '/');
+        if (!last_slash) {
+            // Relative path in current working directory (which is inside workspace root)
+            return true;
+        }
+
+        if (last_slash == temp_path) {
+            // Root directory '/'
+            return false;
+        }
+
+        *last_slash = '\0';
+        if (realpath(temp_path, resolved)) {
+            if (strncmp(resolved, canonical_root, root_len) == 0 &&
+                (resolved[root_len] == '/' || resolved[root_len] == '\0')) {
+                return true;
+            }
+            return false;
+        }
+
+        if (strncmp(temp_path, canonical_root, root_len) == 0 &&
+            (temp_path[root_len] == '/' || temp_path[root_len] == '\0')) {
+            return true;
+        }
+        return false;
+    }
+
+    // If reading: allow within workspace, or check explicit whitelist
+    char resolved[4096];
+    if (realpath(path, resolved)) {
+        if (strncmp(resolved, canonical_root, root_len) == 0 &&
+            (resolved[root_len] == '/' || resolved[root_len] == '\0')) {
+            return true;
+        }
+
+        static const char *read_whitelist[] = {
+            "/tmp/",
+            "/private/tmp/",
+            "/proc/",
+            "/dev/null",
+            "/etc/os-release",
+            NULL
+        };
+        for (int i = 0; read_whitelist[i]; i++) {
+            size_t wlen = strlen(read_whitelist[i]);
+            if (strncmp(resolved, read_whitelist[i], wlen) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Path does not exist on disk yet
+    if (path[0] != '/') {
         return true;
     }
-    bool safe = (strncmp(resolved, cwd, strlen(cwd)) == 0);
-    free(resolved);
-    return safe;
+
+    if (strncmp(path, canonical_root, root_len) == 0 &&
+        (path[root_len] == '/' || path[root_len] == '\0')) {
+        return true;
+    }
+
+    static const char *read_whitelist[] = {
+        "/tmp/",
+        "/private/tmp/",
+        "/proc/",
+        "/dev/null",
+        "/etc/os-release",
+        NULL
+    };
+    for (int i = 0; read_whitelist[i]; i++) {
+        size_t wlen = strlen(read_whitelist[i]);
+        if (strncmp(path, read_whitelist[i], wlen) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool is_path_safe(const char *path) {
+    return is_path_jailed(path, NULL, false);
 }
 
 static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     if (!path) return strdup("Error: Missing file path argument.");
-    if (!is_path_safe(path)) return strdup("Error: Path traversal denied.");
+    if (!is_path_jailed(path, NULL, false)) return strdup("Error: Path traversal denied.");
 
     double offset_num = json_obj_get_num(args, "offset", 0);
     double limit_num = json_obj_get_num(args, "limit", 0);
@@ -286,7 +388,7 @@ static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
     const char *path = json_obj_get_str(args, "path");
     const char *content = json_obj_get_str(args, "content");
     if (!path || !content) return strdup("Error: Missing path or content argument.");
-    if (!is_path_safe(path)) return strdup("Error: Path traversal denied.");
+    if (!is_path_jailed(path, NULL, true)) return strdup("Error: Path traversal denied.");
 
     FILE *f = fopen(path, "wb");
     if (!f) return strdup("Error: Failed to open path for writing.");
@@ -315,7 +417,7 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     if (!path || !old_text || !new_text) {
         return strdup("Error: Missing required parameters (path, old_text, new_text).");
     }
-    if (!is_path_safe(path)) return strdup("Error: Path traversal denied.");
+    if (!is_path_jailed(path, NULL, true)) return strdup("Error: Path traversal denied.");
 
     FILE *f = fopen(path, "rb");
     if (!f) return strdup("Error: Target file not found or inaccessible.");
@@ -494,7 +596,7 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
     const char *patch = json_obj_get_str(args, "patch");
 
     if (!path || !patch) return strdup("Error: Missing path or patch argument.");
-    if (!is_path_safe(path)) return strdup("Error: Path traversal denied.");
+    if (!is_path_jailed(path, NULL, true)) return strdup("Error: Path traversal denied.");
 
     FILE *f = fopen(path, "rb");
     if (!f) return strdup("Error: Target file not found.");
@@ -2022,6 +2124,80 @@ void belya_harness_repl(BelyaHarness *h) {
     }
 }
 
+char *belya_troubleshooting_resolve(const char *error_trace, const char *troubleshooting_path) {
+    if (!error_trace || strlen(error_trace) == 0) return NULL;
+
+    const char *path = troubleshooting_path ? troubleshooting_path : "TROUBLESHOOTING.md";
+    FILE *f = fopen(path, "r");
+    if (!f && (!troubleshooting_path || strcmp(troubleshooting_path, "TROUBLESHOOTING.md") == 0)) {
+        path = "docs/TROUBLESHOOTING.md";
+        f = fopen(path, "r");
+    }
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 500000) {
+        fclose(f);
+        return NULL;
+    }
+
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t nread = fread(buf, 1, (size_t)sz, f);
+    buf[nread] = '\0';
+    fclose(f);
+
+    char *p = buf;
+    char *matched_remedy = NULL;
+
+    while (*p) {
+        char *line_start = p;
+        char *next_nl = strchr(line_start, '\n');
+        if (next_nl) {
+            *next_nl = '\0';
+            p = next_nl + 1;
+        } else {
+            p = line_start + strlen(line_start);
+        }
+
+        const char *pat_hdr = "## Pattern: ";
+        if (strncmp(line_start, pat_hdr, strlen(pat_hdr)) == 0) {
+            const char *pattern_str = line_start + strlen(pat_hdr);
+            while (*pattern_str == ' ' || *pattern_str == '`') pattern_str++;
+            char pat_clean[256];
+            strncpy(pat_clean, pattern_str, sizeof(pat_clean) - 1);
+            pat_clean[sizeof(pat_clean) - 1] = '\0';
+            char *backtick = strchr(pat_clean, '`');
+            if (backtick) *backtick = '\0';
+            char *end = pat_clean + strlen(pat_clean) - 1;
+            while (end >= pat_clean && isspace((unsigned char)*end)) {
+                *end = '\0';
+                end--;
+            }
+
+            if (strlen(pat_clean) > 0 && contains_case_insensitive(error_trace, pat_clean)) {
+                const char *section_start = p;
+                const char *section_end = strstr(p, "\n## ");
+                size_t section_len = section_end ? (size_t)(section_end - section_start) : strlen(section_start);
+
+                DynString ds = dyn_str_new();
+                dyn_str_appendf(&ds, "Pattern: %s\n", pat_clean);
+                dyn_str_append_len(&ds, section_start, section_len);
+                matched_remedy = ds.data;
+                break;
+            }
+        }
+    }
+
+    free(buf);
+    return matched_remedy;
+}
+
 void belya_harness_reset_turn_state(BelyaHarness *h) {
     if (!h) return;
     h->files_modified_in_turn = false;
@@ -2046,8 +2222,13 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
 
     bool is_failure = false;
     if (observation) {
-        if (strncmp(observation, "Error:", 6) == 0 || strncmp(observation, "error:", 6) == 0 ||
-            strstr(observation, "failed") != NULL || strstr(observation, "exit status") != NULL) {
+        if (contains_case_insensitive(observation, "error:") ||
+            contains_case_insensitive(observation, "failed") ||
+            contains_case_insensitive(observation, "exit status") ||
+            contains_case_insensitive(observation, "command not found") ||
+            contains_case_insensitive(observation, "AddressSanitizer") ||
+            contains_case_insensitive(observation, "fatal:") ||
+            strncmp(observation, "Error:", 6) == 0) {
             is_failure = true;
         }
     } else {
@@ -2067,15 +2248,29 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
             h->consecutive_tool_failures = 1;
         }
 
+        char *remedy = observation ? belya_troubleshooting_resolve(observation, "TROUBLESHOOTING.md") : NULL;
+
         if (h->consecutive_tool_failures >= 3) {
             DynString cb = dyn_str_new();
             dyn_str_appendf(&cb, "%s\n\n[METACOGNITIVE CIRCUIT BREAKER]: You have attempted tool '%s' with identical/failing arguments 3 times consecutively. "
                                  "STOP repeating this action. Step back, re-evaluate assumptions, inspect error details, or switch to an alternate strategy.",
                             observation ? observation : "Tool returned empty observation", tool_name);
+            if (remedy) {
+                dyn_str_appendf(&cb, "\n\n💡 [TROUBLESHOOTING RESOLVER]: Known Failure Pattern Remedy:\n%s", remedy);
+                free(remedy);
+            }
             if (out_breaker_msg) *out_breaker_msg = cb.data;
             else dyn_str_free(&cb);
             h->consecutive_tool_failures = 0; // Trip and reset
             return true;
+        } else if (remedy) {
+            if (out_breaker_msg) {
+                DynString enriched = dyn_str_new();
+                dyn_str_append(&enriched, observation ? observation : "Tool execution failed.");
+                dyn_str_appendf(&enriched, "\n\n💡 [TROUBLESHOOTING RESOLVER]: Known Failure Pattern Remedy:\n%s", remedy);
+                *out_breaker_msg = enriched.data;
+            }
+            free(remedy);
         }
     } else {
         h->consecutive_tool_failures = 0;
@@ -2169,7 +2364,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
                 char *breaker_alert = NULL;
                 bool tripped = belya_harness_record_tool_observation(h, tc->name, tc->arguments_json, observation, &breaker_alert);
-                const char *final_obs = tripped ? breaker_alert : (observation ? observation : "Success");
+                const char *final_obs = breaker_alert ? breaker_alert : (observation ? observation : "Success");
 
                 printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", final_obs ? strlen(final_obs) : 0);
                 if (tripped) {

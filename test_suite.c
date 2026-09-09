@@ -1,5 +1,6 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
+#include "minifrontmatter.h"
 #include <assert.h>
 #include <unistd.h>
 
@@ -1409,6 +1410,235 @@ void test_metacognitive_circuit_breaker_and_verification_guard(void) {
     printf("  -> Metacognitive Circuit Breaker & Verification Guard PASSED\n");
 }
 
+static void test_workspace_path_jailing(void) {
+    printf("[Test] Track A.1: Workspace Path Jailing (is_path_jailed)...\n");
+    assert(!is_path_jailed(NULL, NULL, false));
+    assert(!is_path_jailed("", NULL, false));
+    assert(!is_path_jailed("../secret.txt", NULL, false));
+    assert(!is_path_jailed("foo/../secret.txt", NULL, false));
+    assert(!is_path_jailed("../../etc/passwd", NULL, true));
+    assert(!is_path_jailed("/etc/passwd", NULL, true));
+    assert(!is_path_jailed("/tmp/test_jail_write.txt", NULL, true));
+
+    // Valid write within workspace
+    assert(is_path_jailed("test_jail_valid.txt", NULL, true));
+    assert(is_path_jailed("./test_jail_valid.txt", NULL, true));
+
+    // Whitelisted reads
+    assert(is_path_jailed("/dev/null", NULL, false));
+
+    // Forbidden read
+    assert(!is_path_jailed("/etc/shadow", NULL, false));
+
+    // Backward compatibility wrapper
+    assert(is_path_safe("test_jail_valid.txt"));
+    assert(!is_path_safe("../escaped.txt"));
+
+    // Tool integration check
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_jail_mem.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    BelyaToolCallback cb_write = NULL;
+    BelyaToolCallback cb_read = NULL;
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, "write_file") == 0) cb_write = h->tools[i].callback;
+        if (strcmp(h->tools[i].name, "read_file") == 0) cb_read = h->tools[i].callback;
+    }
+    assert(cb_write && cb_read);
+
+    JsonValue *bad_write = json_create_object();
+    json_obj_add(bad_write, "path", json_create_string("/tmp/malicious_write.txt"));
+    json_obj_add(bad_write, "content", json_create_string("evil"));
+    char *out_bw = cb_write(agent, bad_write);
+    assert(out_bw && strstr(out_bw, "Path traversal denied") != NULL);
+    free(out_bw);
+    json_free(bad_write);
+
+    JsonValue *bad_read = json_create_object();
+    json_obj_add(bad_read, "path", json_create_string("../outside_jail.txt"));
+    char *out_br = cb_read(agent, bad_read);
+    assert(out_br && strstr(out_br, "Path traversal denied") != NULL);
+    free(out_br);
+    json_free(bad_read);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_jail_mem.sqlite");
+    printf("  -> Workspace Path Jailing PASSED\n");
+}
+
+static void test_markdown_frontmatter_parser(void) {
+    printf("[Test] Track A.2: C99 Markdown Frontmatter Parser (minifrontmatter)...\n");
+
+    const char *sample_md =
+        "---\n"
+        "name: belya-architect\n"
+        "description: \"Zero-dependency systems architect\"\n"
+        "model: hermes-3\n"
+        "triggers: [design, arch, \"system spec\"]\n"
+        "---\n\n"
+        "# Architecture Overview\n"
+        "Details on pure C99 systems design.\n";
+
+    Frontmatter *fm = frontmatter_parse(sample_md);
+    assert(fm != NULL);
+    assert(strcmp(frontmatter_get_scalar(fm, "name"), "belya-architect") == 0);
+    assert(strcmp(frontmatter_get_scalar(fm, "description"), "Zero-dependency systems architect") == 0);
+    assert(strcmp(frontmatter_get_scalar(fm, "model"), "hermes-3") == 0);
+
+    assert(frontmatter_get_list_count(fm, "triggers") == 3);
+    assert(strcmp(frontmatter_get_list_item(fm, "triggers", 0), "design") == 0);
+    assert(strcmp(frontmatter_get_list_item(fm, "triggers", 1), "arch") == 0);
+    assert(strcmp(frontmatter_get_list_item(fm, "triggers", 2), "system spec") == 0);
+
+    char *trig_str = frontmatter_get_list_as_string(fm, "triggers", ", ");
+    assert(trig_str != NULL);
+    assert(strstr(trig_str, "design, arch, system spec") != NULL);
+    free(trig_str);
+
+    assert(fm->body != NULL);
+    assert(strstr(fm->body, "# Architecture Overview") != NULL);
+    assert(strstr(fm->body, "pure C99 systems design") != NULL);
+    frontmatter_free(fm);
+
+    // Bullet list test
+    const char *bullet_md =
+        "---\n"
+        "name: bullet-manifest\n"
+        "triggers:\n"
+        "  - alpha\n"
+        "  - beta\n"
+        "  - gamma\n"
+        "---\n"
+        "Body of bullet manifest\n";
+
+    Frontmatter *fm_b = frontmatter_parse(bullet_md);
+    assert(fm_b != NULL);
+    assert(frontmatter_get_list_count(fm_b, "triggers") == 3);
+    assert(strcmp(frontmatter_get_list_item(fm_b, "triggers", 0), "alpha") == 0);
+    assert(strcmp(frontmatter_get_list_item(fm_b, "triggers", 1), "beta") == 0);
+    assert(strcmp(frontmatter_get_list_item(fm_b, "triggers", 2), "gamma") == 0);
+    frontmatter_free(fm_b);
+
+    // Edge cases
+    assert(frontmatter_parse(NULL) == NULL);
+    assert(frontmatter_parse("No frontmatter markdown here") == NULL);
+    assert(frontmatter_parse("---\nunclosed frontmatter") == NULL);
+
+    printf("  -> C99 Markdown Frontmatter Parser PASSED\n");
+}
+
+static void test_file_first_skills_catalog(void) {
+    printf("[Test] Track A.3: File-First Skills System (skills/*/SKILL.md)...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_filefirst_skills.sqlite", NULL);
+
+    size_t loaded = belya_agent_load_disk_skills(agent, "skills");
+    assert(loaded >= 4);
+
+    char *search_res = belya_agent_search_skills(agent, "c99");
+    assert(search_res && strstr(search_res, "c99-safety") != NULL);
+    free(search_res);
+
+    char *vps_res = belya_agent_search_skills(agent, "vps");
+    assert(vps_res && strstr(vps_res, "vps-deploy") != NULL);
+    free(vps_res);
+
+    // Test prompt-matching trigger
+    char *matched = belya_agent_match_skill_for_prompt(agent, "Please investigate this memory leak in C");
+    assert(matched && strstr(matched, "C99 Memory Safety Protocols") != NULL);
+    free(matched);
+
+    // Test saving new skill and verifying disk mirror
+    strncpy(agent->db_path, "filefirst_mirror.sqlite", sizeof(agent->db_path) - 1);
+    bool saved = belya_agent_save_skill(agent, "test_mirror_skill", "mirror", "Disk mirror test skill", "Step 1. Verify\nStep 2. Assert");
+    assert(saved);
+    assert(access("skills/test_mirror_skill/SKILL.md", F_OK) == 0);
+
+    // Clean up mirrored test skill
+    unlink("skills/test_mirror_skill/SKILL.md");
+    rmdir("skills/test_mirror_skill");
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_filefirst_skills.sqlite");
+    printf("  -> File-First Skills System PASSED (Loaded %zu disk skills)\n", loaded);
+}
+
+static void test_composable_rule_packs(void) {
+    printf("[Test] Track A.4: Composable Rule Packs (rules/*/*.md)...\n");
+
+    DynString rules_ds = dyn_str_new();
+    size_t rules_count = belya_agent_load_rule_packs(NULL, "rules", &rules_ds);
+    assert(rules_count >= 3);
+    assert(strstr(rules_ds.data, "=== Composable Rule Pack: common/execution.md ===") != NULL);
+    assert(strstr(rules_ds.data, "=== Composable Rule Pack: c/memory_safety.md ===") != NULL);
+    assert(strstr(rules_ds.data, "=== Composable Rule Pack: security/path_jailing.md ===") != NULL);
+    dyn_str_free(&rules_ds);
+
+    // Verify belya_agent_init injects active rule packs into agent system prompt
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_rules_init.sqlite", NULL);
+    assert(agent->msg_count > 0);
+    assert(strstr(agent->messages[0].content, "=== Composable Rule Pack: c/memory_safety.md ===") != NULL);
+    assert(strstr(agent->messages[0].content, "=== Composable Rule Pack: security/path_jailing.md ===") != NULL);
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_rules_init.sqlite");
+    printf("  -> Composable Rule Packs PASSED (Loaded %zu rule packs)\n", rules_count);
+}
+
+static void test_troubleshooting_pattern_resolver(void) {
+    printf("[Test] Track A.5: Systematic TROUBLESHOOTING.md Pattern Resolver...\n");
+
+    // 1. Direct resolver tests
+    char *res1 = belya_troubleshooting_resolve("main.c:42: undefined reference to 'curl_easy_init'", "TROUBLESHOOTING.md");
+    assert(res1 != NULL);
+    assert(strstr(res1, "Pattern: undefined reference to") != NULL);
+    assert(strstr(res1, "-lcurl") != NULL);
+    free(res1);
+
+    char *res2 = belya_troubleshooting_resolve("belya.c:15: warning: implicit declaration of function 'usleep'", "TROUBLESHOOTING.md");
+    assert(res2 != NULL);
+    assert(strstr(res2, "Pattern: implicit declaration of function") != NULL);
+    free(res2);
+
+    char *res3 = belya_troubleshooting_resolve("Error: AddressSanitizer: heap-buffer-overflow on address 0x1234", "TROUBLESHOOTING.md");
+    assert(res3 != NULL);
+    assert(strstr(res3, "Pattern: AddressSanitizer") != NULL);
+    free(res3);
+
+    char *res4 = belya_troubleshooting_resolve("Error: Path traversal denied.", "TROUBLESHOOTING.md");
+    assert(res4 != NULL);
+    assert(strstr(res4, "Pattern: Path traversal denied") != NULL);
+    free(res4);
+
+    char *res_none = belya_troubleshooting_resolve("Success: 100% tests passed with no warnings", "TROUBLESHOOTING.md");
+    assert(res_none == NULL);
+
+    // 2. Integration with belya_harness_record_tool_observation
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_ts_resolve.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    char *breaker_msg = NULL;
+    const char *err_trace = "gcc -o belya main.o -lsqlite3\nerror: undefined reference to 'curl_easy_init'";
+    bool tripped = belya_harness_record_tool_observation(h, "bash", "{\"command\":\"make\"}", err_trace, &breaker_msg);
+    assert(!tripped);
+    assert(breaker_msg != NULL);
+    assert(strstr(breaker_msg, "💡 [TROUBLESHOOTING RESOLVER]: Known Failure Pattern Remedy:") != NULL);
+    assert(strstr(breaker_msg, "Pattern: undefined reference to") != NULL);
+    free(breaker_msg);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_ts_resolve.sqlite");
+    printf("  -> Systematic TROUBLESHOOTING.md Pattern Resolver PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -1438,6 +1668,11 @@ int main(void) {
     test_subagent_recursion_guard();
     test_self_telemetry_and_proprioception();
     test_metacognitive_circuit_breaker_and_verification_guard();
-    printf("================ All Tests Passed Successfully (27/27 - 100%%) ================\n\n");
+    test_workspace_path_jailing();
+    test_markdown_frontmatter_parser();
+    test_file_first_skills_catalog();
+    test_composable_rule_packs();
+    test_troubleshooting_pattern_resolver();
+    printf("================ All Tests Passed Successfully (32/32 - 100%%) ================\n\n");
     return 0;
 }
