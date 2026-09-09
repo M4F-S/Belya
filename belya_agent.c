@@ -6,9 +6,12 @@
 #endif
 
 #include "belya_agent.h"
+#include "minifrontmatter.h"
 #include <time.h>
 #include <ctype.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 
 double belya_get_current_rss_mb(void) {
@@ -46,6 +49,7 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     agent->msg_cap = 64;
     agent->messages = calloc(agent->msg_cap, sizeof(BelyaMessage));
     agent->max_context_messages = 80;
+    strncpy(agent->db_path, db_path ? db_path : "", sizeof(agent->db_path) - 1);
     
     const char *tok_budget_env = getenv("MAX_CONTEXT_TOKENS");
     agent->max_context_tokens = (tok_budget_env && atoi(tok_budget_env) > 0) ? (size_t)atoi(tok_budget_env) : 128000;
@@ -194,6 +198,12 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             break;
         }
     }
+
+    // Load Composable Rule Packs dynamically based on project context
+    belya_agent_load_rule_packs(agent, "rules", &sys);
+
+    // File-First Skills System: Scan skills/ directory and index into SQLite FTS5
+    belya_agent_load_disk_skills(agent, "skills");
 
     // Progressive Disclosure: Append compact skills manifest (capped at top 20 by salience)
     char *skills_manifest = belya_agent_get_skills_manifest(agent);
@@ -751,29 +761,6 @@ char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
     return res.data;
 }
 
-static bool contains_case_insensitive(const char *haystack, const char *needle) {
-    if (!haystack || !needle) return false;
-    size_t hlen = strlen(haystack);
-    size_t nlen = strlen(needle);
-    if (nlen == 0) return true;
-    if (hlen < nlen) return false;
-    for (size_t i = 0; i <= hlen - nlen; i++) {
-        bool match = true;
-        for (size_t j = 0; j < nlen; j++) {
-            char ch = haystack[i + j];
-            char cn = needle[j];
-            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
-            if (cn >= 'A' && cn <= 'Z') cn = (char)(cn + 32);
-            if (ch != cn) {
-                match = false;
-                break;
-            }
-        }
-        if (match) return true;
-    }
-    return false;
-}
-
 bool belya_agent_save_skill(BelyaAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions) {
     if (!agent || !agent->db || !name || !instructions) return false;
     const char *trig = (trigger && strlen(trigger) > 0) ? trigger : name;
@@ -785,10 +772,185 @@ bool belya_agent_save_skill(BelyaAgent *agent, const char *name, const char *tri
     belya_agent_persist_memory_scoped(agent, name, content.data, "skills", trig);
     dyn_str_free(&content);
 
+    // File-first disk mirroring: persist to skills/<name>/SKILL.md (only for persistent databases)
+    if (agent->db_path[0] && strncmp(agent->db_path, "test_", 5) != 0 && strcmp(agent->db_path, ":memory:") != 0) {
+        char skill_dir[256];
+        snprintf(skill_dir, sizeof(skill_dir), "skills/%s", name);
+        mkdir("skills", 0755);
+        mkdir(skill_dir, 0755);
+        char skill_file[512];
+        snprintf(skill_file, sizeof(skill_file), "skills/%s/SKILL.md", name);
+        if (access(skill_file, F_OK) != 0) {
+            FILE *sf = fopen(skill_file, "w");
+            if (sf) {
+                fprintf(sf, "---\nname: %s\ndescription: %s\ntriggers: [%s]\n---\n\n%s\n",
+                        name, description, trig, instructions);
+                fclose(sf);
+            }
+        }
+    }
+
     char summary[256];
     snprintf(summary, sizeof(summary), "Skill saved: %s (Trigger: %s)", name, trig);
     belya_agent_log_timeline(agent, "skill_saved", summary);
     return true;
+}
+
+size_t belya_agent_load_disk_skills(BelyaAgent *agent, const char *skills_dir) {
+    if (!agent || !agent->db) return 0;
+    const char *dir_path = (skills_dir && strlen(skills_dir) > 0) ? skills_dir : "skills";
+    DIR *d = opendir(dir_path);
+    if (!d) return 0;
+
+    struct dirent *entry;
+    size_t loaded = 0;
+
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+        char skill_md_path[512];
+        struct stat st;
+
+        snprintf(skill_md_path, sizeof(skill_md_path), "%s/%s/SKILL.md", dir_path, entry->d_name);
+        if (stat(skill_md_path, &st) != 0) {
+            snprintf(skill_md_path, sizeof(skill_md_path), "%s/%s", dir_path, entry->d_name);
+            if (stat(skill_md_path, &st) != 0 || !strstr(entry->d_name, ".md")) {
+                continue;
+            }
+        }
+
+        FILE *f = fopen(skill_md_path, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > 500000) {
+            fclose(f);
+            continue;
+        }
+
+        char *buf = malloc((size_t)sz + 1);
+        if (!buf) {
+            fclose(f);
+            continue;
+        }
+        size_t nread = fread(buf, 1, (size_t)sz, f);
+        buf[nread] = '\0';
+        fclose(f);
+
+        Frontmatter *fm = frontmatter_parse(buf);
+        if (fm) {
+            const char *name = frontmatter_get_scalar(fm, "name");
+            if (!name) name = entry->d_name;
+
+            const char *desc = frontmatter_get_scalar(fm, "description");
+            if (!desc) desc = name;
+
+            char *trigs = frontmatter_get_list_as_string(fm, "triggers", ", ");
+            const char *trig_str = trigs ? trigs : frontmatter_get_scalar(fm, "triggers");
+            if (!trig_str) trig_str = name;
+
+            const char *instructions = fm->body ? fm->body : buf;
+
+            if (belya_agent_save_skill(agent, name, trig_str, desc, instructions)) {
+                loaded++;
+            }
+
+            if (trigs) free(trigs);
+            frontmatter_free(fm);
+        } else {
+            if (belya_agent_save_skill(agent, entry->d_name, entry->d_name, entry->d_name, buf)) {
+                loaded++;
+            }
+        }
+        free(buf);
+    }
+    closedir(d);
+    return loaded;
+}
+
+size_t belya_agent_load_rule_packs(BelyaAgent *agent, const char *rules_dir, DynString *out_rules) {
+    (void)agent;
+    if (!out_rules) return 0;
+    const char *dir_path = (rules_dir && strlen(rules_dir) > 0) ? rules_dir : "rules";
+    DIR *d = opendir(dir_path);
+    if (!d) return 0;
+
+    struct dirent *cat_entry;
+    size_t loaded = 0;
+
+    bool has_c = (access("Makefile", F_OK) == 0 || access("CMakeLists.txt", F_OK) == 0 ||
+                  access("main.c", F_OK) == 0 || access("belya_agent.c", F_OK) == 0);
+    bool has_python = (access("requirements.txt", F_OK) == 0 || access("setup.py", F_OK) == 0 ||
+                       access("pyproject.toml", F_OK) == 0);
+    bool has_git = (access(".git", F_OK) == 0);
+
+    while ((cat_entry = readdir(d)) != NULL) {
+        if (strcmp(cat_entry->d_name, ".") == 0 || strcmp(cat_entry->d_name, "..") == 0) continue;
+
+        char cat_path[512];
+        snprintf(cat_path, sizeof(cat_path), "%s/%s", dir_path, cat_entry->d_name);
+
+        struct stat st;
+        if (stat(cat_path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+        const char *category = cat_entry->d_name;
+
+        bool active = false;
+        if (strcmp(category, "common") == 0 || strcmp(category, "general") == 0) active = true;
+        else if (strcmp(category, "c") == 0 && has_c) active = true;
+        else if (strcmp(category, "python") == 0 && has_python) active = true;
+        else if (strcmp(category, "security") == 0) active = true;
+        else if (strcmp(category, "git") == 0 && has_git) active = true;
+
+        if (!active) continue;
+
+        DIR *sub = opendir(cat_path);
+        if (!sub) continue;
+
+        struct dirent *rule_file;
+        while ((rule_file = readdir(sub)) != NULL) {
+            if (rule_file->d_name[0] == '.') continue;
+            if (!strstr(rule_file->d_name, ".md")) continue;
+
+            char full_rule_path[1024];
+            snprintf(full_rule_path, sizeof(full_rule_path), "%s/%s", cat_path, rule_file->d_name);
+
+            FILE *rf = fopen(full_rule_path, "r");
+            if (!rf) continue;
+
+            fseek(rf, 0, SEEK_END);
+            long rsz = ftell(rf);
+            fseek(rf, 0, SEEK_SET);
+
+            if (rsz <= 0 || rsz > 200000) {
+                fclose(rf);
+                continue;
+            }
+
+            char *rbuf = malloc((size_t)rsz + 1);
+            if (!rbuf) {
+                fclose(rf);
+                continue;
+            }
+            size_t rread = fread(rbuf, 1, (size_t)rsz, rf);
+            rbuf[rread] = '\0';
+            fclose(rf);
+
+            Frontmatter *rfm = frontmatter_parse(rbuf);
+            const char *rule_body = (rfm && rfm->body) ? rfm->body : rbuf;
+
+            dyn_str_appendf(out_rules, "\n\n=== Composable Rule Pack: %s/%s ===\n%s",
+                            category, rule_file->d_name, rule_body);
+            loaded++;
+
+            if (rfm) frontmatter_free(rfm);
+            free(rbuf);
+        }
+        closedir(sub);
+    }
+    closedir(d);
+    return loaded;
 }
 
 char *belya_agent_search_skills(BelyaAgent *agent, const char *query) {
@@ -874,9 +1036,28 @@ char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_pro
         const char *content = (const char *)sqlite3_column_text(stmt, 3);
 
         bool matches = false;
-        if (trig && strlen(trig) > 0 && contains_case_insensitive(user_prompt, trig)) {
-            matches = true;
-        } else if (name && strlen(name) > 0 && contains_case_insensitive(user_prompt, name)) {
+        if (trig && strlen(trig) > 0) {
+            char *trig_copy = strdup(trig);
+            if (trig_copy) {
+                char *token_ctx = NULL;
+                char *tok = strtok_r(trig_copy, ",;", &token_ctx);
+                while (tok) {
+                    while (*tok == ' ' || *tok == '\t') tok++;
+                    char *tend = tok + strlen(tok) - 1;
+                    while (tend >= tok && isspace((unsigned char)*tend)) {
+                        *tend = '\0';
+                        tend--;
+                    }
+                    if (strlen(tok) > 0 && contains_case_insensitive(user_prompt, tok)) {
+                        matches = true;
+                        break;
+                    }
+                    tok = strtok_r(NULL, ",;", &token_ctx);
+                }
+                free(trig_copy);
+            }
+        }
+        if (!matches && name && strlen(name) > 0 && contains_case_insensitive(user_prompt, name)) {
             matches = true;
         }
 

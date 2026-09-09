@@ -55,6 +55,9 @@ void belya_harness_repl(BelyaHarness *h);
 void belya_harness_execute_turn(BelyaHarness *h, const char *prompt);
 void belya_harness_reset_turn_state(BelyaHarness *h);
 bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_name, const char *args_json, const char *observation, char **out_breaker_msg);
+bool is_path_jailed(const char *path, const char *workspace_root, bool is_write);
+bool is_path_safe(const char *path);
+char *belya_troubleshooting_resolve(const char *error_trace, const char *troubleshooting_path);
 void belya_harness_free(BelyaHarness *h);
 
 extern const char *g_active_custom_script_path;

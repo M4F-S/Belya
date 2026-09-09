@@ -37,6 +37,7 @@ typedef struct BelyaAgent {
     size_t total_prompt_tokens;
     size_t total_completion_tokens;
     size_t total_cached_tokens;
+    char db_path[256];
 } BelyaAgent;
 
 BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions);
@@ -70,6 +71,8 @@ char *belya_agent_reflect_and_distill(BelyaAgent *agent);
 
 // Skill Curation & Progressive Disclosure (Procedural Memory)
 bool belya_agent_save_skill(BelyaAgent *agent, const char *name, const char *trigger, const char *desc, const char *instructions);
+size_t belya_agent_load_disk_skills(BelyaAgent *agent, const char *skills_dir);
+size_t belya_agent_load_rule_packs(BelyaAgent *agent, const char *rules_dir, DynString *out_rules);
 char *belya_agent_search_skills(BelyaAgent *agent, const char *query);
 char *belya_agent_get_skills_manifest(BelyaAgent *agent);
 char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_prompt);

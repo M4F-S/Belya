@@ -2,6 +2,7 @@
 *.o
 belya
 belya_test
+belya_test_asan
 belya_benchmark
 test_runner
 bench_*
@@ -21,6 +22,8 @@ test_broken.c
 *.dSYM/
 .env
 run.sh
+__pycache__/
+*.pyc
 
 # Private session progress & docs
 docs/

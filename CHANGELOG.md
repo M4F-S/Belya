@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v6.4.0] — 2026-09-10
+### 🚀 Added & Enhanced
+- **C99 Workspace Path Jailing (`is_path_jailed()` in `belya_harness.c`):**
+  - Rigidly enforces directory containment and rejects traversal attacks (`../`).
+  - Differentiates strictly between file writes (confined to workspace root) and reads (whitelisting system inspection paths `/tmp/`, `/proc/`, `/etc/os-release`).
+- **C99 Lightweight Frontmatter Parser (`minifrontmatter.c` / `minifrontmatter.h`):**
+  - Zero-dependency parser for YAML `---` frontmatter blocks extracting scalars and bracket/bullet list sequences into native C structs.
+- **File-First Skills System (`skills/*/SKILL.md`):**
+  - Automatic scanning and indexing of disk-based markdown skills on startup into SQLite FTS5.
+  - Multi-trigger parsing and automatic disk mirroring for newly synthesized skills.
+- **Composable Modular Rule Packs (`rules/*/*.md`):**
+  - Project-context aware rule injection dynamically tailoring system instructions for C, Python, security, and common workflows.
+- **Systematic `TROUBLESHOOTING.md` Pattern Resolver:**
+  - Automated detection and remediation injection for known compiler and runtime error traces.
+- **Expanded Test Suite (32/32 tests, 100% pass):**
+  - Verified under AddressSanitizer and UndefinedBehaviorSanitizer with 0 memory leaks.
+
+---
+
 ## [v6.3.0] — 2026-09-06
 ### 🚀 Added & Enhanced
 - **DeepSeek DSML Tool Scavenger Engine (`model_adapter.c`):**
