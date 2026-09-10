@@ -44,9 +44,20 @@ struct BelyaHarness {
     bool files_modified_in_turn;
     bool verification_performed_in_turn;
     bool verification_guard_tripped;
+
+    // Belya Agency Tool Bounding & Role Guard state
+    char active_role[64];
+    bool bash_restricted;
+    char tools_whitelist[512];
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
+BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name);
+bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_name);
+char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *role_name, const char *task, const char *extra_context);
+bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***out_pipeline, size_t *out_count, char **out_direct_reply);
+char *belya_agency_execute_pipeline(BelyaHarness *harness, const char *prompt, const char **pipeline, size_t count);
+
 void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, BelyaToolCallback fn);
 bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body);
 void belya_harness_load_custom_tools(BelyaHarness *h);

@@ -1,20 +1,22 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v6.3.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.3.0)
+[![Release](https://img.shields.io/badge/Release-v6.5.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.5.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-27%2F27_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-33%2F33_Passed_(100%25)-brightgreen.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
-[![Memory](https://img.shields.io/badge/Memory_Footprint-<2MB_Idle-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-<190KB-informational.svg)]()
+[![Tools](https://img.shields.io/badge/Native_Tools-18_Tools-informational.svg)]()
+[![Memory](https://img.shields.io/badge/Memory_Footprint-<3.5MB_Idle-purple.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-<210KB-informational.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
 ## Table of Contents
 - [Architectural Overview](#architectural-overview)
-- [Key Capabilities & v6.0.0 Architectural Innovations](#key-capabilities--v600-architectural-innovations)
+- [Belya vs Almaz: Champion vs Challenger Architecture](#belya-vs-almaz-champion-vs-challenger-architecture)
+- [Key Capabilities & v6.5.0 Architectural Innovations](#key-capabilities--v650-architectural-innovations)
 - [Multi-Arena Benchmarks & Frontier Agent Evaluation](#multi-arena-benchmarks--frontier-agent-evaluation)
   - [1. Comprehensive Scorecard (30/30 - 100% Passed)](#1-comprehensive-scorecard-3030---100-passed)
   - [2. Arena-by-Arena Capabilities](#2-arena-by-arena-capabilities)
@@ -30,7 +32,8 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [Mode 2: 24/7 VPS Telegram Bot Daemon](#mode-2-247-vps-telegram-bot-daemon)
   - [Mode 3: Headless Batch & CI/CD Pipeline Mode](#mode-3-headless-batch--cicd-pipeline-mode)
   - [Mode 4: Standalone Security Execution Sandbox](#mode-4-standalone-security-execution-sandbox)
-- [Native Tool Suite (17 Built-In Tools)](#native-tool-suite-17-built-in-tools)
+  - [Mode 5: Belya Agency Multi-Agent Orchestration Mode](#mode-5-belya-agency-multi-agent-orchestration-mode)
+- [Native Tool Suite (18 Built-In Tools)](#native-tool-suite-18-built-in-tools)
 - [Command & Slash Controls Reference](#command--slash-controls-reference)
 - [Core Architectural Subsystems](#core-architectural-subsystems)
   - [1. Tool-Call Scavenger Engine](#1-tool-call-scavenger-engine)
@@ -43,7 +46,11 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [8. Forced Text Synthesis Engine](#8-forced-text-synthesis-engine)
   - [9. Context Pruning & Head-Tail Truncation](#9-context-pruning--head-tail-truncation)
   - [10. Self-Telemetry, Metacognitive Circuit Breaker & Verification Guard](#10-self-telemetry-metacognitive-circuit-breaker--verification-guard)
-- [Automated Test Suite (27/27 Comprehensive Tests)](#automated-test-suite-2727-comprehensive-tests)
+  - [11. Workspace Path Jailing & Security Sandboxing](#11-workspace-path-jailing--security-sandboxing)
+  - [12. File-First Skills & Composable Rule Packs](#12-file-first-skills--composable-rule-packs)
+  - [13. Systematic Troubleshooting Pattern Resolver](#13-troubleshooting-pattern-resolver)
+  - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
+- [Automated Test Suite (33/33 Comprehensive Tests)](#automated-test-suite-3333-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
@@ -77,7 +84,38 @@ graph TD
 
 ---
 
-## Key Capabilities & v6.0.0 Architectural Innovations
+## Belya vs Almaz: Champion vs Challenger Architecture
+
+Belya operates an empirical **Champion / Challenger** production model deployed 24/7 on Ubuntu Linux VPS:
+
+```
+                  ┌─────────────────────────────────────────────────────────┐
+                  │                 GitHub: M4F-S/Belya                     │
+                  └───────────────────────────┬─────────────────────────────┘
+                                              │
+                    ┌─────────────────────────┴─────────────────────────┐
+                    ▼                                                   ▼
+       ┌──────────────────────────┐                       ┌──────────────────────────┐
+       │      Belya (Champion)    │                       │     Almaz (Challenger)   │
+       │    Branch: main (v6.5.0) │                       │   Branch: evolve/almaz   │
+       │     Path: /opt/belya     │                       │     Path: /opt/almaz     │
+       │   Telegram: Primary Bot  │                       │   Telegram: @AlmaztheBot │
+       └────────────┬─────────────┘                       └─────────────┬────────────┘
+                    │                                                   │
+                    │   Both run Belya Agency Multi-Agent Engine        │
+                    │   (Triage -> Architect -> Builder -> Tester)      │
+                    ▼                                                   ▼
+            [Stable Engineering]                              [Autonomous Darwinian]
+            [Production Services]                             [Hot-Path Mutations  ]
+```
+
+- **Belya (Champion)**: Stable production baseline on branch `main`. Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v6.5.0`) with 100% test guarantees under AddressSanitizer.
+- **Almaz (Challenger)**: Autonomous evolutionary sibling on branch `evolve/almaz`. Runs as `almaz.service` in `/opt/almaz` on the VPS (~3.4 MB RAM) connected to `@AlmaztheBot`. Runs autonomous self-mutation supervisors to evolve internal C routines (e.g., +16.98% DynString throughput evolution).
+- **Belya Agency**: The sovereign multi-agent orchestration architecture is **natively embedded in both Belya and Almaz**. It is not a third project; it is the core multi-agent engine powering both systems via `--agency` (CLI) and `/agency` (Telegram/REPL).
+
+---
+
+## Key Capabilities & v6.5.0 Architectural Innovations
 
 - **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required (<3MB idle RAM footprint, <180KB binary size).
 - **Resilient Whitespace-Normalized Editing & Diagnostic Near-Match Hints:** `edit_file` incorporates a fuzzy whitespace-tolerant fallback that compares stripped lines if exact substring matching fails, alongside diagnostic anchor reporting showing similar lines to eliminate editing friction.
@@ -98,8 +136,17 @@ graph TD
 - **Procedural Skills Progressive Disclosure & Auto-Triggering:** Reusable procedural workflows saved via `save_skill` are indexed in SQLite with triggers, progressively disclosed in system prompt manifests, and auto-injected into context upon user query match.
 - **3-Zone Prefix Cache Invariant & Economics:** Strict byte-locked Zone 1 pinned prefix (system prompt + skills manifest), Zone 2 append-only history log, and Zone 3 ephemeral skill guidance injection for 90%+ prompt cache hit rates. Real-time cache economics tracking via `/cache`.
 - **Git State Checkpoints & Instant Rollback:** Automated per-turn commit snapshots and manual checkpointing (`belya_agent_create_checkpoint`, `/checkpoint [id]`, `/rollback [id]`) restoring workspace files and conversation context instantly.
-- **Fine-Tuning Trajectory Exporter:** Export complete multi-turn conversations and tool execution trajectories into standard OpenAI fine-tune JSONL format (`/export [session_id] [file]`).
 - **24/7 VPS Telegram Bot Daemon:** Control your autonomous AI engineer from your phone with a **Zero-Trust Security Gate** (only your Chat ID is accepted), real-time streaming, typing indicators, `/restart` hot-reload, and session management (`/reset`, `/clear`, `/new`, `/compact`).
+- **Workspace Path Jailing & Security Sandboxing:** Complete defense-in-depth confinement preventing directory traversal (`../`) outside designated project roots across all file tools (`read_file`, `write_file`, `edit_file`, `apply_patch`, `list_dir`).
+- **C99 MiniFrontmatter Engine:** Ultra-fast zero-dependency parser for YAML/Markdown frontmatter headers (`minifrontmatter.c`) used for skills, rule packs, and agent manifests.
+- **File-First Procedural Skills Catalog (`skills/*/SKILL.md`):** Automatically discovers and ingests folder-based skills on disk into SQLite FTS5 index on startup, with trigger matching and description synthesis.
+- **Composable Rule Packs (`rules/*/*.md`):** Ingests modular rules and operational directives hierarchically from `.agentrules`, `rules/`, and `AGENTS.md`.
+- **Systematic Troubleshooting Pattern Resolver:** Automatically cross-references tool failures against `TROUBLESHOOTING.md` using regex/prefix matching, immediately injecting targeted remedial instructions into the observation before hallucination loops occur.
+- **Belya Agency Sovereign Multi-Agent Orchestration Architecture:**
+  - **Declarative Manifest Protocol (`agents/*.md`):** Ingests role definitions into SQLite FTS5 for dynamic routing (`triage`, `architect`, `builder`, `reviewer`, `tester`).
+  - **Least-Privilege Tool Bounding:** Dynamically restricts tool availability and schemas per role (Architect = read-only, Builder = surgical code mutator, Reviewer = diff auditor, Tester = restricted sandbox bash).
+  - **Chief-of-Staff Triage Layer:** Routes incoming requests to tailored subagent pipelines with fast-path answers for simple dialogue.
+  - **Per-Subagent Git Rollback Guard:** Snapshots `HEAD` SHA before mutative execution; automatically executes `git reset --hard` and `git clean -fd` if a subagent encounters errors, loops, or trips circuit breakers.
 
 ---
 
@@ -429,7 +476,26 @@ int main(void) {
 
 ---
 
-## Native Tool Suite (17 Built-In Tools)
+### Mode 5: Belya Agency Multi-Agent Orchestration Mode
+
+Execute compound engineering missions via Belya Agency's autonomous multi-agent pipeline. The **Chief-of-Staff Triage Layer** analyzes the request and dynamically dispatches specialized, least-privilege subagents (`Architect` → `Builder` → `Reviewer` → `Tester`) under the protection of the **Per-Subagent Git Rollback Guard**:
+
+```bash
+# Execute headless multi-agent pipeline via CLI:
+./belya --agency "Implement a thread-safe connection pool with tests"
+# or short alias:
+./belya -a "Audit codebase for memory safety and run tests"
+
+# From within the interactive REPL:
+belya> /agency Implement token bucket rate limiter and verify with unit tests
+
+# From Telegram:
+/agency Refactor model gateway retry backoff and run test suite
+```
+
+---
+
+## Native Tool Suite (18 Built-In Tools)
 
 | Tool Name | Parameters | Description |
 |:---|:---|:---|
@@ -450,6 +516,7 @@ int main(void) {
 | **`fetch_url`** | `url` (str), `method` (str), `headers` (obj), `body` (str) | Native HTTP/REST client supporting GET, POST, PUT, DELETE, custom headers, and payloads |
 | **`spawn_subagent`**| `task` (str), `instructions` (str), `max_turns` (num) | Spawns isolated worker subagent and returns structured execution envelope |
 | **`define_tool`** | `name`, `description`, `parameters`, `script_body` | Dynamically creates, scripts, persists, and registers new executable tools with full parameter contracts |
+| **`dispatch_agent`**| `role` (str), `task` (str), `context` (str) | Dispatches specialized subagent (`architect`, `builder`, `reviewer`, `tester`) bounded by declarative manifest with automatic Git Rollback Guard protection |
 
 ---
 
@@ -476,6 +543,7 @@ int main(void) {
 | `/model <name>` | CLI & Telegram | Switch active AI model dynamically |
 | `/cwd [path]` | CLI & Telegram | View or change current working directory |
 | `/mcp <cmd>` | CLI & Telegram | Connect to an external stdio MCP server |
+| `/agency <prompt>` | CLI & Telegram | Execute task using Belya Agency multi-agent pipeline (Triage → Architect → Builder → Tester) |
 
 ---
 
@@ -527,9 +595,36 @@ To achieve true operational self-awareness without compromising determinism or i
 - **Metacognitive Circuit Breaker:** When an agent attempts an identical failing tool call 3 times consecutively, the harness trips an active circuit breaker, interrupting the doom-loop and directing the agent to re-evaluate assumptions and change strategy.
 - **Deterministic Verification Guard:** If files are modified (`write_file`, `edit_file`, `apply_patch`), Belya tracks code modification and intercepts turn completion if no verification or build step (`bash` test runner, `git_diff`) was executed, ensuring code is verified before concluding.
 
+### 11. Workspace Path Jailing & Security Sandboxing
+To protect host environments against malicious path traversal attacks (e.g. `../../etc/passwd`), `belya_harness_is_path_jailed()` enforces strict containment:
+- Resolves canonical absolute paths via `realpath(3)` and checks prefix against `harness->cwd`.
+- For non-existent files being created, canonicalizes parent directory bounds.
+- Confinement applies to all file modification and inspection tools: `read_file`, `write_file`, `edit_file`, `apply_patch`, and `list_dir`.
+
+### 12. File-First Skills & Composable Rule Packs
+Eliminating manual database seeding, Belya introduces file-first declarative configuration parsed with pure C99 `minifrontmatter`:
+- **Folder-Based Skills (`skills/*/SKILL.md`):** Discovered on startup, parsed for YAML frontmatter (`name`, `description`, `triggers`, `tags`), and ingested into SQLite FTS5 for automatic runtime recall and prompt injection.
+- **Composable Rule Packs (`rules/*/*.md`):** Loaded hierarchically from disk (`rules/c99/style.md`, `rules/security/bounds.md`, `rules/git/workflow.md`, `AGENTS.md`) and composed into system directives with zero runtime overhead.
+
+### 13. Systematic Troubleshooting Pattern Resolver
+When bash commands or builds fail, Belya Harness intercepts the error stream and cross-references known failure patterns against `TROUBLESHOOTING.md`:
+- Regex & prefix pattern matching identifies common failures (e.g. `undefined reference to 'curl_easy_init'`, `implicit declaration of function`, AddressSanitizer traces).
+- Injects authoritative, actionable remedies into the tool observation before the agent falls into an exploratory hallucination loop.
+
+### 14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture
+Belya Agency coordinates autonomous, specialized subagents to solve compound engineering tasks:
+- **Declarative Agent Manifest Protocol (`agents/*.md`):** Defines roles (`triage`, `architect`, `builder`, `reviewer`, `tester`) with frontmatter metadata (`tools`, `model`, `max_turns`, `timeout_secs`). Manifests are indexed into SQLite FTS5 for dynamic routing via `belya_agent_route_manifest()`.
+- **Least-Privilege Tool Bounding:** `belya_harness_init_bounded()` prunes unauthorized tools from LLM schemas:
+  - **`Architect`**: Strictly read-only (`read_file`, `search_files`, `list_dir`, `git_status`, `git_diff`, `recall_memory`).
+  - **`Builder`**: Surgical code mutator (`read_file`, `write_file`, `edit_file`, `apply_patch`, `search_files`).
+  - **`Reviewer`**: Code auditor (`read_file`, `git_diff`, `git_status`, `search_files`).
+  - **`Tester`**: Validation runner with restricted execution guard (`bash_restricted = true`) allowing only test/build targets (`make`, `test`, `echo`).
+- **Chief-of-Staff Triage Layer:** `belya_agency_triage()` routes incoming requests, executing fast-path answers for simple dialogue and synthesizing dynamic subagent pipelines (`Architect` → `Builder` → `Tester`) for complex features.
+- **Per-Subagent Git Rollback Guard:** Before a mutative subagent executes, Belya snapshots the working tree `HEAD` SHA. If the subagent fails, times out, or trips circuit breakers, Belya immediately executes `git reset --hard <snapshot_sha> && git clean -fd`, guaranteeing that failed subagent experiments leave zero workspace debris.
+
 ---
 
-## Automated Test Suite (27/27 Comprehensive Tests)
+## Automated Test Suite (33/33 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -543,7 +638,7 @@ make test
 [Test] MiniJSON Parser & Serializer...
   -> MiniJSON PASSED
 [Test] BPE-calibrated Token Estimator...
-  -> Token Estimator PASSED (Total: 342 tokens)
+  -> Token Estimator PASSED (Total: 853 tokens)
 [Test] Agent Memory (FTS5) & Rules Auto-Discovery...
   -> Agent Memory & Rules PASSED
 [Test] Session Checkpointing & Resumption...
@@ -589,22 +684,31 @@ make test
 [Test] Subagent Recursion Guard & Sandbox Tool Isolation...
   -> Subagent Recursion Guard PASSED
 [Test] Self-Telemetry, RSS Calculation & Proprioception...
-  -> Self-Telemetry & Proprioception PASSED (RSS: 4.2 MB)
+  -> Self-Telemetry & Proprioception PASSED (RSS: 11.86 MB)
 [Test] Metacognitive Circuit Breaker & Verification Guard...
   -> Metacognitive Circuit Breaker & Verification Guard PASSED
-================ All Tests Passed Successfully (27/27 - 100%) ================
+[Test] Track A.1: Workspace Path Jailing (is_path_jailed)...
+  -> Workspace Path Jailing PASSED
+[Test] Track A.2: C99 Markdown Frontmatter Parser (minifrontmatter)...
+  -> C99 Markdown Frontmatter Parser PASSED
+[Test] Track A.3: File-First Skills System (skills/*/SKILL.md)...
+  -> File-First Skills System PASSED (Loaded 4 disk skills)
+[Test] Track A.4: Composable Rule Packs (rules/*/*.md)...
+  -> Composable Rule Packs PASSED (Loaded 3 rule packs)
+[Test] Track A.5: Systematic TROUBLESHOOTING.md Pattern Resolver...
+  -> Systematic TROUBLESHOOTING.md Pattern Resolver PASSED
+[Test] Track B: Belya Agency Multi-Agent Orchestration & Rollback Guard...
+  -> Belya Agency Multi-Agent Architecture & Rollback Guard PASSED
+================ All Tests Passed Successfully (33/33 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
 
 Belya is compiled and validated with AddressSanitizer and UndefinedBehaviorSanitizer:
 ```bash
-gcc -Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -D_POSIX_C_SOURCE=200809L \
-    -o belya_test_asan test_suite.c linenoise.c minijson.c mcp_client.c model_adapter.c \
-    belya_agent.c belya_harness.c telegram_adapter.c -lcurl -lsqlite3
-./belya_test_asan
+make clean && make test CFLAGS="-Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -g -D_POSIX_C_SOURCE=200809L"
 ```
-**Result**: 27/27 tests pass with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: **33/33 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
 
 ---
 

@@ -35,6 +35,7 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
 
     bool telegram_mode = false;
+    bool agency_mode = false;
     const char *resume_session_id = NULL;
     const char *headless_prompt = NULL;
 
@@ -44,6 +45,7 @@ int main(int argc, char **argv) {
             printf("Options:\n");
             printf("  -h, --help                 Show this help message\n");
             printf("  -t, --telegram             Run as Telegram bot daemon\n");
+            printf("  -a, --agency [prompt]      Execute task via Belya Agency multi-agent pipeline\n");
             printf("  -r, --resume <session_id>  Resume saved conversation session\n");
             printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
             printf("  --headless <prompt>        Alias for --prompt\n");
@@ -51,6 +53,11 @@ int main(int argc, char **argv) {
             return 0;
         } else if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0) {
             telegram_mode = true;
+        } else if (strcmp(argv[i], "--agency") == 0 || strcmp(argv[i], "-a") == 0) {
+            agency_mode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                headless_prompt = argv[++i];
+            }
         } else if ((strcmp(argv[i], "--resume") == 0 || strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--session") == 0) && i + 1 < argc) {
             resume_session_id = argv[++i];
         } else if ((strcmp(argv[i], "--headless") == 0 || strcmp(argv[i], "--eval") == 0 || strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
@@ -137,8 +144,28 @@ int main(int argc, char **argv) {
         telegram_bot_run(bot, harness);
         telegram_bot_free(bot);
     } else if (headless_prompt) {
-        printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
-        belya_harness_execute_turn(harness, headless_prompt);
+        if (agency_mode) {
+            printf("Executing Belya Agency Multi-Agent Pipeline (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
+            char **pipeline = NULL;
+            size_t count = 0;
+            char *direct = NULL;
+            belya_agency_triage(harness, headless_prompt, &pipeline, &count, &direct);
+            if (direct) {
+                printf("[Belya Triage Direct Response]:\n%s\n\n", direct);
+                free(direct);
+            } else if (count > 0) {
+                char *report = belya_agency_execute_pipeline(harness, headless_prompt, (const char **)pipeline, count);
+                if (report) {
+                    printf("\n%s\n", report);
+                    free(report);
+                }
+                for (size_t k = 0; k < count; k++) free(pipeline[k]);
+                free(pipeline);
+            }
+        } else {
+            printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
+            belya_harness_execute_turn(harness, headless_prompt);
+        }
     } else {
         printf("Starting Belya Harness with endpoint: %s (Model: %s)\n", endpoint, model);
         belya_harness_repl(harness);

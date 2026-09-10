@@ -113,6 +113,15 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             "  turn_id INTEGER,"
             "  msg_count INTEGER,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS agent_manifests ("
+            "  name TEXT PRIMARY KEY,"
+            "  role TEXT NOT NULL,"
+            "  tools TEXT NOT NULL,"
+            "  model TEXT DEFAULT 'inherit',"
+            "  max_turns INTEGER DEFAULT 5,"
+            "  instructions TEXT NOT NULL,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");";
         sqlite3_exec(agent->db, schema_sql, 0, 0, 0);
 
@@ -139,6 +148,12 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             if (sqlite3_exec(agent->db, fts_sql2, 0, 0, 0) == SQLITE_OK) {
                 agent->has_fts5 = true;
             }
+        }
+
+        // Initialize agent manifests FTS5 table if FTS5 is available
+        if (agent->has_fts5) {
+            const char *m_fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_manifests_fts USING fts5(name, role, instructions, tools);";
+            sqlite3_exec(agent->db, m_fts_sql, 0, 0, 0);
         }
     }
 
@@ -204,6 +219,9 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
 
     // File-First Skills System: Scan skills/ directory and index into SQLite FTS5
     belya_agent_load_disk_skills(agent, "skills");
+
+    // Belya Agency: Scan agents/ directory and index declarative agent manifests into SQLite FTS5
+    belya_agent_load_manifests(agent, "agents");
 
     // Progressive Disclosure: Append compact skills manifest (capped at top 20 by salience)
     char *skills_manifest = belya_agent_get_skills_manifest(agent);
@@ -1078,6 +1096,257 @@ char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_pro
     sqlite3_finalize(stmt);
     return matched_content;
 }
+
+// ==================== Belya Agency Declarative Manifests & Dynamic Routing ====================
+
+bool belya_agent_save_manifest(BelyaAgent *agent, const char *name, const char *role, const char *tools, const char *model, int max_turns, const char *instructions) {
+    if (!agent || !agent->db || !name || !role || !tools || !instructions) return false;
+
+    const char *mdl = (model && strlen(model) > 0) ? model : "inherit";
+    int turns = max_turns > 0 ? max_turns : 5;
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "INSERT INTO agent_manifests (name, role, tools, model, max_turns, instructions) "
+                      "VALUES (?, ?, ?, ?, ?, ?) "
+                      "ON CONFLICT(name) DO UPDATE SET "
+                      "role=excluded.role, tools=excluded.tools, model=excluded.model, "
+                      "max_turns=excluded.max_turns, instructions=excluded.instructions, created_at=CURRENT_TIMESTAMP;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, role, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, tools, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, mdl, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 5, turns);
+    sqlite3_bind_text(stmt, 6, instructions, -1, SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) return false;
+
+    // Ingest into FTS5 index if active
+    if (agent->has_fts5) {
+        const char *del_fts = "DELETE FROM agent_manifests_fts WHERE name = ?;";
+        if (sqlite3_prepare_v2(agent->db, del_fts, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+
+        const char *ins_fts = "INSERT INTO agent_manifests_fts (name, role, instructions, tools) VALUES (?, ?, ?, ?);";
+        if (sqlite3_prepare_v2(agent->db, ins_fts, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 2, role, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 3, instructions, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 4, tools, -1, SQLITE_STATIC);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+    }
+    return true;
+}
+
+size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir) {
+    if (!agent || !agent->db) return 0;
+    const char *dir_path = (agents_dir && strlen(agents_dir) > 0) ? agents_dir : "agents";
+    DIR *d = opendir(dir_path);
+    if (!d) return 0;
+
+    struct dirent *entry;
+    size_t loaded = 0;
+
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        const char *dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".md") != 0) continue;
+
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir_path, entry->d_name);
+
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > 500000) {
+            fclose(f);
+            continue;
+        }
+
+        char *buf = malloc((size_t)sz + 1);
+        if (!buf) {
+            fclose(f);
+            continue;
+        }
+        size_t nread = fread(buf, 1, (size_t)sz, f);
+        buf[nread] = '\0';
+        fclose(f);
+
+        Frontmatter *fm = frontmatter_parse(buf);
+        if (fm) {
+            const char *name = frontmatter_get_scalar(fm, "name");
+            char temp_name[256];
+            if (!name) {
+                snprintf(temp_name, sizeof(temp_name), "%s", entry->d_name);
+                char *dot_in_name = strrchr(temp_name, '.');
+                if (dot_in_name) *dot_in_name = '\0';
+                name = temp_name;
+            }
+
+            const char *role = frontmatter_get_scalar(fm, "role");
+            if (!role) role = name;
+
+            char *tools_list_str = frontmatter_get_list_as_string(fm, "tools", ",");
+            const char *tools_str = tools_list_str ? tools_list_str : frontmatter_get_scalar(fm, "tools");
+            if (!tools_str) tools_str = "read_file";
+
+            const char *model = frontmatter_get_scalar(fm, "model");
+            if (!model) model = "inherit";
+
+            const char *turns_str = frontmatter_get_scalar(fm, "max_turns");
+            int max_turns = (turns_str && atoi(turns_str) > 0) ? atoi(turns_str) : 5;
+
+            const char *instructions = fm->body ? fm->body : "";
+
+            if (belya_agent_save_manifest(agent, name, role, tools_str, model, max_turns, instructions)) {
+                loaded++;
+            }
+
+            if (tools_list_str) free(tools_list_str);
+            frontmatter_free(fm);
+        }
+        free(buf);
+    }
+    closedir(d);
+    return loaded;
+}
+
+BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name) {
+    if (!agent || !agent->db || !name) return NULL;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT name, role, tools, model, max_turns, instructions FROM agent_manifests WHERE name = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return NULL;
+    }
+
+    BelyaAgentManifest *m = calloc(1, sizeof(BelyaAgentManifest));
+    if (!m) {
+        sqlite3_finalize(stmt);
+        return NULL;
+    }
+
+    const char *c_name = (const char *)sqlite3_column_text(stmt, 0);
+    const char *c_role = (const char *)sqlite3_column_text(stmt, 1);
+    const char *c_tools = (const char *)sqlite3_column_text(stmt, 2);
+    const char *c_model = (const char *)sqlite3_column_text(stmt, 3);
+    int c_turns = sqlite3_column_int(stmt, 4);
+    const char *c_inst = (const char *)sqlite3_column_text(stmt, 5);
+
+    m->name = strdup(c_name ? c_name : "");
+    m->role = strdup(c_role ? c_role : "");
+    m->tools = strdup(c_tools ? c_tools : "");
+    m->model = strdup(c_model ? c_model : "inherit");
+    m->max_turns = c_turns > 0 ? c_turns : 5;
+    m->instructions = strdup(c_inst ? c_inst : "");
+
+    sqlite3_finalize(stmt);
+    return m;
+}
+
+BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *query) {
+    if (!agent || !agent->db || !query || strlen(query) == 0) return NULL;
+
+    // 1. Direct name lookup
+    BelyaAgentManifest *direct = belya_agent_get_manifest(agent, query);
+    if (direct) return direct;
+
+    // 2. FTS5 ranked dynamic routing
+    if (agent->has_fts5) {
+        sqlite3_stmt *stmt = NULL;
+        const char *fts_sql = "SELECT name FROM agent_manifests_fts WHERE agent_manifests_fts MATCH ? ORDER BY rank LIMIT 1;";
+        if (sqlite3_prepare_v2(agent->db, fts_sql, -1, &stmt, NULL) == SQLITE_OK) {
+            DynString clean_q = dyn_str_new();
+            for (const char *p = query; *p; p++) {
+                if (isalnum((unsigned char)*p) || *p == ' ') dyn_str_append_len(&clean_q, p, 1);
+            }
+            if (clean_q.len > 0) {
+                sqlite3_bind_text(stmt, 1, clean_q.data, -1, SQLITE_STATIC);
+                if (sqlite3_step(stmt) == SQLITE_ROW) {
+                    const char *matched_name = (const char *)sqlite3_column_text(stmt, 0);
+                    if (matched_name) {
+                        BelyaAgentManifest *m = belya_agent_get_manifest(agent, matched_name);
+                        sqlite3_finalize(stmt);
+                        dyn_str_free(&clean_q);
+                        return m;
+                    }
+                }
+            }
+            dyn_str_free(&clean_q);
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // 3. Fallback: Substring match across name, role, and instructions
+    sqlite3_stmt *stmt = NULL;
+    const char *like_sql = "SELECT name FROM agent_manifests WHERE ? LIKE '%' || name || '%' OR role LIKE '%' || ? || '%' LIMIT 1;";
+    if (sqlite3_prepare_v2(agent->db, like_sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, query, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, query, -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *matched_name = (const char *)sqlite3_column_text(stmt, 0);
+            if (matched_name) {
+                BelyaAgentManifest *m = belya_agent_get_manifest(agent, matched_name);
+                sqlite3_finalize(stmt);
+                return m;
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return NULL;
+}
+
+void belya_agent_manifest_free(BelyaAgentManifest *m) {
+    if (!m) return;
+    if (m->name) free(m->name);
+    if (m->role) free(m->role);
+    if (m->tools) free(m->tools);
+    if (m->model) free(m->model);
+    if (m->instructions) free(m->instructions);
+    free(m);
+}
+
+char *belya_agent_list_manifests(BelyaAgent *agent) {
+    if (!agent || !agent->db) return NULL;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT name, role, tools, max_turns FROM agent_manifests ORDER BY name ASC;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "Registered Belya Agency Subagents:\n");
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        count++;
+        const char *name = (const char *)sqlite3_column_text(stmt, 0);
+        const char *role = (const char *)sqlite3_column_text(stmt, 1);
+        const char *tools = (const char *)sqlite3_column_text(stmt, 2);
+        int turns = sqlite3_column_int(stmt, 3);
+        dyn_str_appendf(&ds, "  • [%s] %s (Turns: %d, Tools: %s)\n", name ? name : "", role ? role : "", turns, tools ? tools : "");
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) {
+        dyn_str_append(&ds, "  (No agent manifests registered)\n");
+    }
+    return ds.data;
+}
+
+// ==================== End Belya Agency Declarative Manifests ====================
 
 bool belya_agent_create_checkpoint(BelyaAgent *agent, const char *label) {
     if (!agent || !agent->db) return false;

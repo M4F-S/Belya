@@ -183,10 +183,11 @@ def run_project_audit():
     else:
         findings.append(f"Memory audit: 100% verified zero-tolerance NULL checks ({verified_allocs}/{alloc_count} allocations guarded).")
 
-    # 4. Check File-First Skills & Rules Integrity
+    # 4. Check File-First Skills, Rules & Agents Integrity
     skills_count = len(list((WORKSPACE_DIR / "skills").glob("*/SKILL.md")))
     rules_count = len(list((WORKSPACE_DIR / "rules").glob("*/*.md")))
-    findings.append(f"Knowledge catalog: {skills_count} disk skills, {rules_count} composable rule packs verified.")
+    agents_count = len(list((WORKSPACE_DIR / "agents").glob("*.md")))
+    findings.append(f"Knowledge catalog: {skills_count} disk skills, {rules_count} rule packs, {agents_count} agent manifests verified.")
 
     # Write audit report
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -289,7 +290,7 @@ def run_self_evolution():
             shutil.copy(f, SANDBOX_DIR / f.name)
     if (WORKSPACE_DIR / "TROUBLESHOOTING.md").exists():
         shutil.copy(WORKSPACE_DIR / "TROUBLESHOOTING.md", SANDBOX_DIR / "TROUBLESHOOTING.md")
-    for d in ["skills", "rules"]:
+    for d in ["skills", "rules", "agents"]:
         src_d = WORKSPACE_DIR / d
         if src_d.exists():
             shutil.copytree(src_d, SANDBOX_DIR / d, dirs_exist_ok=True)
