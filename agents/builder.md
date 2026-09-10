@@ -3,7 +3,7 @@ name: builder
 role: Systems Implementation Engineer
 description: Modifies and writes source code, patches files, and implements features with zero memory leaks and strict bounds checking.
 tools: [read_file, write_file, edit_file, apply_patch, search_files]
-model: hermes-3
+model: inherit
 max_turns: 10
 timeout_secs: 180
 auto_checkpoint: true

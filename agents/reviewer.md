@@ -3,7 +3,7 @@ name: reviewer
 role: Code Review & Security Auditor
 description: Inspects git diffs, analyzes memory boundaries, verifies safety constraints, and flags anti-patterns or leaks.
 tools: [read_file, git_diff, git_status, search_files]
-model: hermes-3
+model: inherit
 max_turns: 6
 timeout_secs: 90
 auto_checkpoint: false
