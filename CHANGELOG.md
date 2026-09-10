@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v6.5.0] — 2026-09-10
+### 🚀 Added & Enhanced
+- **Belya Agency Sovereign Multi-Agent Architecture:**
+  - **Declarative Manifest Protocol (`agents/*.md`):** Uses `minifrontmatter.c` to parse role definitions into native C structs, indexing them into SQLite FTS5 on startup.
+  - **Least-Privilege Tool Bounding:** Restricts tool schemas per subagent role (`Architect` = read-only, `Builder` = surgical code mutator, `Reviewer` = diff auditor, `Tester` = restricted sandbox bash).
+  - **Chief-of-Staff Triage Layer:** Evaluates incoming queries, providing instant answers for simple queries or dispatching targeted subagent pipelines for complex engineering tasks.
+  - **Per-Subagent Git Rollback Guard:** Snapshots repository `HEAD` SHA prior to mutative execution; automatically executes `git reset --hard` and `git clean -fd` if a subagent encounters errors, loops, or trips circuit breakers.
+  - **`dispatch_agent` Native Tool:** Built-in tool allowing orchestrator agents to delegate bounded tasks to specialized subagents with isolated message buffers.
+  - **Multi-Modal Controls:** Full agency support via `--agency` / `-a` (CLI), `/agency` (REPL), and Telegram bot daemons.
+- **Almaz Sovereign Evolution Supervisor (v2.0):**
+  - Real empirical microbenchmarking with high-resolution timing and Linux `/proc/{pid}/status` (`VmHWM`/`VmRSS`) peak memory tracking.
+  - Multi-mutation pool (whitespace inlining, DynString preallocation, YAML frontmatter trimming) with least-recently-tested round-robin selection.
+  - Real AST/regex scanner verifying zero-tolerance memory allocation checks (`malloc != NULL`).
+  - Unified diff generation (`patches/mutation_*.patch`) and automated Git versioning with semantic tags (`evo-v<timestamp>`) on `evolve/almaz`.
+- **Systemd Security Sandboxing & Daemon Hardening:**
+  - Applied `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, and strict `ReadWritePaths` to both `belya.service` and `almaz.service` on production VPS.
+- **Expanded Test Suite (33/33 Tests, 100% Pass):**
+  - Added Test 33: Track B Belya Agency Multi-Agent Architecture & Rollback Guard. Verified 0 memory leaks under AddressSanitizer.
+
+---
+
 ## [v6.4.0] — 2026-09-10
 ### 🚀 Added & Enhanced
 - **C99 Workspace Path Jailing (`is_path_jailed()` in `belya_harness.c`):**
