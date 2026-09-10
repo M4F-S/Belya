@@ -637,7 +637,7 @@ static void benchmark_arena3_memory_retention(void) {
     int passed = 0;
     int total = 5;
 
-    const char *db_file = "bench_mem.sqlite";
+    const char *db_file = "test_bench_mem.sqlite";
     unlink(db_file);
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
     BelyaAgent *agent = belya_agent_init(gw, db_file, "Memory benchmark instructions");
@@ -706,10 +706,10 @@ static void benchmark_arena3_memory_retention(void) {
 
     // Test 4: Procedural Skill Curation & Manifest Matching
     {
-        belya_agent_save_skill(agent, "vps_deploy", "deploy to vps", "Deploy binary to remote VPS", "Run rsync and systemctl restart belya");
-        char *matched = belya_agent_match_skill_for_prompt(agent, "Please deploy to vps right now");
+        belya_agent_save_skill(agent, "telemetry_pilot", "run_flight_telemetry", "Run flight telemetry diagnostics", "Run telemetry ping and log metrics");
+        char *matched = belya_agent_match_skill_for_prompt(agent, "Please run_flight_telemetry right now");
 
-        if (matched && strstr(matched, "rsync and systemctl restart")) {
+        if (matched && strstr(matched, "Run telemetry ping and log metrics")) {
             passed++;
             printf("  [3.4] Procedural Skill Matching & Progressive Disclosure: \033[1;32mPASSED\033[0m\n");
         } else {
@@ -729,7 +729,7 @@ static void benchmark_arena3_memory_retention(void) {
         }
         assert(agent->msg_count == initial_msgs + 40);
 
-        bool rolled_back = belya_agent_rollback_to_checkpoint(agent, NULL);
+        bool rolled_back = belya_agent_rollback_to_checkpoint(agent, "chk_before_bloat");
         if (rolled_back && agent->msg_count == initial_msgs) {
             passed++;
             printf("  [3.5] Multi-Turn State Machine & Instant Rollback: \033[1;32mPASSED\033[0m\n");
@@ -741,8 +741,8 @@ static void benchmark_arena3_memory_retention(void) {
     belya_agent_free(agent);
     model_gateway_free(gw);
     unlink(db_file);
-    unlink("bench_mem.sqlite-shm");
-    unlink("bench_mem.sqlite-wal");
+    unlink("test_bench_mem.sqlite-shm");
+    unlink("test_bench_mem.sqlite-wal");
 
     double t1 = get_time_ms();
     g_results[2].arena_name = "Arena 3: Scoped Memory & Retention (Gomaa)";
