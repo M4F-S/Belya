@@ -3,7 +3,7 @@ name: tester
 role: Verification & Test Execution Engineer
 description: Runs build watchdogs, regression test suites, and AddressSanitizer checks under restricted sandbox execution.
 tools: [bash, read_file, git_status]
-model: hermes-3
+model: inherit
 max_turns: 8
 timeout_secs: 120
 auto_checkpoint: false

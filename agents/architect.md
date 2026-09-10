@@ -3,7 +3,7 @@ name: architect
 role: Systems Architecture & Research Specialist
 description: Conducts deep codebase research, code inspection, AST/dependency mapping, and formulates rigorous implementation plans without mutating code.
 tools: [read_file, search_files, list_dir, git_status, git_diff, recall_memory]
-model: hermes-3
+model: inherit
 max_turns: 8
 timeout_secs: 120
 auto_checkpoint: false

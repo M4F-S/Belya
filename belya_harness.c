@@ -1045,7 +1045,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
     const char *whitelist = manifest ? manifest->tools : "read_file";
     int max_turns = (manifest && manifest->max_turns > 0) ? manifest->max_turns : 5;
     const char *inst = manifest ? manifest->instructions : "You are a specialized autonomous engineering subagent.";
-    const char *model = (manifest && strcmp(manifest->model, "inherit") != 0) 
+    const char *model = (manifest && manifest->model && strcmp(manifest->model, "inherit") != 0 && strlen(manifest->model) > 0) 
                         ? manifest->model : parent_harness->agent->gateway->model;
 
     // 2. Check if subagent has write permissions
@@ -1099,7 +1099,12 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
     while (running && turns-- > 0) {
         ModelGatewayResponse resp = belya_agent_step(sub_agent);
         if (!resp.has_tool_call) {
-            if (resp.content) dyn_str_append(&final_ans, resp.content);
+            if (resp.content) {
+                dyn_str_append(&final_ans, resp.content);
+                if (strncmp(resp.content, "API Error", 9) == 0 || strncmp(resp.content, "Network Error", 13) == 0) {
+                    subagent_failed = true;
+                }
+            }
             running = false;
         } else {
             for (size_t i = 0; i < resp.tool_call_count; i++) {
