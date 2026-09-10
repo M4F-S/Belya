@@ -1186,7 +1186,7 @@ size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir) {
         Frontmatter *fm = frontmatter_parse(buf);
         if (fm) {
             const char *name = frontmatter_get_scalar(fm, "name");
-            char temp_name[128];
+            char temp_name[256];
             if (!name) {
                 snprintf(temp_name, sizeof(temp_name), "%s", entry->d_name);
                 char *dot_in_name = strrchr(temp_name, '.');

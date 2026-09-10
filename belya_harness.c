@@ -274,8 +274,7 @@ bool is_path_jailed(const char *path, const char *workspace_root, bool is_write)
     }
 
     if (!realpath(root_buf, canonical_root)) {
-        strncpy(canonical_root, root_buf, sizeof(canonical_root) - 1);
-        canonical_root[sizeof(canonical_root) - 1] = '\0';
+        snprintf(canonical_root, sizeof(canonical_root), "%s", root_buf);
     }
     size_t root_len = strlen(canonical_root);
 
@@ -1745,10 +1744,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
 
 #define REGISTER_IF_PERMITTED(t_name, t_desc, t_schema, t_sec, t_fn) \
     do { \
+        JsonValue *_sch = (t_schema); \
         if (belya_harness_is_tool_whitelisted(tools_whitelist, t_name)) { \
-            belya_harness_register_tool(h, t_name, t_desc, t_schema, t_sec, t_fn); \
-        } else if (t_schema) { \
-            json_free(t_schema); \
+            belya_harness_register_tool(h, t_name, t_desc, _sch, t_sec, t_fn); \
+        } else if (_sch) { \
+            json_free(_sch); \
         } \
     } while (0)
 
@@ -2656,10 +2656,8 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
         if (strcmp(h->last_failed_tool, tool_name) == 0 && strcmp(h->last_failed_args, args_prefix) == 0) {
             h->consecutive_tool_failures++;
         } else {
-            strncpy(h->last_failed_tool, tool_name, sizeof(h->last_failed_tool) - 1);
-            h->last_failed_tool[sizeof(h->last_failed_tool) - 1] = '\0';
-            strncpy(h->last_failed_args, args_prefix, sizeof(h->last_failed_args) - 1);
-            h->last_failed_args[sizeof(h->last_failed_args) - 1] = '\0';
+            snprintf(h->last_failed_tool, sizeof(h->last_failed_tool), "%s", tool_name);
+            snprintf(h->last_failed_args, sizeof(h->last_failed_args), "%s", args_prefix);
             h->consecutive_tool_failures = 1;
         }
 

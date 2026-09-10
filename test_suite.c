@@ -893,7 +893,8 @@ void test_v6_enhancements(void) {
     FILE *rf = fopen("test_whitespace_edit.c", "rb");
     assert(rf != NULL);
     char buf[512] = {0};
-    fread(buf, 1, sizeof(buf) - 1, rf);
+    size_t rb = fread(buf, 1, sizeof(buf) - 1, rf);
+    assert(rb > 0);
     fclose(rf);
     unlink("test_whitespace_edit.c");
     assert(strstr(buf, "return a + b;") != NULL);
@@ -1753,7 +1754,8 @@ void test_belya_agency_architecture(void) {
     belya_harness_free(tst_h);
 
     // 4. Per-Subagent Git Rollback Guard (tested in isolated scratch repo)
-    system("rm -rf /tmp/test_belya_git && mkdir -p /tmp/test_belya_git && cd /tmp/test_belya_git && git init -q && git config user.name 'Belya' && git config user.email 'belya@test.local' && echo 'clean_state_v1' > dummy.txt && git add dummy.txt && git commit -m 'baseline' -q 2>/dev/null");
+    int s_init = system("rm -rf /tmp/test_belya_git && mkdir -p /tmp/test_belya_git && cd /tmp/test_belya_git && git init -q && git config user.name 'Belya' && git config user.email 'belya@test.local' && echo 'clean_state_v1' > dummy.txt && git add dummy.txt && git commit -m 'baseline' -q 2>/dev/null");
+    assert(s_init == 0);
 
     char baseline_sha[128] = {0};
     FILE *gp2 = popen("cd /tmp/test_belya_git && git rev-parse HEAD 2>/dev/null", "r");
@@ -1793,7 +1795,8 @@ void test_belya_agency_architecture(void) {
     assert(strstr(check_buf, "clean_state_v1") != NULL);
 
     // Clean up scratch repo
-    system("rm -rf /tmp/test_belya_git");
+    int s_clean = system("rm -rf /tmp/test_belya_git");
+    assert(s_clean == 0);
 
     // 5. Chief-of-Staff Triage Layer
     BelyaHarness *main_h = belya_harness_init(agent);
