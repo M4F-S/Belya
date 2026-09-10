@@ -399,10 +399,11 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             JsonValue *message = json_obj_get(choice, "message");
             if (message) {
                 const char *content_str = json_obj_get_str(message, "content");
-                if (content_str) res.content = strdup(content_str);
+                if (content_str && strlen(content_str) > 0) res.content = strdup(content_str);
 
                 const char *reasoning = json_obj_get_str(message, "reasoning_content");
                 if (!reasoning) reasoning = json_obj_get_str(message, "thinking");
+                if (!reasoning) reasoning = json_obj_get_str(message, "reasoning");
                 if (reasoning && strlen(reasoning) > 0) {
                     res.reasoning_content = strdup(reasoning);
                 }
@@ -427,10 +428,16 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             }
         }
 
-        if (!res.content && !res.has_tool_call) {
-            DynString empty_ds = dyn_str_new();
-            dyn_str_appendf(&empty_ds, "Empty model response (HTTP %ld).", http_code);
-            res.content = empty_ds.data;
+        if ((!res.content || strlen(res.content) == 0) && !res.has_tool_call) {
+            if (res.reasoning_content && strlen(res.reasoning_content) > 0) {
+                if (res.content) free(res.content);
+                res.content = strdup(res.reasoning_content);
+            } else {
+                if (res.content) free(res.content);
+                DynString empty_ds = dyn_str_new();
+                dyn_str_appendf(&empty_ds, "Empty model response (HTTP %ld).", http_code);
+                res.content = empty_ds.data;
+            }
         }
 
         json_free(root);

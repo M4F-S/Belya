@@ -944,6 +944,9 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
 
     DynString sys = dyn_str_new();
     dyn_str_append(&sys, "You are a specialized subagent worker. Execute the assigned task and provide a concise, direct answer.");
+    if (g_harness && strlen(g_harness->cwd) > 0) {
+        dyn_str_appendf(&sys, "\n\nWorkspace Root: %s\nIMPORTANT: Use current directory or relative paths for all file tools.\n", g_harness->cwd);
+    }
     if (instructions && strlen(instructions) > 0) {
         dyn_str_append(&sys, "\nTask instructions:\n");
         dyn_str_append(&sys, instructions);
@@ -957,6 +960,9 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
 
     BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init(sub_agent);
+    if (saved_harness && strlen(saved_harness->cwd) > 0) {
+        strncpy(sub_harness->cwd, saved_harness->cwd, sizeof(sub_harness->cwd) - 1);
+    }
     belya_agent_add_message(sub_agent, "user", task);
 
     int turns = (int)max_turns_num;
@@ -1071,7 +1077,8 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     // 4. Construct specialized system prompt
     DynString sys = dyn_str_new();
-    dyn_str_appendf(&sys, "Role: %s Subagent (%s)\n%s", role_name, manifest ? manifest->role : role_name, inst);
+    dyn_str_appendf(&sys, "Role: %s Subagent (%s)\n%s\n\nWorkspace Root: %s\nIMPORTANT: Use current directory or relative paths for all file tools.\n",
+                    role_name, manifest ? manifest->role : role_name, inst, parent_harness->cwd);
     if (extra_context && strlen(extra_context) > 0) {
         dyn_str_append(&sys, "\n\nAdditional Technical Context:\n");
         dyn_str_append(&sys, extra_context);
@@ -1086,6 +1093,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init_bounded(sub_agent, whitelist, role_name);
+    strncpy(sub_harness->cwd, parent_harness->cwd, sizeof(sub_harness->cwd) - 1);
 
     belya_agent_add_message(sub_agent, "user", task);
 
@@ -1150,6 +1158,9 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
         subagent_failed = true;
     }
     if (sub_harness->consecutive_tool_failures >= 3) {
+        subagent_failed = true;
+    }
+    if (final_ans.len == 0 && tool_executions == 0) {
         subagent_failed = true;
     }
 
