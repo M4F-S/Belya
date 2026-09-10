@@ -961,7 +961,7 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init(sub_agent);
     if (saved_harness && strlen(saved_harness->cwd) > 0) {
-        strncpy(sub_harness->cwd, saved_harness->cwd, sizeof(sub_harness->cwd) - 1);
+        snprintf(sub_harness->cwd, sizeof(sub_harness->cwd), "%s", saved_harness->cwd);
     }
     belya_agent_add_message(sub_agent, "user", task);
 
@@ -1093,7 +1093,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init_bounded(sub_agent, whitelist, role_name);
-    strncpy(sub_harness->cwd, parent_harness->cwd, sizeof(sub_harness->cwd) - 1);
+    snprintf(sub_harness->cwd, sizeof(sub_harness->cwd), "%s", parent_harness->cwd);
 
     belya_agent_add_message(sub_agent, "user", task);
 
