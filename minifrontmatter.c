@@ -42,13 +42,17 @@ static void parse_bracket_list(FrontmatterEntry *entry, const char *raw_val) {
     memcpy(buf, start + 1, inner_len);
     buf[inner_len] = '\0';
 
-    char *token = strtok(buf, ",");
+    char *saveptr = NULL;
+    char *token = strtok_r(buf, ",", &saveptr);
     while (token && entry->list_count < MAX_FM_LIST_ITEMS) {
         char *cleaned = unquote(token);
         if (cleaned && strlen(cleaned) > 0) {
-            entry->list_items[entry->list_count++] = strdup(cleaned);
+            char *item = strdup(cleaned);
+            if (item) {
+                entry->list_items[entry->list_count++] = item;
+            }
         }
-        token = strtok(NULL, ",");
+        token = strtok_r(NULL, ",", &saveptr);
     }
     free(buf);
 }
@@ -152,7 +156,10 @@ Frontmatter *frontmatter_parse(const char *markdown_content) {
                 if (last->list_count < MAX_FM_LIST_ITEMS) {
                     char *item = unquote(trimmed_line + 2);
                     if (item && strlen(item) > 0) {
-                        last->list_items[last->list_count++] = strdup(item);
+                        char *dup_item = strdup(item);
+                        if (dup_item) {
+                            last->list_items[last->list_count++] = dup_item;
+                        }
                     }
                 }
             }
@@ -167,14 +174,21 @@ Frontmatter *frontmatter_parse(const char *markdown_content) {
             char *val = unquote(colon + 1);
 
             if (key && strlen(key) > 0) {
-                FrontmatterEntry *entry = &fm->entries[fm->entry_count++];
-                entry->key = strdup(key);
-                entry->value = strdup(val ? val : "");
-                entry->list_count = 0;
+                char *dup_key = strdup(key);
+                char *dup_val = strdup(val ? val : "");
+                if (dup_key && dup_val) {
+                    FrontmatterEntry *entry = &fm->entries[fm->entry_count++];
+                    entry->key = dup_key;
+                    entry->value = dup_val;
+                    entry->list_count = 0;
 
-                // If bracketed list [a, b, c], parse into list_items
-                if (val && strchr(val, '[') && strchr(val, ']')) {
-                    parse_bracket_list(entry, val);
+                    // If bracketed list [a, b, c], parse into list_items
+                    if (val && strchr(val, '[') && strchr(val, ']')) {
+                        parse_bracket_list(entry, val);
+                    }
+                } else {
+                    if (dup_key) free(dup_key);
+                    if (dup_val) free(dup_val);
                 }
             }
         }
@@ -230,15 +244,25 @@ char *frontmatter_get_list_as_string(const Frontmatter *fm, const char *key, con
             size_t total_len = 0;
             size_t dlen = strlen(delim);
             for (size_t j = 0; j < entry->list_count; j++) {
-                total_len += strlen(entry->list_items[j]) + dlen;
+                if (entry->list_items[j]) {
+                    total_len += strlen(entry->list_items[j]);
+                    if (j > 0) total_len += dlen;
+                }
             }
             char *res = malloc(total_len + 1);
             if (!res) return NULL;
-            res[0] = '\0';
+            char *ptr = res;
             for (size_t j = 0; j < entry->list_count; j++) {
-                if (j > 0) strcat(res, delim);
-                strcat(res, entry->list_items[j]);
+                if (!entry->list_items[j]) continue;
+                if (j > 0) {
+                    memcpy(ptr, delim, dlen);
+                    ptr += dlen;
+                }
+                size_t ilen = strlen(entry->list_items[j]);
+                memcpy(ptr, entry->list_items[j], ilen);
+                ptr += ilen;
             }
+            *ptr = '\0';
             return res;
         }
     }

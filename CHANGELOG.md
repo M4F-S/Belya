@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v7.0.0] — 2026-09-12
+### 🛡️ Production Release & Security Hardening
+- **Security & Integrity Hardening:**
+  - **Git Rollback SHA Validation:** Strict 40-character hexadecimal validation (`is_valid_hex_sha()`) in `belya_agent_rollback_to_checkpoint()` and `belya_agency_dispatch_subagent()`, preventing command injection via tainted git outputs or database state.
+  - **`ftell()` Negative Size Guards:** Guarded against negative return values (`sz < 0`) in `tool_read_file`, `tool_edit_file`, and `tool_apply_patch`, eliminating signed integer underflows that could lead to heap buffer overflows.
+  - **Shell Metacharacter Sanitization:** Implemented `is_safe_shell_path()` in `belya_harness.c`, guarding `preflight_syntax_check`, `tool_git_status`, and `tool_git_diff` from shell breakout attacks.
+  - **Telegram Callback Replay Defense:** Enforced strict `callback_query.message.message_id` verification in `telegram_permission_prompt_callback()`, eliminating cross-prompt authorization hijack and button replay risks.
+  - **Atomic Patch Application Guard:** Fixed `tool_apply_patch()` to abort cleanly and avoid writing partially modified files if patch markers (`=======` or `>>>>>>> REPLACE`) are missing.
+- **Zero-Tolerance Memory Safety & Leak Elimination:**
+  - **Unsafe `realloc` Elimination:** Refactored all dynamic reallocations in `model_adapter.c` (tool call streaming deltas, DSML scavenger, ReAct parser) to use temporary pointers, preventing memory leaks upon OOM.
+  - **MCP Client Memory Fixes:** Fixed memory leak in `mcp_client_call_tool()` when arguments are NULL, added NULL checks on child process allocation and `json_serialize()` returns, and handled `EINTR` in `safe_write()`.
+  - **MiniJSON Robustness:** Added NULL checks for all `calloc` and `strdup` operations in `json_create_*` and `json_obj_add()`, converted float serialization to `%.17g` to prevent buffer overflow with `DBL_MAX`, and enforced `JSON_MAX_DEPTH 128` recursion limit against stack exhaustion.
+  - **Thread-Safe Frontmatter Parsing:** Replaced static `strtok()` with reentrant `strtok_r()` in `minifrontmatter.c`, checked all `strdup()` allocations, and optimized string assembly from $O(N^2)$ to linear $O(N)$ `memcpy`.
+  - **Bounded String Copies:** Converted `strncpy` calls in harness initialization and Telegram session formatters to bounded `snprintf`, guaranteeing zero `-Wstringop-truncation` warnings.
+  - **Context Compaction Overflow Protection:** Fixed token budget math to prevent `size_t` overflow on large context thresholds.
+  - **Telegram Pipeline Memory Cleanup:** Ensured multi-agent triage pipelines are deterministically freed regardless of direct triage responses.
+- **Verification & Benchmarks:**
+  - 100% Pass Rate across Super Strict Test Suite (33/33 tests).
+  - 100% Pass Rate across Frontier 30-Scenario Arena Benchmark (30/30).
+  - Zero warnings under GCC & Clang with `-Wall -Wextra -Werror`.
+  - Zero leaks and zero undefined behaviors under AddressSanitizer and UndefinedBehaviorSanitizer.
+
+---
+
 ## [v6.5.0] — 2026-09-10
 ### 🚀 Added & Enhanced
 - **Belya Agency Sovereign Multi-Agent Architecture:**

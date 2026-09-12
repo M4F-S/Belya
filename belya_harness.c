@@ -26,8 +26,19 @@ static void safe_pipe_write(int fd, const char *data, size_t len) {
     }
 }
 
+static inline bool is_safe_shell_path(const char *p) {
+    if (!p || p[0] == '\0') return false;
+    for (const char *s = p; *s; s++) {
+        if (*s == '"' || *s == '\'' || *s == '$' || *s == '`' ||
+            *s == ';' || *s == '&' || *s == '|' || *s == '\n' || *s == '\r') {
+            return false;
+        }
+    }
+    return true;
+}
+
 static char *preflight_syntax_check(const char *path) {
-    if (!path) return NULL;
+    if (!path || !is_safe_shell_path(path)) return NULL;
     const char *ext = strrchr(path, '.');
     if (!ext) return NULL;
     if (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0 &&
@@ -484,9 +495,9 @@ static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (sz > 200000) {
+    if (sz < 0 || sz > 200000) {
         fclose(f);
-        return strdup("Error: File exceeds maximum safe context read size (200KB). Use offset and limit parameters.");
+        return strdup("Error: File exceeds maximum safe context read size (200KB) or cannot determine size. Use offset and limit parameters.");
     }
 
     char *buf = malloc(sz + 1);
@@ -543,9 +554,9 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    if (sz > 500000) {
+    if (sz < 0 || sz > 500000) {
         fclose(f);
-        return strdup("Error: File exceeds maximum safe edit size (500KB).");
+        return strdup("Error: File exceeds maximum safe edit size (500KB) or cannot determine size.");
     }
 
     char *content = malloc(sz + 1);
@@ -722,6 +733,11 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (sz < 0 || sz > 2000000) {
+        fclose(f);
+        return strdup("Error: File exceeds maximum safe patch size (2MB) or cannot determine size.");
+    }
+
     char *orig = malloc(sz + 1);
     if (!orig) { fclose(f); return strdup("Error: Out of memory."); }
     size_t r = fread(orig, 1, sz, f);
@@ -739,7 +755,11 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
         while ((p = strstr(p, search_marker)) != NULL) {
             p += strlen(search_marker);
             const char *div = strstr(p, div_marker);
-            if (!div) break;
+            if (!div) {
+                if (cur_doc != orig) free(cur_doc);
+                free(orig);
+                return strdup("Error: Malformed patch block (missing ======= divider).");
+            }
 
             size_t search_len = div - p;
             char *search_str = malloc(search_len + 1);
@@ -748,7 +768,12 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
 
             const char *rep_start = div + strlen(div_marker);
             const char *rep_end = strstr(rep_start, replace_marker);
-            if (!rep_end) { free(search_str); break; }
+            if (!rep_end) {
+                free(search_str);
+                if (cur_doc != orig) free(cur_doc);
+                free(orig);
+                return strdup("Error: Malformed patch block (missing >>>>>>> REPLACE marker).");
+            }
 
             size_t rep_len = rep_end - rep_start;
             char *rep_str = malloc(rep_len + 1);
@@ -931,6 +956,7 @@ static char *tool_git_status(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *dir = (path && strlen(path) > 0) ? path : (g_harness && strlen(g_harness->cwd) > 0 ? g_harness->cwd : ".");
+    if (dir && !is_safe_shell_path(dir)) return strdup("Error: Invalid characters in directory path.");
 
     DynString cmd = dyn_str_new();
     dyn_str_appendf(&cmd, "cd \"%s\" 2>&1 && git status", dir);
@@ -955,6 +981,7 @@ static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     bool staged = json_obj_get_bool(args, "staged", false);
     const char *path = json_obj_get_str(args, "path");
+    if (path && !is_safe_shell_path(path)) return strdup("Error: Invalid characters in diff path.");
 
     DynString cmd = dyn_str_new();
     if (g_harness && strlen(g_harness->cwd) > 0) {
@@ -1227,7 +1254,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     // 6. Git Rollback Guard Execution
     bool rolled_back = false;
-    if (has_write && git_repo_available) {
+    if (has_write && git_repo_available && is_valid_hex_sha(snapshot_sha)) {
         if (subagent_failed) {
             char reset_cmd[256];
             snprintf(reset_cmd, sizeof(reset_cmd), "git reset --hard %s 2>/dev/null && git clean -fd 2>/dev/null", snapshot_sha);
@@ -1803,19 +1830,19 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     h->agent = agent;
     if (role_name) {
-        strncpy(h->active_role, role_name, sizeof(h->active_role) - 1);
+        snprintf(h->active_role, sizeof(h->active_role), "%s", role_name);
         if (strcmp(role_name, "tester") == 0) {
             h->bash_restricted = true;
         }
     }
     if (tools_whitelist) {
-        strncpy(h->tools_whitelist, tools_whitelist, sizeof(h->tools_whitelist) - 1);
+        snprintf(h->tools_whitelist, sizeof(h->tools_whitelist), "%s", tools_whitelist);
         if (strstr(tools_whitelist, "restricted_bash") != NULL) {
             h->bash_restricted = true;
         }
     }
     if (getcwd(h->cwd, sizeof(h->cwd)) == NULL) {
-        strncpy(h->cwd, ".", sizeof(h->cwd));
+        snprintf(h->cwd, sizeof(h->cwd), ".");
     }
     g_harness = h;
 

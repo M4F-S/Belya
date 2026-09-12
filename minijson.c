@@ -85,8 +85,14 @@ static char *parse_string_raw(const char **src) {
     return NULL;
 }
 
-static JsonValue *parse_object(const char **src) {
+#define JSON_MAX_DEPTH 128
+
+static JsonValue *parse_value_depth(const char **src, int depth);
+
+static JsonValue *parse_object(const char **src, int depth) {
+    if (depth >= JSON_MAX_DEPTH) return NULL;
     JsonValue *obj = json_create_object();
+    if (!obj) return NULL;
     (*src)++; // Skip '{'
     *src = skip_ws(*src);
     if (**src == '}') {
@@ -102,7 +108,7 @@ static JsonValue *parse_object(const char **src) {
         if (**src != ':') { free(key); goto error; }
         (*src)++; // Skip ':'
         *src = skip_ws(*src);
-        JsonValue *val = parse_value(src);
+        JsonValue *val = parse_value_depth(src, depth + 1);
         if (!val) { free(key); goto error; }
         json_obj_add(obj, key, val);
         free(key);
@@ -122,8 +128,10 @@ error:
     return NULL;
 }
 
-static JsonValue *parse_array(const char **src) {
+static JsonValue *parse_array(const char **src, int depth) {
+    if (depth >= JSON_MAX_DEPTH) return NULL;
     JsonValue *arr = json_create_array();
+    if (!arr) return NULL;
     (*src)++; // Skip '['
     *src = skip_ws(*src);
     if (**src == ']') {
@@ -132,7 +140,7 @@ static JsonValue *parse_array(const char **src) {
     }
     while (**src) {
         *src = skip_ws(*src);
-        JsonValue *val = parse_value(src);
+        JsonValue *val = parse_value_depth(src, depth + 1);
         if (!val) goto error;
         json_arr_add(arr, val);
         *src = skip_ws(*src);
@@ -159,11 +167,11 @@ static JsonValue *parse_number(const char **src) {
     return json_create_number(val);
 }
 
-static JsonValue *parse_value(const char **src) {
+static JsonValue *parse_value_depth(const char **src, int depth) {
     *src = skip_ws(*src);
     if (!**src) return NULL;
-    if (**src == '{') return parse_object(src);
-    if (**src == '[') return parse_array(src);
+    if (**src == '{') return parse_object(src, depth);
+    if (**src == '[') return parse_array(src, depth);
     if (**src == '\"') {
         char *s = parse_string_raw(src);
         if (!s) return NULL;
@@ -177,6 +185,10 @@ static JsonValue *parse_value(const char **src) {
     return parse_number(src);
 }
 
+static JsonValue *parse_value(const char **src) {
+    return parse_value_depth(src, 0);
+}
+
 JsonValue *json_parse(const char *src) {
     if (!src) return NULL;
     const char *p = src;
@@ -185,25 +197,33 @@ JsonValue *json_parse(const char *src) {
 
 JsonValue *json_create_object(void) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_OBJECT;
     return v;
 }
 
 JsonValue *json_create_array(void) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_ARRAY;
     return v;
 }
 
 JsonValue *json_create_string(const char *val) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_STRING;
     v->u.string = strdup(val ? val : "");
+    if (!v->u.string) {
+        free(v);
+        return NULL;
+    }
     return v;
 }
 
 JsonValue *json_create_number(double val) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_NUMBER;
     v->u.number = val;
     return v;
@@ -211,6 +231,7 @@ JsonValue *json_create_number(double val) {
 
 JsonValue *json_create_bool(bool val) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_BOOL;
     v->u.boolean = val;
     return v;
@@ -218,6 +239,7 @@ JsonValue *json_create_bool(bool val) {
 
 JsonValue *json_create_null(void) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
+    if (!v) return NULL;
     v->type = JSON_NULL;
     return v;
 }
@@ -234,7 +256,12 @@ void json_obj_add(JsonValue *obj, const char *key, JsonValue *val) {
         obj->u.object.members = new_members;
         obj->u.object.cap = new_cap;
     }
-    obj->u.object.members[obj->u.object.count].key = strdup(key);
+    char *k = strdup(key);
+    if (!k) {
+        fprintf(stderr, "[Fatal] Out of memory in json_obj_add duplicating key\n");
+        abort();
+    }
+    obj->u.object.members[obj->u.object.count].key = k;
     obj->u.object.members[obj->u.object.count].value = val;
     obj->u.object.count++;
 }
@@ -289,10 +316,7 @@ static void serialize_internal(const JsonValue *val, DynString *ds) {
         case JSON_BOOL: dyn_str_append(ds, val->u.boolean ? "true" : "false"); break;
         case JSON_NUMBER: {
             char buf[64];
-            snprintf(buf, sizeof(buf), "%f", val->u.number);
-            char *p = buf + strlen(buf) - 1;
-            while (*p == '0' && p > buf) *p-- = '\0';
-            if (*p == '.') *p = '\0';
+            snprintf(buf, sizeof(buf), "%.17g", val->u.number);
             dyn_str_append(ds, buf);
             break;
         }
