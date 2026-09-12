@@ -127,41 +127,102 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         }
     }
 
-    // Handle cd built-in directly to maintain working directory persistence
-    if (strncmp(cmd, "cd ", 3) == 0 || strcmp(cmd, "cd") == 0) {
-        const char *target = strlen(cmd) > 3 ? cmd + 3 : getenv("HOME");
-        while (*target == ' ') target++;
-        if (!target || strlen(target) == 0) target = getenv("HOME");
-        if (!target) target = ".";
+    // Handle cd built-in directly to maintain working directory persistence across tool invocations.
+    // Also supports compound commands starting with cd (e.g. "cd /dir && make test" or "cd /dir; git status").
+    while (cmd && (strncmp(cmd, "cd ", 3) == 0 || strcmp(cmd, "cd") == 0)) {
+        const char *after_cd = strlen(cmd) > 3 ? cmd + 3 : "";
+        while (*after_cd == ' ') after_cd++;
+
+        // Find separator (&& or ;) outside of quotes
+        const char *sep = NULL;
+        size_t sep_len = 0;
+        char quote = 0;
+        for (const char *p = after_cd; *p; p++) {
+            if (*p == '\'' || *p == '"') {
+                if (quote == 0) quote = *p;
+                else if (quote == *p) quote = 0;
+            } else if (quote == 0) {
+                if (*p == ';') {
+                    sep = p;
+                    sep_len = 1;
+                    break;
+                } else if (*p == '&' && *(p + 1) == '&') {
+                    sep = p;
+                    sep_len = 2;
+                    break;
+                }
+            }
+        }
+
+        char target_dir[4096];
+        if (sep) {
+            size_t tlen = sep - after_cd;
+            if (tlen >= sizeof(target_dir)) tlen = sizeof(target_dir) - 1;
+            memcpy(target_dir, after_cd, tlen);
+            target_dir[tlen] = '\0';
+        } else {
+            snprintf(target_dir, sizeof(target_dir), "%s", after_cd);
+        }
+
+        // Trim trailing whitespace from target
+        size_t t_end = strlen(target_dir);
+        while (t_end > 0 && isspace((unsigned char)target_dir[t_end - 1])) {
+            target_dir[--t_end] = '\0';
+        }
+
+        const char *dest = target_dir;
+        if (strlen(dest) == 0) dest = getenv("HOME");
+        if (!dest) dest = ".";
 
         char clean_path[4096];
-        size_t tlen = strlen(target);
-        if (tlen >= 2 && ((target[0] == '\"' && target[tlen-1] == '\"') || (target[0] == '\'' && target[tlen-1] == '\''))) {
-            size_t copy_len = (tlen - 2 < sizeof(clean_path) - 1) ? (tlen - 2) : (sizeof(clean_path) - 1);
-            memcpy(clean_path, target + 1, copy_len);
+        size_t dlen = strlen(dest);
+        if (dlen >= 2 && ((dest[0] == '"' && dest[dlen-1] == '"') || (dest[0] == '\'' && dest[dlen-1] == '\''))) {
+            size_t copy_len = (dlen - 2 < sizeof(clean_path) - 1) ? (dlen - 2) : (sizeof(clean_path) - 1);
+            memcpy(clean_path, dest + 1, copy_len);
             clean_path[copy_len] = '\0';
         } else {
-            snprintf(clean_path, sizeof(clean_path), "%s", target);
+            snprintf(clean_path, sizeof(clean_path), "%s", dest);
         }
 
         char resolved[8192];
-        if (clean_path[0] == '/' || !g_harness) {
+        if (clean_path[0] == '/' || !g_harness || strlen(g_harness->cwd) == 0) {
             snprintf(resolved, sizeof(resolved), "%s", clean_path);
         } else {
             snprintf(resolved, sizeof(resolved), "%s/%s", g_harness->cwd, clean_path);
         }
 
-        if (chdir(resolved) == 0) {
-            if (g_harness && getcwd(g_harness->cwd, sizeof(g_harness->cwd))) {
+        if (chdir(resolved) != 0) {
+            DynString err_ds = dyn_str_new();
+            dyn_str_appendf(&err_ds, "Error: Failed to change directory to '%s': %s", clean_path, strerror(errno));
+            return err_ds.data;
+        }
+
+        if (g_harness) {
+            if (!getcwd(g_harness->cwd, sizeof(g_harness->cwd))) {
+                snprintf(g_harness->cwd, sizeof(g_harness->cwd), "%.*s", (int)(sizeof(g_harness->cwd)-1), resolved);
+            }
+        }
+
+        // If this was a standalone cd (no separator or empty remainder), return directory change notice
+        if (!sep) {
+            if (g_harness && strlen(g_harness->cwd) > 0) {
                 DynString res = dyn_str_new();
                 dyn_str_appendf(&res, "Changed working directory to: %s", g_harness->cwd);
                 return res.data;
             }
             return strdup("Directory changed successfully.");
         }
-        DynString err_ds = dyn_str_new();
-        dyn_str_appendf(&err_ds, "Error: Failed to change directory to '%s': %s", clean_path, strerror(errno));
-        return err_ds.data;
+
+        // Advance past separator and whitespace for the remaining command
+        const char *remainder = sep + sep_len;
+        while (*remainder == ' ') remainder++;
+        if (strlen(remainder) == 0) {
+            DynString res = dyn_str_new();
+            dyn_str_appendf(&res, "Changed working directory to: %s", g_harness ? g_harness->cwd : resolved);
+            return res.data;
+        }
+
+        cmd = remainder;
     }
 
     DynString full_cmd_ds = dyn_str_new();

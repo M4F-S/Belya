@@ -982,6 +982,18 @@ void test_all_17_tools_exhaustive(void) {
     free(out_b1);
     json_free(b1);
 
+    // 1b. bash compound cd command
+    char orig_test_cwd[4096];
+    if (!getcwd(orig_test_cwd, sizeof(orig_test_cwd))) orig_test_cwd[0] = '\0';
+    JsonValue *b_cd = json_create_object();
+    json_obj_add(b_cd, "command", json_create_string("cd /tmp && pwd"));
+    char *out_cd = cb_bash(agent, b_cd);
+    assert(out_cd && strstr(out_cd, "/tmp") != NULL);
+    free(out_cd);
+    json_free(b_cd);
+    if (strlen(orig_test_cwd) > 0) { int ret = chdir(orig_test_cwd); (void)ret; }
+    if (h) snprintf(h->cwd, sizeof(h->cwd), "%s", orig_test_cwd);
+
     JsonValue *b2 = json_create_object();
     char *out_b2 = cb_bash(agent, b2);
     assert(out_b2 && strstr(out_b2, "Missing command") != NULL);
