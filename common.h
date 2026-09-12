@@ -192,4 +192,12 @@ static inline bool contains_case_insensitive(const char *haystack, const char *n
     return false;
 }
 
+static inline bool is_valid_hex_sha(const char *s) {
+    if (!s || strlen(s) != 40) return false;
+    for (int i = 0; i < 40; i++) {
+        if (!isxdigit((unsigned char)s[i])) return false;
+    }
+    return true;
+}
+
 #endif

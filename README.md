@@ -1,13 +1,13 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v6.5.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v6.5.0)
+[![Release](https://img.shields.io/badge/Release-v7.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
 [![Tests](https://img.shields.io/badge/Unit_Tests-33%2F33_Passed_(100%25)-brightgreen.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
 [![Tools](https://img.shields.io/badge/Native_Tools-18_Tools-informational.svg)]()
 [![Memory](https://img.shields.io/badge/Memory_Footprint-<3.5MB_Idle-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-<210KB-informational.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-<220KB-informational.svg)]()
 
 A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
 
@@ -16,7 +16,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
 ## Table of Contents
 - [Architectural Overview](#architectural-overview)
 - [Belya vs Almaz: Champion vs Challenger Architecture](#belya-vs-almaz-champion-vs-challenger-architecture)
-- [Key Capabilities & v6.5.0 Architectural Innovations](#key-capabilities--v650-architectural-innovations)
+- [Key Capabilities & v7.0.0 Architectural Innovations](#key-capabilities--v700-architectural-innovations)
 - [Multi-Arena Benchmarks & Frontier Agent Evaluation](#multi-arena-benchmarks--frontier-agent-evaluation)
   - [1. Comprehensive Scorecard (30/30 - 100% Passed)](#1-comprehensive-scorecard-3030---100-passed)
   - [2. Arena-by-Arena Capabilities](#2-arena-by-arena-capabilities)
@@ -97,7 +97,7 @@ Belya operates an empirical **Champion / Challenger** production model deployed 
                     ▼                                                   ▼
        ┌──────────────────────────┐                       ┌──────────────────────────┐
        │      Belya (Champion)    │                       │     Almaz (Challenger)   │
-       │    Branch: main (v6.5.0) │                       │   Branch: evolve/almaz   │
+       │    Branch: main (v7.0.0) │                       │   Branch: evolve/almaz   │
        │     Path: /opt/belya     │                       │     Path: /opt/almaz     │
        │   Telegram: Primary Bot  │                       │   Telegram: @AlmaztheBot │
        └────────────┬─────────────┘                       └─────────────┬────────────┘
@@ -109,13 +109,13 @@ Belya operates an empirical **Champion / Challenger** production model deployed 
             [Production Services]                             [Hot-Path Mutations  ]
 ```
 
-- **Belya (Champion)**: Stable production baseline on branch `main`. Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v6.5.0`) with 100% test guarantees under AddressSanitizer.
+- **Belya (Champion)**: Stable production baseline on branch `main`. Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v7.0.0`) with 100% test guarantees under AddressSanitizer.
 - **Almaz (Challenger)**: Autonomous evolutionary sibling on branch `evolve/almaz`. Runs as `almaz.service` in `/opt/almaz` on the VPS (~3.4 MB RAM) connected to `@AlmaztheBot`. Runs autonomous self-mutation supervisors to evolve internal C routines (e.g., +16.98% DynString throughput evolution).
 - **Belya Agency**: The sovereign multi-agent orchestration architecture is **natively embedded in both Belya and Almaz**. It is not a third project; it is the core multi-agent engine powering both systems via `--agency` (CLI) and `/agency` (Telegram/REPL).
 
 ---
 
-## Key Capabilities & v6.5.0 Architectural Innovations
+## Key Capabilities & v7.0.0 Architectural Innovations
 
 - **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required (<3MB idle RAM footprint, <180KB binary size).
 - **Resilient Whitespace-Normalized Editing & Diagnostic Near-Match Hints:** `edit_file` incorporates a fuzzy whitespace-tolerant fallback that compares stripped lines if exact substring matching fails, alongside diagnostic anchor reporting showing similar lines to eliminate editing friction.

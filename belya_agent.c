@@ -45,9 +45,14 @@ static void free_single_message(BelyaMessage *m) {
 
 BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions) {
     BelyaAgent *agent = calloc(1, sizeof(BelyaAgent));
+    if (!agent) return NULL;
     agent->gateway = gw;
     agent->msg_cap = 64;
     agent->messages = calloc(agent->msg_cap, sizeof(BelyaMessage));
+    if (!agent->messages) {
+        free(agent);
+        return NULL;
+    }
     agent->max_context_messages = 80;
     strncpy(agent->db_path, db_path ? db_path : "", sizeof(agent->db_path) - 1);
     
@@ -1254,6 +1259,12 @@ BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name
     m->max_turns = c_turns > 0 ? c_turns : 5;
     m->instructions = strdup(c_inst ? c_inst : "");
 
+    if (!m->name || !m->role || !m->tools || !m->model || !m->instructions) {
+        belya_agent_manifest_free(m);
+        sqlite3_finalize(stmt);
+        return NULL;
+    }
+
     sqlite3_finalize(stmt);
     return m;
 }
@@ -1419,7 +1430,7 @@ bool belya_agent_rollback_to_checkpoint(BelyaAgent *agent, const char *checkpoin
     const char *sha = (const char *)sqlite3_column_text(stmt, 2);
     int target_msg_count = sqlite3_column_int(stmt, 3);
 
-    if (sha && strlen(sha) == 40) {
+    if (sha && is_valid_hex_sha(sha)) {
         char cmd[256];
         snprintf(cmd, sizeof(cmd), "git checkout %s -- . 2>/dev/null || git restore --source=%s . 2>/dev/null", sha, sha);
         int ret = system(cmd);
@@ -1604,7 +1615,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 should_save = true;
             size_t est_tokens = belya_agent_total_tokens(agent);
             size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
-            if (est_tokens > (budget * 80 / 100) && agent->msg_count > 10)
+            if (est_tokens > ((budget / 100) * 80) && agent->msg_count > 10)
                 should_save = true;
         }
         if (agent->turns_since_save >= agent->auto_save_interval)
@@ -1651,7 +1662,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         }
         size_t est_tokens = belya_agent_total_tokens(agent);
         size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
-        if (est_tokens > (budget * agent->compaction_percent / 100) && agent->msg_count > agent->compaction_keep) {
+        if (est_tokens > ((budget / 100) * agent->compaction_percent) && agent->msg_count > agent->compaction_keep) {
             keep = agent->compaction_keep;
             needs_compaction = true;
             reason = "token budget threshold";

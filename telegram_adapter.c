@@ -278,6 +278,13 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
                     if (cb) {
                         const char *cb_id = json_obj_get_str(cb, "id");
                         const char *data = json_obj_get_str(cb, "data");
+                        JsonValue *cb_msg = json_obj_get(cb, "message");
+                        double cb_msg_id = cb_msg ? json_obj_get_num(cb_msg, "message_id", 0) : 0;
+
+                        // Only accept authorization decision if callback matches the message we just prompted
+                        if (msg_id > 0 && cb_msg_id > 0 && (long)cb_msg_id != (long)msg_id) {
+                            continue;
+                        }
 
                         if (data) {
                             if (strcmp(data, "approve") == 0) {
@@ -514,7 +521,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     if (strlen(sid) == 0) sid = "telegram_session";
                     if (belya_agent_save_session(harness->agent, sid, sid)) {
                         char smsg[256];
-                        snprintf(smsg, sizeof(smsg), "💾 Session <code>%s</code> saved to database.", sid);
+                        snprintf(smsg, sizeof(smsg), "💾 Session <code>%.128s</code> saved to database.", sid);
                         telegram_bot_send_message(bot, chat_id_str, smsg);
                     } else {
                         telegram_bot_send_message(bot, chat_id_str, "❌ Failed to save session.");
@@ -528,7 +535,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     if (strlen(sid) > 0) {
                         if (belya_agent_load_session(harness->agent, sid)) {
                             char rmsg[256];
-                            snprintf(rmsg, sizeof(rmsg), "📂 Session <code>%s</code> loaded (%zu messages restored).", sid, harness->agent->msg_count);
+                            snprintf(rmsg, sizeof(rmsg), "📂 Session <code>%.128s</code> loaded (%zu messages restored).", sid, harness->agent->msg_count);
                             telegram_bot_send_message(bot, chat_id_str, rmsg);
                         } else {
                             telegram_bot_send_message(bot, chat_id_str, "❌ Session not found.");
@@ -610,6 +617,8 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                                 telegram_bot_send_chunks(bot, chat_id_str, report);
                                 free(report);
                             }
+                        }
+                        if (pipeline) {
                             for (size_t k = 0; k < count; k++) free(pipeline[k]);
                             free(pipeline);
                         }

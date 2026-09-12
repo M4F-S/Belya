@@ -87,7 +87,12 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                     
                     if (idx >= ctx->tool_call_cap) {
                         size_t new_cap = idx + 4;
-                        ctx->tool_calls = realloc(ctx->tool_calls, sizeof(ModelParsedToolCall) * new_cap);
+                        void *tmp = realloc(ctx->tool_calls, sizeof(ModelParsedToolCall) * new_cap);
+                        if (!tmp) {
+                            fprintf(stderr, "[Fatal] Out of memory reallocating tool_calls in stream parser\n");
+                            abort();
+                        }
+                        ctx->tool_calls = tmp;
                         for (size_t k = ctx->tool_call_cap; k < new_cap; k++) {
                             memset(&ctx->tool_calls[k], 0, sizeof(ModelParsedToolCall));
                         }
@@ -113,7 +118,12 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                                 ctx->tool_calls[idx].name = strdup(f_name);
                             } else {
                                 size_t nlen = strlen(ctx->tool_calls[idx].name) + strlen(f_name) + 1;
-                                ctx->tool_calls[idx].name = realloc(ctx->tool_calls[idx].name, nlen);
+                                char *ntmp = realloc(ctx->tool_calls[idx].name, nlen);
+                                if (!ntmp) {
+                                    fprintf(stderr, "[Fatal] Out of memory appending tool name\n");
+                                    abort();
+                                }
+                                ctx->tool_calls[idx].name = ntmp;
                                 strcat(ctx->tool_calls[idx].name, f_name);
                             }
                         }
@@ -123,7 +133,12 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                                 ctx->tool_calls[idx].arguments_json = strdup(f_args);
                             } else {
                                 size_t alen = strlen(ctx->tool_calls[idx].arguments_json) + strlen(f_args) + 1;
-                                ctx->tool_calls[idx].arguments_json = realloc(ctx->tool_calls[idx].arguments_json, alen);
+                                char *atmp = realloc(ctx->tool_calls[idx].arguments_json, alen);
+                                if (!atmp) {
+                                    fprintf(stderr, "[Fatal] Out of memory appending tool arguments\n");
+                                    abort();
+                                }
+                                ctx->tool_calls[idx].arguments_json = atmp;
                                 strcat(ctx->tool_calls[idx].arguments_json, f_args);
                             }
                         }
@@ -413,16 +428,21 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
                     res.has_tool_call = true;
                     res.tool_call_count = tc_arr->u.array.count;
                     res.tool_calls = calloc(res.tool_call_count, sizeof(ModelParsedToolCall));
-                    for (size_t i = 0; i < res.tool_call_count; i++) {
-                        JsonValue *tc_item = tc_arr->u.array.items[i];
-                        const char *t_id = json_obj_get_str(tc_item, "id");
-                        JsonValue *fn = json_obj_get(tc_item, "function");
-                        const char *f_name = fn ? json_obj_get_str(fn, "name") : "unknown";
-                        const char *f_args = fn ? json_obj_get_str(fn, "arguments") : "{}";
+                    if (!res.tool_calls) {
+                        res.tool_call_count = 0;
+                        res.has_tool_call = false;
+                    } else {
+                        for (size_t i = 0; i < res.tool_call_count; i++) {
+                            JsonValue *tc_item = tc_arr->u.array.items[i];
+                            const char *t_id = json_obj_get_str(tc_item, "id");
+                            JsonValue *fn = json_obj_get(tc_item, "function");
+                            const char *f_name = fn ? json_obj_get_str(fn, "name") : "unknown";
+                            const char *f_args = fn ? json_obj_get_str(fn, "arguments") : "{}";
 
-                        res.tool_calls[i].id = strdup(t_id ? t_id : "call_default");
-                        res.tool_calls[i].name = strdup(f_name ? f_name : "");
-                        res.tool_calls[i].arguments_json = strdup(f_args ? f_args : "{}");
+                            res.tool_calls[i].id = strdup(t_id ? t_id : "call_default");
+                            res.tool_calls[i].name = strdup(f_name ? f_name : "");
+                            res.tool_calls[i].arguments_json = strdup(f_args ? f_args : "{}");
+                        }
                     }
                 }
             }
@@ -510,8 +530,14 @@ static void try_add_scavenged_call(const char *json_str, const char *const *know
             }
 
             if (*count >= *cap) {
-                *cap = (*cap == 0) ? 4 : (*cap * 2);
-                *out_calls = realloc(*out_calls, sizeof(ModelParsedToolCall) * (*cap));
+                size_t new_cap = (*cap == 0) ? 4 : (*cap * 2);
+                void *tmp = realloc(*out_calls, sizeof(ModelParsedToolCall) * new_cap);
+                if (!tmp) {
+                    fprintf(stderr, "[Fatal] Out of memory in try_add_scavenged_call\n");
+                    abort();
+                }
+                *out_calls = tmp;
+                *cap = new_cap;
             }
 
             char id_buf[64];
@@ -585,8 +611,14 @@ static void scavenge_dsml_tool_calls(const char *src, const char *const *known_t
         if (is_known_tool(tname, known_tools, known_count)) {
             char *args_json = json_serialize(args_obj);
             if (*count >= *cap) {
-                *cap = (*cap == 0) ? 4 : (*cap * 2);
-                *out_calls = realloc(*out_calls, sizeof(ModelParsedToolCall) * (*cap));
+                size_t new_cap = (*cap == 0) ? 4 : (*cap * 2);
+                void *tmp = realloc(*out_calls, sizeof(ModelParsedToolCall) * new_cap);
+                if (!tmp) {
+                    fprintf(stderr, "[Fatal] Out of memory in scavenge_dsml_tool_calls\n");
+                    abort();
+                }
+                *out_calls = tmp;
+                *cap = new_cap;
             }
             char id_buf[64];
             snprintf(id_buf, sizeof(id_buf), "dsml_%zu", *count + 1);
@@ -666,10 +698,19 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
 }
 
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model) {
+    if (!endpoint) return NULL;
     ModelGateway *gw = calloc(1, sizeof(ModelGateway));
+    if (!gw) return NULL;
     gw->endpoint = strdup(endpoint);
     gw->api_key = strdup(api_key ? api_key : "");
     gw->model = strdup(model ? model : "hermes-3");
+    if (!gw->endpoint || !gw->api_key || !gw->model) {
+        if (gw->endpoint) free(gw->endpoint);
+        if (gw->api_key) free(gw->api_key);
+        if (gw->model) free(gw->model);
+        free(gw);
+        return NULL;
+    }
     gw->timeout_sec = 120;
     gw->max_retries = 3;
     gw->streaming = true;

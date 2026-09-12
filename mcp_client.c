@@ -5,6 +5,7 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <errno.h>
 
 static char *read_line_timeout(int fd, int timeout_sec) {
     DynString ds = dyn_str_new();
@@ -12,7 +13,9 @@ static char *read_line_timeout(int fd, int timeout_sec) {
     gettimeofday(&start, NULL);
 
     int flags = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags != -1) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
 
     while (1) {
         char c;
@@ -41,7 +44,11 @@ static char *read_line_timeout(int fd, int timeout_sec) {
 static void safe_write(int fd, const char *data, size_t len) {
     while (len > 0) {
         ssize_t w = write(fd, data, len);
-        if (w <= 0) break;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (w == 0) break;
         data += w;
         len -= (size_t)w;
     }
@@ -81,6 +88,11 @@ MCPClient *mcp_client_start(const char *command_line) {
     close(stdout_pipe[1]);
 
     MCPClient *client = calloc(1, sizeof(MCPClient));
+    if (!client) {
+        close(stdin_pipe[1]);
+        close(stdout_pipe[0]);
+        return NULL;
+    }
     client->command = strdup(command_line);
     client->stdin_fd = stdin_pipe[1];
     client->stdout_fd = stdout_pipe[0];
@@ -104,6 +116,10 @@ MCPClient *mcp_client_start(const char *command_line) {
 
     char *req_str = json_serialize(init_req);
     json_free(init_req);
+    if (!req_str) {
+        mcp_client_close(client);
+        return NULL;
+    }
 
     safe_write(client->stdin_fd, req_str, strlen(req_str));
     safe_write(client->stdin_fd, "\n", 1);
@@ -145,6 +161,7 @@ JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *
 
     char *req_str = json_serialize(req);
     json_free(req);
+    if (!req_str) return NULL;
 
     safe_write(client->stdin_fd, req_str, strlen(req_str));
     safe_write(client->stdin_fd, "\n", 1);
@@ -177,6 +194,7 @@ JsonValue *mcp_client_list_tools(MCPClient *client) {
     // Clone tools array so we can free the wrapper resp
     char *tools_str = json_serialize(tools);
     json_free(resp);
+    if (!tools_str) return NULL;
 
     JsonValue *tools_clone = json_parse(tools_str);
     free(tools_str);
@@ -188,12 +206,20 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
 
     JsonValue *params = json_create_object();
     json_obj_add(params, "name", json_create_string(tool_name));
-    json_obj_add(params, "arguments", (JsonValue *)(arguments ? arguments : json_create_object()));
+    bool allocated_args = false;
+    if (arguments) {
+        json_obj_add(params, "arguments", (JsonValue *)arguments);
+    } else {
+        json_obj_add(params, "arguments", json_create_object());
+        allocated_args = true;
+    }
 
     JsonValue *resp = mcp_client_request(client, "tools/call", params);
 
-    // Detach arguments if shared
-    params->u.object.members[1].value = NULL;
+    // Detach arguments if shared; if we allocated it, let json_free clean it up
+    if (!allocated_args) {
+        params->u.object.members[1].value = NULL;
+    }
     json_free(params);
 
     if (!resp) return strdup("Error: MCP server request timed out or returned empty response.");
@@ -226,8 +252,10 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
         }
     } else {
         char *serialized = json_serialize(result);
-        dyn_str_append(&out, serialized);
-        free(serialized);
+        if (serialized) {
+            dyn_str_append(&out, serialized);
+            free(serialized);
+        }
     }
 
     json_free(resp);
