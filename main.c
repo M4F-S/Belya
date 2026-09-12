@@ -119,12 +119,17 @@ int main(int argc, char **argv) {
 
     BelyaAgent *agent = belya_agent_init(gateway, "belya_memory.sqlite", default_system_prompt);
 
-    // If resume flag is provided, restore session
+    // If resume flag is provided, restore session.
+    // In telegram mode with no explicit resume flag, auto-resume active telegram session if present.
     if (resume_session_id) {
         if (belya_agent_load_session(agent, resume_session_id)) {
             printf("\033[1;32m[Session Restored]\033[0m Successfully resumed session '%s' (%zu messages loaded).\n", resume_session_id, agent->msg_count);
         } else {
             printf("\033[1;33m[Session Alert]\033[0m Session '%s' not found. Starting fresh session.\n", resume_session_id);
+        }
+    } else if (telegram_mode) {
+        if (belya_agent_load_session(agent, "telegram_active")) {
+            printf("\033[1;32m[Telegram Session Restored]\033[0m Successfully auto-resumed 'telegram_active' (%zu messages loaded).\n", agent->msg_count);
         }
     }
 

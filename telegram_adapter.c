@@ -564,6 +564,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                 if (strcmp(text, "/clear") == 0 || strcmp(text, "/reset") == 0 || strcmp(text, "/new") == 0) {
                     belya_agent_clear_history(harness->agent);
+                    belya_agent_save_session(harness->agent, "telegram_active", "Active Telegram Session");
                     telegram_bot_send_message(bot, chat_id_str, "🧹 Session reset. Conversation history cleared (system prompt and persistent SQLite memory preserved).");
                     continue;
                 }
@@ -760,6 +761,11 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
                 }
                 dyn_str_free(&accum_content);
+
+                // Auto-persist active session to SQLite so conversations survive restarts
+                if (harness && harness->agent && harness->agent->db) {
+                    belya_agent_save_session(harness->agent, "telegram_active", "Active Telegram Session");
+                }
 
             }
 

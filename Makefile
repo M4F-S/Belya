@@ -33,7 +33,7 @@ $(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(BENCHMARK_SRCS) $(LIBS)
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(BENCHMARK_TARGET) belya_memory.sqlite test_*.sqlite* test_sample.txt bench_mem.sqlite* .belya_history 
+	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(BENCHMARK_TARGET) test_*.sqlite* test_sample.txt bench_mem.sqlite* .belya_history 
 
 .PHONY: all test benchmark clean
 
