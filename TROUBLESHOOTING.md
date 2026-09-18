@@ -43,3 +43,7 @@ This registry contains known failure traces, compiler diagnostic patterns, and r
 ## Pattern: syntax error near unexpected token
 - **Root Cause**: Malformed bash command syntax, unescaped quotes, or unmatched parentheses/brackets in shell string.
 - **Remedy**: Re-check shell quoting, escape special characters, and run simple commands without nesting complex subshells.
+
+## Pattern: HTTP 401 from LLM gateway (despite valid MODEL_API_KEY)
+- **Root Cause**: Either (a) the request fingerprint is rejected — relay gateways that filter clients by User-Agent return 401 *before* the API key is evaluated, and if `MODEL_USER_AGENT` is unset libcurl sends a generic `curl/<version>` UA; or (b) the `Authorization: Bearer` header itself is malformed.
+- **Remedy**: Inspect the exact outbound headers (e.g., run a local reverse proxy between Belya and the gateway, or check gateway logs). Confirm the `Authorization` header carries your real key — older builds shipped a redacted `Bearer ***` placeholder that 401s every provider. Then set `MODEL_USER_AGENT` (see `.env.example`) to a fingerprint the gateway accepts (e.g. `claude-cli/2.0.0 (external, cli)`); the default is `BelyaAgent/4.0 (Autonomous C99 Engine)`.

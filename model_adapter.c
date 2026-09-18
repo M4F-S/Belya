@@ -219,6 +219,8 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             return res;
         }
         curl_easy_reset(curl); // Resets options while preserving live TCP/TLS connection & DNS cache
+        curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                         self->user_agent ? self->user_agent : "BelyaAgent/4.0 (Autonomous C99 Engine)");
 
         struct curl_slist *headers = NULL;
         headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -704,10 +706,13 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->endpoint = strdup(endpoint);
     gw->api_key = strdup(api_key ? api_key : "");
     gw->model = strdup(model ? model : "hermes-3");
-    if (!gw->endpoint || !gw->api_key || !gw->model) {
+    const char *ua_env = getenv("MODEL_USER_AGENT");
+    gw->user_agent = strdup(ua_env && strlen(ua_env) > 0 ? ua_env : "BelyaAgent/4.0 (Autonomous C99 Engine)");
+    if (!gw->endpoint || !gw->api_key || !gw->model || !gw->user_agent) {
         if (gw->endpoint) free(gw->endpoint);
         if (gw->api_key) free(gw->api_key);
         if (gw->model) free(gw->model);
+        if (gw->user_agent) free(gw->user_agent);
         free(gw);
         return NULL;
     }
@@ -731,6 +736,7 @@ void model_gateway_free(ModelGateway *gw) {
     free(gw->endpoint);
     free(gw->api_key);
     free(gw->model);
+    free(gw->user_agent);
     free(gw);
 }
 

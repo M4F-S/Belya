@@ -27,6 +27,7 @@ typedef struct ModelGateway {
     char *endpoint;
     char *api_key;
     char *model;
+    char *user_agent; // HTTP User-Agent sent on every gateway request
     int timeout_sec;
     int max_retries;
     bool streaming;
