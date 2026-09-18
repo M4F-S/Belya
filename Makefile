@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c99 -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Wall -Wextra -O2 -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LIBS = -lcurl -lsqlite3
 
 SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c main.c
