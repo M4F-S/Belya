@@ -2,7 +2,7 @@
 #include <ctype.h>
 
 static const char *skip_ws(const char *s) {
-    while (*s && isspace((unsigned char)*s)) s++;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
     return s;
 }
 
