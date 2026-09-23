@@ -839,6 +839,16 @@ void test_forced_synthesis_and_keepalive(void) {
     ModelGateway *gw = model_gateway_init("http://127.0.0.1:9999/mock/v1", "test-key", "mock-model");
     assert(gw != NULL);
     assert(gw->curl_handle == NULL); // Lazy init on first request
+    assert(gw->user_agent != NULL);
+    assert(strstr(gw->user_agent, "BelyaAgent") != NULL);
+
+    // Test custom MODEL_USER_AGENT env override
+    setenv("MODEL_USER_AGENT", "CustomClient/2.0.0 (Darwin)", 1);
+    ModelGateway *gw_custom = model_gateway_init("http://127.0.0.1:9999/mock/v1", "test-key", "mock-model");
+    assert(gw_custom != NULL);
+    assert(strcmp(gw_custom->user_agent, "CustomClient/2.0.0 (Darwin)") == 0);
+    model_gateway_free(gw_custom);
+    unsetenv("MODEL_USER_AGENT");
 
     BelyaAgent *agent = belya_agent_init(gw, "test_synthesis.sqlite", "You are an AI assistant.");
     assert(agent != NULL);

@@ -360,6 +360,12 @@ export MODEL_NAME="deepseek-r1:14b"
 export MODEL_API_KEY="none"
 ```
 
+**Client Fingerprint & Relay Gateway Override (Optional):**
+```bash
+# Override User-Agent for relays or gateways that filter clients by fingerprint:
+export MODEL_USER_AGENT="BelyaAgent/4.0 (Autonomous C99 Engine)"
+```
+
 #### 2. Start the Agent
 ```bash
 ./belya

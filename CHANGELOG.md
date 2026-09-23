@@ -5,6 +5,15 @@ All notable changes, architectural milestones, and release notes for Belya and B
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### 🔧 Fixed
+- **Configurable Model Gateway User-Agent & Relay Fingerprinting (Fixes #1):**
+  - Added `char *user_agent` to `struct ModelGateway` in `model_adapter.h` and initialized it from `MODEL_USER_AGENT` with default `"BelyaAgent/4.0 (Autonomous C99 Engine)"`.
+  - Configured `CURLOPT_USERAGENT` immediately following `curl_easy_reset(curl)` inside the retry loop of `openai_chat_complete()`, preventing client fingerprint resets and eliminating pre-auth `HTTP 401 Unauthorized` (`unauthorized_client_error`) failures from strict relay gateways.
+  - Unified outbound client fingerprinting in `fetch_url` to inherit the active gateway `user_agent`.
+  - Documented `MODEL_USER_AGENT` in `.env.example`, `TROUBLESHOOTING.md`, and `README.md`.
+  - Added unit test assertions in `test_suite.c` verifying default initialization and custom environment overrides.
+
 ---
 
 ## [v7.0.0] — 2026-09-12

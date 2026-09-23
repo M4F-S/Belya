@@ -1419,7 +1419,11 @@ static char *tool_fetch_url(BelyaAgent *agent, const JsonValue *args) {
 
     DynString body = dyn_str_new();
     struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "User-Agent: BelyaAgent/4.0 (Autonomous C99 Engine)");
+    const char *ua_str = (agent && agent->gateway && agent->gateway->user_agent) ?
+                         agent->gateway->user_agent : "BelyaAgent/4.0 (Autonomous C99 Engine)";
+    char ua_buf[512];
+    snprintf(ua_buf, sizeof(ua_buf), "User-Agent: %s", ua_str);
+    headers = curl_slist_append(headers, ua_buf);
 
     // Custom headers
     JsonValue *hdrs_val = json_obj_get(args, "headers");
