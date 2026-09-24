@@ -1885,6 +1885,113 @@ void test_belya_agency_architecture(void) {
     printf("  -> Belya Agency Multi-Agent Architecture & Rollback Guard PASSED\n");
 }
 
+void test_jev_client(void) {
+    printf("[Test] Jev TypeSafe AI Integration & Coprocessor Parser...\n");
+
+    // 1. Client initialization and memory safety
+    assert(jev_client_init(NULL) == NULL);
+    assert(jev_client_init("") == NULL);
+
+    JevClient *client = jev_client_init("test_key_12345");
+    assert(client != NULL);
+    assert(strcmp(client->api_key, "test_key_12345") == 0);
+    assert(strcmp(client->base_url, "https://jevtypesafeai.com/api/v1") == 0);
+    assert(client->timeout_ms == 5000);
+    jev_client_free(client);
+
+    // 2. Triage parser
+    const char *mock_triage_json =
+        "{\n"
+        "  \"answers\": {\n"
+        "    \"route\": {\n"
+        "      \"choice\": \"architect\",\n"
+        "      \"confidence\": 0.96\n"
+        "    }\n"
+        "  }\n"
+        "}";
+    char *role = jev_parse_triage_response(mock_triage_json);
+    assert(role != NULL);
+    assert(strcmp(role, "architect") == 0);
+    free(role);
+
+    // Malformed/empty triage JSON
+    assert(jev_parse_triage_response(NULL) == NULL);
+    assert(jev_parse_triage_response("{\"invalid\": true}") == NULL);
+
+    // 3. Tool risk gating parser
+    const char *mock_risk_allow =
+        "{\n"
+        "  \"action\": \"allow\",\n"
+        "  \"risk\": 0.12,\n"
+        "  \"confidence\": 0.99\n"
+        "}";
+    JevRiskResult *r1 = jev_parse_risk_response(mock_risk_allow);
+    assert(r1 != NULL);
+    assert(strcmp(r1->action, "allow") == 0);
+    assert(r1->risk >= 0.11 && r1->risk <= 0.13);
+    assert(r1->confidence >= 0.98);
+    jev_risk_result_free(r1);
+
+    const char *mock_risk_block =
+        "{\n"
+        "  \"action\": \"block\",\n"
+        "  \"risk\": 0.92,\n"
+        "  \"confidence\": 0.95\n"
+        "}";
+    JevRiskResult *r2 = jev_parse_risk_response(mock_risk_block);
+    assert(r2 != NULL);
+    assert(strcmp(r2->action, "block") == 0);
+    assert(r2->risk > 0.85);
+    jev_risk_result_free(r2);
+
+    const char *mock_risk_confirm =
+        "{\n"
+        "  \"action\": \"confirm\",\n"
+        "  \"risk\": 0.65,\n"
+        "  \"confidence\": 0.90\n"
+        "}";
+    JevRiskResult *r3 = jev_parse_risk_response(mock_risk_confirm);
+    assert(r3 != NULL);
+    assert(strcmp(r3->action, "confirm") == 0);
+    assert(r3->risk > 0.60);
+    jev_risk_result_free(r3);
+
+    assert(jev_parse_risk_response(NULL) == NULL);
+
+    // 4. Context filter parser
+    const char *mock_filter_json =
+        "{\n"
+        "  \"action\": \"keep\",\n"
+        "  \"relevance\": \"critical\",\n"
+        "  \"redundant\": false,\n"
+        "  \"confidence\": 0.97\n"
+        "}";
+    JevContextFilterResult *f1 = jev_parse_filter_response(mock_filter_json);
+    assert(f1 != NULL);
+    assert(strcmp(f1->action, "keep") == 0);
+    assert(strcmp(f1->relevance, "critical") == 0);
+    assert(f1->redundant == false);
+    assert(f1->confidence > 0.95);
+    jev_context_filter_result_free(f1);
+
+    assert(jev_parse_filter_response(NULL) == NULL);
+
+    // 5. Null guards on network entrypoints
+    assert(jev_decide_triage_role(NULL, "task") == NULL);
+    assert(jev_check_tool_risk(NULL, "goal", "tool", "args") == NULL);
+    assert(jev_filter_context_item(NULL, "task", "item") == NULL);
+
+    // 6. Agent integration without API key (fallback invariant)
+    ModelGateway *gw = model_gateway_init("test", "test", "test");
+    BelyaAgent *ag = belya_agent_init(gw, "test_jev.sqlite", "system");
+    assert(ag != NULL);
+    belya_agent_free(ag);
+    model_gateway_free(gw);
+    unlink("test_jev.sqlite");
+
+    printf("  -> Jev TypeSafe AI Integration & Coprocessor Parser PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -1920,6 +2027,7 @@ int main(void) {
     test_composable_rule_packs();
     test_troubleshooting_pattern_resolver();
     test_belya_agency_architecture();
-    printf("================ All Tests Passed Successfully (33/33 - 100%%) ================\n\n");
+    test_jev_client();
+    printf("================ All Tests Passed Successfully (34/34 - 100%%) ================\n\n");
     return 0;
 }

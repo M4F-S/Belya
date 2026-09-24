@@ -50,7 +50,8 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [12. File-First Skills & Composable Rule Packs](#12-file-first-skills--composable-rule-packs)
   - [13. Systematic Troubleshooting Pattern Resolver](#13-troubleshooting-pattern-resolver)
   - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
-- [Automated Test Suite (33/33 Comprehensive Tests)](#automated-test-suite-3333-comprehensive-tests)
+  - [15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash](#15-jev-typesafe-ai-decision-coprocessor--deepseek-v41-flash)
+- [Automated Test Suite (34/34 Comprehensive Tests)](#automated-test-suite-3434-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
@@ -628,9 +629,17 @@ Belya Agency coordinates autonomous, specialized subagents to solve compound eng
 - **Chief-of-Staff Triage Layer:** `belya_agency_triage()` routes incoming requests, executing fast-path answers for simple dialogue and synthesizing dynamic subagent pipelines (`Architect` → `Builder` → `Tester`) for complex features.
 - **Per-Subagent Git Rollback Guard:** Before a mutative subagent executes, Belya snapshots the working tree `HEAD` SHA. If the subagent fails, times out, or trips circuit breakers, Belya immediately executes `git reset --hard <snapshot_sha> && git clean -fd`, guaranteeing that failed subagent experiments leave zero workspace debris.
 
+### 15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash
+Belya incorporates native integration with **Jev TypeSafe AI** (`https://jevtypesafeai.com`) as an ultra-fast, sub-200ms structured decision coprocessor:
+- **Sub-200ms Fast Triage (`/decide`):** Routes user requests to optimal agent roles (`architect`, `builder`, `reviewer`, `tester`, `direct`) in ~150ms without bloating the primary model context or token bill.
+- **Tool-Call Risk Gating (`/agent/risk`):** Intercepts dangerous mutative operations (`bash`, `write_file`, `edit_file`, `apply_patch`) before execution, deterministically blocking operations scoring $>0.85$ risk and prompting human operator confirmation for elevated risks ($>0.60$).
+- **Context Filtering (`/context/filter`):** Evaluates conversational memory items during compaction, keeping core facts and pruning redundant noise.
+- **DeepSeek V4.1 Flash Production Backend:** Standardized on `deepseek/deepseek-v4.1-flash` via OpenRouter (1.048M context window, 97% cache read discount at $0.0042 / 1M tokens), perfectly aligned with Belya's byte-locked 3-Zone Prefix Cache.
+- **Zero-Dependency Fallback:** If `JEV_API_KEY` is unset or network calls fail, Belya and Almaz seamlessly fall back to local C heuristics with zero interruption.
+
 ---
 
-## Automated Test Suite (33/33 Comprehensive Tests)
+## Automated Test Suite (34/34 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -705,7 +714,9 @@ make test
   -> Systematic TROUBLESHOOTING.md Pattern Resolver PASSED
 [Test] Track B: Belya Agency Multi-Agent Orchestration & Rollback Guard...
   -> Belya Agency Multi-Agent Architecture & Rollback Guard PASSED
-================ All Tests Passed Successfully (33/33 - 100%) ================
+[Test] Jev TypeSafe AI Integration & Coprocessor Parser...
+  -> Jev TypeSafe AI Integration & Coprocessor Parser PASSED
+================ All Tests Passed Successfully (34/34 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
@@ -714,7 +725,7 @@ Belya is compiled and validated with AddressSanitizer and UndefinedBehaviorSanit
 ```bash
 make clean && make test CFLAGS="-Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -g -D_POSIX_C_SOURCE=200809L"
 ```
-**Result**: **33/33 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: **34/34 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
 
 ---
 

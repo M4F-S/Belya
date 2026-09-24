@@ -1331,6 +1331,32 @@ bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***
         }
     }
 
+    // Jev TypeSafe AI Triage Coprocessor
+    if (harness->agent && harness->agent->jev) {
+        char *jev_role = jev_decide_triage_role(harness->agent->jev, p);
+        if (jev_role) {
+            if (strcmp(jev_role, "direct") == 0) {
+                if (out_direct_reply) {
+                    *out_direct_reply = strdup("Hello! I am Belya Agency, an autonomous multi-agent engineering harness. I coordinate Architect, Builder, Reviewer, and Tester subagents to solve complex engineering tasks.");
+                }
+                free(jev_role);
+                return true;
+            } else if (strcmp(jev_role, "architect") == 0 ||
+                       strcmp(jev_role, "builder") == 0 ||
+                       strcmp(jev_role, "tester") == 0 ||
+                       strcmp(jev_role, "reviewer") == 0) {
+                char **pipeline = malloc(sizeof(char *) * 1);
+                if (pipeline) {
+                    pipeline[0] = jev_role;
+                    *out_pipeline = pipeline;
+                    *out_count = 1;
+                    return true;
+                }
+            }
+            free(jev_role);
+        }
+    }
+
     // 2. Intent Classification for Subagent Pipeline
     bool is_test = (str_contains_ci(p, "test") || str_contains_ci(p, "benchmark") || str_contains_ci(p, "verify"));
     bool is_review = (str_contains_ci(p, "review") || str_contains_ci(p, "audit") || str_contains_ci(p, "diff"));
@@ -2869,6 +2895,39 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                         printf("\033[1;31m[Rejected]: Operation cancelled by operator.\033[0m\n");
                         belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission for this tool call.");
                         continue;
+                    }
+                }
+
+                // Jev TypeSafe AI Risk Gating Hook
+                if (h->agent && h->agent->jev) {
+                    if (strcmp(tc->name, "bash") == 0 ||
+                        strcmp(tc->name, "write_file") == 0 ||
+                        strcmp(tc->name, "edit_file") == 0 ||
+                        strcmp(tc->name, "apply_patch") == 0) {
+                        JevRiskResult *risk = jev_check_tool_risk(h->agent->jev, "Autonomous execution", tc->name, tc->arguments_json);
+                        if (risk) {
+                            if (risk->action && (strcmp(risk->action, "block") == 0 || risk->risk > 0.85)) {
+                                printf("\033[1;31m[Jev Risk Guard]: Operation blocked (risk=%.2f, action=%s).\033[0m\n", risk->risk, risk->action ? risk->action : "block");
+                                belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool call blocked by Jev TypeSafe AI risk guard (high risk).");
+                                jev_risk_result_free(risk);
+                                continue;
+                            } else if (risk->action && (strcmp(risk->action, "confirm") == 0 || risk->risk > 0.60)) {
+                                printf("\033[1;33m[Jev Risk Guard]: Elevated risk detected (risk=%.2f, action=%s). Prompting confirmation.\033[0m\n", risk->risk, risk->action ? risk->action : "confirm");
+                                bool permitted = false;
+                                if (h->permission_prompt_fn) {
+                                    permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);
+                                } else {
+                                    permitted = harness_ask_permission(tc->name, tc->arguments_json);
+                                }
+                                if (!permitted) {
+                                    printf("\033[1;31m[Rejected]: Operation cancelled by operator after Jev risk alert.\033[0m\n");
+                                    belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: User denied permission after Jev risk alert.");
+                                    jev_risk_result_free(risk);
+                                    continue;
+                                }
+                            }
+                            jev_risk_result_free(risk);
+                        }
                     }
                 }
 

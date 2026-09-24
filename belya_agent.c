@@ -71,6 +71,12 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     agent->compaction_keep = (comp_keep_env && atoi(comp_keep_env) > 0)
                              ? (size_t)atoi(comp_keep_env) : 20;
 
+    // Optional Jev TypeSafe AI decision coprocessor
+    const char *jev_key = getenv("JEV_API_KEY");
+    if (jev_key && strlen(jev_key) > 0) {
+        agent->jev = jev_client_init(jev_key);
+    }
+
     // Initialize SQLite memory and session store
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
         // Enable WAL mode for better concurrent read performance
@@ -2080,5 +2086,10 @@ void belya_agent_free(BelyaAgent *agent) {
         json_free(agent->schemas[i].parameters_schema);
     }
     free(agent->schemas);
+
+    if (agent->jev) {
+        jev_client_free(agent->jev);
+        agent->jev = NULL;
+    }
     free(agent);
 }

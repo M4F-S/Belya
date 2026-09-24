@@ -2,6 +2,7 @@
 #define BELYA_AGENT_H
 
 #include "model_adapter.h"
+#include "jev_client.h"
 #include <sqlite3.h>
 
 typedef struct {
@@ -20,6 +21,7 @@ typedef struct {
 
 typedef struct BelyaAgent {
     ModelGateway *gateway;
+    JevClient *jev;
     sqlite3 *db;
     BelyaMessage *messages;
     size_t msg_count;

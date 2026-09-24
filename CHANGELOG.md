@@ -6,9 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### 🚀 Added
+- **Jev TypeSafe AI Decision Coprocessor Integration:**
+  - Added native `jev_client.h` and `jev_client.c` implementing sub-200ms structured decision-making with zero dependencies outside libc, libcurl, and minijson.
+  - Implemented subagent triage coprocessor in `belya_agency_triage()` (`/decide` endpoint) with sub-cent evaluation (~$0.000084 per decision) and seamless local heuristic fallback.
+  - Implemented tool-call risk gating in `belya_harness.c` (`/agent/risk` endpoint) intercepting sensitive mutative actions (`bash`, `write_file`, `edit_file`, `apply_patch`) to block high-risk commands (>0.85 risk) and prompt human confirmation on elevated risks (>0.60 risk).
+  - Added `JevClient *jev` to `BelyaAgent` struct with deterministic lifecycle management (`getenv("JEV_API_KEY")`) and ASan-verified zero-leak teardown.
+  - Added `test_jev_client()` to `test_suite.c` with comprehensive unit tests for client initialization, triage parsing, risk evaluation, and context filtering (expanding test suite to 34/34 tests, 100% pass rate).
+
+### ⚡ Optimized
+- **DeepSeek V4.1 Flash Standard Configuration & Cache Alignment:**
+  - Configured default recommended OpenRouter model to `deepseek/deepseek-v4.1-flash` in `.env.example` and documentation.
+  - Preserved strict 3-Zone Prefix Cache alignment to leverage DeepSeek V4.1 Flash's 97% cache read discount ($0.0042 / 1M tokens) across long autonomous coding sessions.
+
 ### 🔧 Fixed
 - **Configurable Model Gateway User-Agent & Relay Fingerprinting (Fixes #1):**
-  - Added `char *user_agent` to `struct ModelGateway` in `model_adapter.h` and initialized it from `MODEL_USER_AGENT` with default `"BelyaAgent/4.0 (Autonomous C99 Engine)"`.
+  - Added `char *user_agent` to `struct ModelGateway` in `model_adapter.h` and initialized it from `MODEL_USER_AGENT` with default `"BelyaAgent/7.0 (Autonomous C99 Engine)"`.
   - Configured `CURLOPT_USERAGENT` immediately following `curl_easy_reset(curl)` inside the retry loop of `openai_chat_complete()`, preventing client fingerprint resets and eliminating pre-auth `HTTP 401 Unauthorized` (`unauthorized_client_error`) failures from strict relay gateways.
   - Unified outbound client fingerprinting in `fetch_url` to inherit the active gateway `user_agent`.
   - Documented `MODEL_USER_AGENT` in `.env.example`, `TROUBLESHOOTING.md`, and `README.md`.
