@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/badge/Release-v7.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.0.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-33%2F33_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-34%2F34_Passed_(100%25)-brightgreen.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
 [![Tools](https://img.shields.io/badge/Native_Tools-18_Tools-informational.svg)]()
 [![Memory](https://img.shields.io/badge/Memory_Footprint-<3.5MB_Idle-purple.svg)]()
@@ -51,6 +51,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [13. Systematic Troubleshooting Pattern Resolver](#13-troubleshooting-pattern-resolver)
   - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
   - [15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash](#15-jev-typesafe-ai-decision-coprocessor--deepseek-v41-flash)
+  - [16. OpenCode Go Subscription Backend & Model Economics](#16-opencode-go-subscription-backend--model-economics)
 - [Automated Test Suite (34/34 Comprehensive Tests)](#automated-test-suite-3434-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
@@ -87,32 +88,39 @@ graph TD
 
 ## Belya vs Almaz: Champion vs Challenger Architecture
 
-Belya operates an empirical **Champion / Challenger** production model deployed 24/7 on Ubuntu Linux VPS:
+Belya operates an empirical **Champion / Challenger** ecosystem deployed 24/7 on Ubuntu Linux VPS across two dedicated repositories:
 
 ```
                   ┌─────────────────────────────────────────────────────────┐
-                  │                 GitHub: M4F-S/Belya                     │
-                  └───────────────────────────┬─────────────────────────────┘
-                                              │
-                    ┌─────────────────────────┴─────────────────────────┐
-                    ▼                                                   ▼
-       ┌──────────────────────────┐                       ┌──────────────────────────┐
-       │      Belya (Champion)    │                       │     Almaz (Challenger)   │
-       │    Branch: main (v7.0.0) │                       │   Branch: evolve/almaz   │
-       │     Path: /opt/belya     │                       │     Path: /opt/almaz     │
-       │   Telegram: Primary Bot  │                       │   Telegram: @AlmaztheBot │
-       └────────────┬─────────────┘                       └─────────────┬────────────┘
-                    │                                                   │
-                    │   Both run Belya Agency Multi-Agent Engine        │
-                    │   (Triage -> Architect -> Builder -> Tester)      │
-                    ▼                                                   ▼
-            [Stable Engineering]                              [Autonomous Darwinian]
-            [Production Services]                             [Hot-Path Mutations  ]
+                  │                 GitHub Ecosystem                        │
+                  └─────────────┬─────────────────────────────┬─────────────┘
+                                │                             │
+                                ▼                             ▼
+                  ┌──────────────────────────┐   ┌──────────────────────────┐
+                  │   GitHub: M4F-S/Belya    │   │   GitHub: M4F-S/Almaz    │
+                  │     (Production Core)    │   │  (Autonomous Organism)   │
+                  │       Tag: v7.0.0        │   │    Tag: v0.1.0-organism  │
+                  └─────────────┬────────────┘   └─────────────┬────────────┘
+                                │                             │
+                                ▼                             ▼
+                  ┌──────────────────────────┐   ┌──────────────────────────┐
+                  │      Belya (Champion)    │   │     Almaz (Challenger)   │
+                  │     Path: /opt/belya     │   │     Path: /opt/almaz     │
+                  │   Systemd: belya.service │   │   Systemd: almaz.service │
+                  │     RAM: ~3.6 MB Idle    │   │  Watchdog: almaz-watchdog│
+                  │   Telegram: Primary Bot  │   │   Telegram: @AlmaztheBot │
+                  └─────────────┬────────────┘   └─────────────┬────────────┘
+                                │                             │
+                                │   Both run Belya Agency     │
+                                │   Multi-Agent Architecture  │
+                                ▼                             ▼
+                      [Deterministic C99 SE]        [Sovereign Self-Evolving]
+                      [Production Services ]        [Organism + SARSI + VIGIL]
 ```
 
-- **Belya (Champion)**: Stable production baseline on branch `main`. Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v7.0.0`) with 100% test guarantees under AddressSanitizer.
-- **Almaz (Challenger)**: Autonomous evolutionary sibling on branch `evolve/almaz`. Runs as `almaz.service` in `/opt/almaz` on the VPS (~3.4 MB RAM) connected to `@AlmaztheBot`. Runs autonomous self-mutation supervisors to evolve internal C routines (e.g., +16.98% DynString throughput evolution).
-- **Belya Agency**: The sovereign multi-agent orchestration architecture is **natively embedded in both Belya and Almaz**. It is not a third project; it is the core multi-agent engine powering both systems via `--agency` (CLI) and `/agency` (Telegram/REPL).
+- **Belya (Champion)**: Production software engineering core maintained in repository [`M4F-S/Belya`](https://github.com/M4F-S/Belya). Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v7.0.0`) with 100% test guarantees under AddressSanitizer (34/34 tests passing). Built to compete head-to-head with Claude Code, Aider, and Hermes-3.
+- **Almaz (Challenger)**: Sovereign self-evolving, self-healing autonomous organism graduated into its own dedicated repository [`M4F-S/Almaz`](https://github.com/M4F-S/Almaz). Runs as `almaz.service` in `/opt/almaz` on the VPS (~4.7 MB RAM with `almaz-watchdog` supervisor) connected to `@AlmaztheBot`. Implements SARSI persistent self-model, VIGIL emotional appraisal, KnowSelf situational memory gating, Darwinian AST self-evolution, and AIDE² 52-assertion holdout regression protection.
+- **Belya Agency**: Sovereign multi-agent orchestration (`Architect` → `Builder` → `Reviewer` → `Tester`) is natively embedded in both codebases via `--agency` (CLI) and `/agency` (Telegram/REPL).
 
 ---
 
@@ -350,11 +358,18 @@ Use this mode for local development, code authoring, and interactive pair-progra
 **Option A — Cloud Providers (OpenRouter / DeepSeek / OpenAI):**
 ```bash
 export MODEL_ENDPOINT="https://openrouter.ai/api/v1/chat/completions"
-export MODEL_NAME="deepseek/deepseek-v4-flash"
+export MODEL_NAME="deepseek/deepseek-v4.1-flash"
 export MODEL_API_KEY="sk-or-v1-your-api-key"
 ```
 
-**Option B — Local Offline LLMs (Ollama / vLLM / llama.cpp):**
+**Option B — High-Throughput Flat Subscription (OpenCode Go):**
+```bash
+export MODEL_ENDPOINT="https://opencode.ai/zen/go/v1"
+export MODEL_NAME="deepseek-v4.1-flash"
+export MODEL_API_KEY="oc_sk_your-opencode-key"
+```
+
+**Option C — Local Offline LLMs (Ollama / vLLM / llama.cpp):**
 ```bash
 export MODEL_ENDPOINT="http://localhost:11434/v1/chat/completions"
 export MODEL_NAME="deepseek-r1:14b"
@@ -636,6 +651,13 @@ Belya incorporates native integration with **Jev TypeSafe AI** (`https://jevtype
 - **Context Filtering (`/context/filter`):** Evaluates conversational memory items during compaction, keeping core facts and pruning redundant noise.
 - **DeepSeek V4.1 Flash Production Backend:** Standardized on `deepseek/deepseek-v4.1-flash` via OpenRouter (1.048M context window, 97% cache read discount at $0.0042 / 1M tokens), perfectly aligned with Belya's byte-locked 3-Zone Prefix Cache.
 - **Zero-Dependency Fallback:** If `JEV_API_KEY` is unset or network calls fail, Belya and Almaz seamlessly fall back to local C heuristics with zero interruption.
+
+### 16. OpenCode Go Subscription Backend & Model Economics
+In addition to OpenRouter and local Ollama/vLLM backends, Belya supports high-throughput, flat-rate subscription inference via **OpenCode Go**:
+- **Endpoint**: `https://opencode.ai/zen/go/v1`
+- **Supported Models**: `deepseek-v4.1-flash`, `deepseek-v4-flash`, `qwen3.8-max`, `qwen3.8-flash`, `kimi-k2.7-code`, `kimi-k3`, `glm-5.3-flash`, `minimax-m3`.
+- **Automatic Session Protocol**: Belya automatically injects the mandatory `x-opencode-session` header when communicating with `opencode.ai`, guaranteeing uninterrupted streaming and execution.
+- **Cost Predictability**: High-frequency autonomous coding tasks, unit test iterations, and background agency pipelines run at zero marginal per-token cost under an active OpenCode Go subscription.
 
 ---
 
