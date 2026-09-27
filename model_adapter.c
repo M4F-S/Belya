@@ -243,6 +243,13 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
             headers = curl_slist_append(headers, "X-Title: Belya Agent");
         }
 
+        if (self->endpoint && strstr(self->endpoint, "opencode.ai") != NULL) {
+            const char *oc_sess = getenv("OPENCODE_SESSION_ID");
+            char sess_hdr[256];
+            snprintf(sess_hdr, sizeof(sess_hdr), "x-opencode-session: %s", (oc_sess && strlen(oc_sess) > 0) ? oc_sess : "belya-agent-session");
+            headers = curl_slist_append(headers, sess_hdr);
+        }
+
         long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 60L;
         curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
