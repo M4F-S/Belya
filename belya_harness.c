@@ -763,6 +763,11 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
 
             size_t search_len = div - p;
             char *search_str = malloc(search_len + 1);
+            if (!search_str) {
+                if (cur_doc != orig) free(cur_doc);
+                free(orig);
+                return strdup("Error: Out of memory allocating patch search block.");
+            }
             memcpy(search_str, p, search_len);
             search_str[search_len] = '\0';
 
@@ -777,6 +782,12 @@ static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
 
             size_t rep_len = rep_end - rep_start;
             char *rep_str = malloc(rep_len + 1);
+            if (!rep_str) {
+                free(search_str);
+                if (cur_doc != orig) free(cur_doc);
+                free(orig);
+                return strdup("Error: Out of memory allocating patch replace block.");
+            }
             memcpy(rep_str, rep_start, rep_len);
             rep_str[rep_len] = '\0';
 

@@ -656,6 +656,7 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
     size_t count = 0;
     size_t cap = 32;
     BelyaMessage *loaded = calloc(cap, sizeof(BelyaMessage));
+    if (!loaded) { sqlite3_finalize(stmt); return false; }
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         if (count >= cap) {

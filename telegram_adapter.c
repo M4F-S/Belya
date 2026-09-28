@@ -189,6 +189,7 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
     while (offset < len) {
         size_t take = (len - offset > CHUNK_SIZE) ? CHUNK_SIZE : (len - offset);
         char *chunk = malloc(take + 1);
+        if (!chunk) return false;
         memcpy(chunk, text + offset, take);
         chunk[take] = '\0';
 
