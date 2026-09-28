@@ -135,6 +135,10 @@ int main(int argc, char **argv) {
 
     // 3. Initialize Belya Harness & register execution engine
     BelyaHarness *harness = belya_harness_init(agent);
+    if (!harness) {
+        fprintf(stderr, "\033[1;31m[Error] Out of memory: failed to initialize harness.\033[0m\n");
+        return 1;
+    }
 
     if (telegram_mode) {
         if (!tg_token || strlen(tg_token) == 0) {
@@ -146,6 +150,12 @@ int main(int argc, char **argv) {
         }
 
         TelegramBot *bot = telegram_bot_init(tg_token, tg_chat_id);
+        if (!bot) {
+            fprintf(stderr, "\033[1;31m[Error] Out of memory: failed to initialize Telegram bot.\033[0m\n");
+            belya_harness_free(harness);
+            model_gateway_free(gateway);
+            return 1;
+        }
         telegram_bot_run(bot, harness);
         telegram_bot_free(bot);
     } else if (headless_prompt) {

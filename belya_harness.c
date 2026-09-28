@@ -1181,6 +1181,10 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     BelyaHarness *saved_harness = g_harness;
     BelyaHarness *sub_harness = belya_harness_init_bounded(sub_agent, whitelist, role_name);
+    if (!sub_harness) {
+        belya_agent_free(sub_agent);
+        return strdup("Error: Out of memory creating sub-harness.");
+    }
     snprintf(sub_harness->cwd, sizeof(sub_harness->cwd), "%s", parent_harness->cwd);
 
     belya_agent_add_message(sub_agent, "user", task);
@@ -1858,6 +1862,7 @@ static JsonValue *build_string_param_schema(const char *prop_name, const char *p
 
 BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name) {
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
+    if (!h) return NULL;
     h->agent = agent;
     if (role_name) {
         snprintf(h->active_role, sizeof(h->active_role), "%s", role_name);
