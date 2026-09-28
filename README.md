@@ -225,28 +225,29 @@ To compare Belya directly against frontier coding agents (**Claude Code, Aider, 
 
 #### Universal Benchmark Scoreboard:
 
-| Standard Challenge | Problem Type | Status | Duration | Tool Turns | Code Produced | ASan Result |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|
-| **Binary Search** | Algorithmic search & pointer returns | **PASSED** | `54.61s` | 9 | 24 LOC | **0 leaks / 0 UB** |
-| **Queen Attack** | Geometry & coordinate validation | **PASSED** | `58.24s` | 10 | 37 LOC | **0 leaks / 0 UB** |
-| **Roman Numerals** | String synthesis & dynamic allocation | **PASSED** | `73.96s` | 8 | 41 LOC | **0 leaks / 0 UB** |
-| **Circular Buffer** | FIFO ring buffer & state machine | **PASSED** | `49.39s` | 7 | 80 LOC | **0 leaks / 0 UB** |
-| **Word Count** | Tokenization & case-insensitive freq | **PASSED** | `93.35s` | 8 | 50 LOC | **0 leaks / 0 UB** |
-| **Collatz Conjecture** | Arithmetic steps & overflow prevention | **PASSED** | `101.13s` | 30 | 22 LOC | **0 leaks / 0 UB** |
-| **Armstrong Numbers** | Digits & power summation logic | **PASSED** | `49.48s` | 8 | 30 LOC | **0 leaks / 0 UB** |
-| **Hamming Distance** | Synchronous nucleotide scan & validation | **PASSED** | `63.96s` | 9 | 26 LOC | **0 leaks / 0 UB** |
-| **Allergies** | Bitwise enum flags & item scoring | **AVAILABLE** | *Battery* | - | - | **Exercism C99** |
-| **Linked List** | Dynamic node insertion, deletion & traversal | **AVAILABLE** | *Battery* | - | - | **Exercism C99** |
-| **Grand Total** | **Universal Autonomous Coding Suite** | **8 / 8 Tested (100% Pass@1)** | **-** | **-** | **-** | **100% Clean** |
+| Standard Challenge | Problem Type | Status | Duration | Tool Turns | Code Produced | Tokens Consumed | ASan Result |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Binary Search** | Algorithmic search & pointer returns | **PASSED** | `29.97s` | 7 | 22 LOC | 21,767 tok | **0 leaks / 0 UB** |
+| **Queen Attack** | Geometry & coordinate validation | **PASSED** | `20.63s` | 6 | 38 LOC | 27,048 tok | **0 leaks / 0 UB** |
+| **Roman Numerals** | String synthesis & dynamic allocation | **PASSED** | `34.11s` | 8 | 48 LOC | 33,294 tok | **0 leaks / 0 UB** |
+| **Circular Buffer** | FIFO ring buffer & state machine | **PASSED** | `61.06s` | 12 | 80 LOC | 49,459 tok | **0 leaks / 0 UB** |
+| **Word Count** | Tokenization & case-insensitive freq | **PASSED** | `44.77s` | 10 | 52 LOC | 45,292 tok | **0 leaks / 0 UB** |
+| **Collatz Conjecture** | Arithmetic steps & overflow prevention | **PASSED** | `29.10s` | 9 | 22 LOC | 32,266 tok | **0 leaks / 0 UB** |
+| **Hamming Distance** | Synchronous nucleotide scan & validation | **PASSED** | `17.29s` | 7 | 23 LOC | 24,792 tok | **0 leaks / 0 UB** |
+| **Armstrong Numbers** | Digits & power summation logic | **PASSED** | `59.28s` | 10 | 42 LOC | 46,240 tok | **0 leaks / 0 UB** |
+| **Allergies** | Bitwise enum flags & item scoring | **PASSED** | `28.52s` | 7 | 27 LOC | 30,345 tok | **0 leaks / 0 UB** |
+| **Doubly Linked List** | Dynamic node insertion, deletion & traversal | **PASSED** | `120.57s` | 18 | 126 LOC | 101,773 tok | **0 leaks / 0 UB** |
+| **Two-Fer** | String formatting & edge case validation | **PASSED** | `44.09s` | 11 | 11 LOC | 42,799 tok | **0 leaks / 0 UB** |
+| **Grand Total** | **Universal Autonomous Coding Suite** | **11 / 11 Passed (100% Pass@1)** | **489.39s** | **105** | **491 LOC** | **455,075 tok** | **100% Clean** |
 
 #### Head-to-Head Architectural & Benchmark Comparison:
 
-| Metric | **Belya v6.3 (C99)** | **Claude Code** | **Aider** | **Hermes-3** |
+| Metric | **Belya v7.0.0 (C99)** | **Claude Code** | **Aider** | **Hermes-3** |
 |:---|:---:|:---:|:---:|:---:|
 | **Underlying Model Tested** | DeepSeek-v4-flash | Claude 3.7 Sonnet | Claude 3.7 Sonnet | Nous-Hermes-3 70B |
-| **Universal Coding Pass@1** | **100.0% (8/8 tested)** | ~85% (First turn) | ~84% (Exercism) | ~68% |
-| **Cold Start Latency** | **`1.1 ms`** | ~800 ms | ~800 ms | ~2,000 ms |
-| **Active Memory Footprint** | **`< 17 MB RSS`** | ~300 MB | ~250 MB | ~400 MB |
+| **Universal Coding Pass@1** | **100.0% (11/11 passed)** | ~85% (First turn) | ~84% (Exercism) | ~68% |
+| **Cold Start Latency** | **`< 1.5 ms`** | ~800 ms | ~800 ms | ~2,000 ms |
+| **Active Memory Footprint** | **`< 12 MB RSS`** | ~300 MB | ~250 MB | ~400 MB |
 | **Idle VPS Footprint** | **`1.8 MB RSS`** | ~120 MB | N/A | N/A |
 | **Runtime Dependencies** | **None (Pure C99)** | Node.js Runtime | Python Runtime | Python Runtime |
 | **Compiler Pre-Flight Guard** | **Native Built-in** | External Linter | External Linter | None |

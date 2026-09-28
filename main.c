@@ -170,6 +170,11 @@ int main(int argc, char **argv) {
         } else {
             printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
             belya_harness_execute_turn(harness, headless_prompt);
+            if (agent->total_prompt_tokens > 0 || agent->total_completion_tokens > 0) {
+                printf("\n[Session Economics]: Prompt Tokens: %zu | Completion Tokens: %zu | Cached Tokens: %zu | Total: %zu\n",
+                    agent->total_prompt_tokens, agent->total_completion_tokens, agent->total_cached_tokens,
+                    agent->total_prompt_tokens + agent->total_completion_tokens);
+            }
         }
     } else {
         printf("Starting Belya Harness with endpoint: %s (Model: %s)\n", endpoint, model);
