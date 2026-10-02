@@ -88,6 +88,12 @@ TelegramBot *telegram_bot_init(const char *bot_token, const char *allowed_chat_i
     if (!bot) return NULL;
     bot->bot_token = strdup(bot_token);
     bot->allowed_chat_id = strdup(allowed_chat_id ? allowed_chat_id : "");
+    if (!bot->bot_token || !bot->allowed_chat_id) {
+        free(bot->bot_token);
+        free(bot->allowed_chat_id);
+        free(bot);
+        return NULL;
+    }
     bot->last_update_id = 0;
     bot->running = false;
     return bot;
@@ -733,7 +739,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                             char *breaker_alert = NULL;
                             bool tripped = belya_harness_record_tool_observation(harness, tc->name, tc->arguments_json, obs, &breaker_alert);
-                            const char *final_obs = tripped ? breaker_alert : (obs ? obs : "Success");
+                            const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
 
                             belya_agent_add_tool_result(harness->agent, tc->id, tc->name, final_obs);
                             if (breaker_alert) free(breaker_alert);

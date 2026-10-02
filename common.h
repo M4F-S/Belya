@@ -19,7 +19,13 @@ static inline DynString dyn_str_new(void) {
     ds.cap = 1024;
     ds.len = 0;
     ds.data = malloc(ds.cap);
-    if (ds.data) ds.data[0] = '\0';
+    if (ds.data) {
+        ds.data[0] = '\0';
+    } else {
+        /* H1: on allocation failure, cap must be 0 so dyn_str_grow()
+           reallocs instead of memcpy-ing into NULL. */
+        ds.cap = 0;
+    }
     return ds;
 }
 

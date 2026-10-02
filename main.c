@@ -80,6 +80,10 @@ int main(int argc, char **argv) {
 
     // 1. Initialize Model Gateway
     ModelGateway *gateway = model_gateway_init(endpoint, api_key, model);
+    if (!gateway) {
+        fprintf(stderr, "\033[1;31m[Error] Failed to initialize model gateway.\033[0m\n");
+        return 1;
+    }
     if (timeout_env && atoi(timeout_env) > 0) {
         gateway->timeout_sec = atoi(timeout_env);
     }
@@ -118,6 +122,11 @@ int main(int argc, char **argv) {
         "- For large files (>200 lines), use read_file with offset and limit parameters.";
 
     BelyaAgent *agent = belya_agent_init(gateway, "belya_memory.sqlite", default_system_prompt);
+    if (!agent) {
+        fprintf(stderr, "\033[1;31m[Error] Failed to initialize agent (OOM or DB failure).\033[0m\n");
+        model_gateway_free(gateway);
+        return 1;
+    }
 
     // If resume flag is provided, restore session.
     // In telegram mode with no explicit resume flag, auto-resume active telegram session if present.

