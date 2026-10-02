@@ -1921,7 +1921,8 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     // For models like deepseek-r1 where tools schema is stripped, reasoning scan is preserved.
     if (!resp.has_tool_call && (resp.content != NULL || resp.reasoning_content != NULL) && agent->schema_count > 0) {
         const char *known_names[64];
-        for (size_t s = 0; s < agent->schema_count && s < 64; s++) {
+        size_t known_count = agent->schema_count < 64 ? agent->schema_count : 64; // M8: clamp to buffer size
+        for (size_t s = 0; s < known_count; s++) {
             known_names[s] = agent->schemas[s].name;
         }
 
@@ -1936,7 +1937,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
 
         size_t scavenged = model_gateway_scavenge_tool_calls(resp.content,
                                                              scan_reasoning ? resp.reasoning_content : NULL,
-                                                             known_names, agent->schema_count,
+                                                             known_names, known_count, // M8: clamped count, not raw schema_count
                                                              &resp.tool_calls);
         if (scavenged > 0) {
             resp.has_tool_call = true;

@@ -32,3 +32,7 @@ docs/
 # Evolution outputs
 reports/
 patches/
+
+# Deploy backups (leftover round)
+belya.old-*
+alfa.old-*

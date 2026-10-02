@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### 🔒 Security & Robustness (leftovers round 2026-10-02)
+- **M1 Telegram callback sender-verify:** approval/deny callbacks now check `from.id` against `allowed_chat_id` (comma-list aware); unauthorized callbacks are answered and ignored.
+- **M1 HTML escaping:** tool name + args HTML-escaped in permission prompt and decision edit (no markup injection, no mid-tag truncation).
+- **M3 UTF-8 chunking:** long Telegram replies split on codepoint boundary, preferring a newline within a bounded window.
+- **M8 schema clamp:** tool-scavenger known-names count clamped to the 64-entry buffer at both fill and call site.
 ### 🚀 Added
 - **Jev TypeSafe AI Decision Coprocessor Integration:**
   - Added native `jev_client.h` and `jev_client.c` implementing sub-200ms structured decision-making with zero dependencies outside libc, libcurl, and minijson.
@@ -21,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🔧 Fixed
 - **Configurable Model Gateway User-Agent & Relay Fingerprinting (Fixes #1):**
-  - Added `char *user_agent` to `struct ModelGateway` in `model_adapter.h` and initialized it from `MODEL_USER_AGENT` with default `"BelyaAgent/7.0 (Autonomous C99 Engine)"`.
+  - Added `char *user_agent` to `struct ModelGateway` in `model_adapter.h` and initialized it from `MODEL_USER_AGENT` with default `"BelyaAgent/4.0 (Autonomous C99 Engine)"`.
   - Configured `CURLOPT_USERAGENT` immediately following `curl_easy_reset(curl)` inside the retry loop of `openai_chat_complete()`, preventing client fingerprint resets and eliminating pre-auth `HTTP 401 Unauthorized` (`unauthorized_client_error`) failures from strict relay gateways.
   - Unified outbound client fingerprinting in `fetch_url` to inherit the active gateway `user_agent`.
   - Documented `MODEL_USER_AGENT` in `.env.example`, `TROUBLESHOOTING.md`, and `README.md`.

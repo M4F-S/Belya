@@ -78,7 +78,7 @@ graph TD
     subgraph "Mode B: Standalone Security Harness (Belya Harness Alone)"
         Ext["External App / Python / Node / Custom Agent"] --> H2["Belya Harness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
-        H2 --> T1["17 Native Tools (bash, edit_file, fetch_url, git, skills, memory)"]
+        H2 --> T1["18 Native Tools (bash, edit_file, fetch_url, git, skills, memory)"]
         H2 --> T2["Dynamic Custom Tools (.belya/tools/)"]
         H2 --> T3["MCP Client (JSON-RPC stdio servers)"]
     end

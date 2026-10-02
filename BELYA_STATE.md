@@ -19,7 +19,7 @@ Belya is the **production-grade, rock-solid, high-performance C99 autonomous cod
 
 ### Core Systems & Modules
 - **`belya_agent.[c|h]`:** Core conversational agent, prompt caching economics, token estimator, SQLite Gomaa memory (FTS5 + salience + wings), and session checkpointing.
-- **`belya_harness.[c|h]`:** Execution harness with 24 registered tools, role-bounded subagent execution, pre-flight compiler watchdog, metacognitive circuit breaker, and verification guards.
+- **`belya_harness.[c|h]`:** Execution harness with 18 registered tools, role-bounded subagent execution, pre-flight compiler watchdog, metacognitive circuit breaker, and verification guards.
 - **`jev_client.[c|h]`:** TypeSafe AI coprocessor client executing sub-200ms risk scoring and confirmation gating.
 - **`model_adapter.[c|h]`:** Resilient HTTP/REST model gateway supporting OpenCode Go, OpenRouter, and local Ollama Metal endpoints with SSE streaming and automatic retries.
 - **`telegram_adapter.[c|h]`:** Production Telegram bot daemon with role authorization, ephemeral status editing, and chunked markdown dispatch.

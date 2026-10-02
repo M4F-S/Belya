@@ -194,6 +194,28 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
     size_t offset = 0;
     while (offset < len) {
         size_t take = (len - offset > CHUNK_SIZE) ? CHUNK_SIZE : (len - offset);
+
+        // M3: never split a UTF-8 sequence mid-codepoint.
+        // If the byte right at the cut is a continuation byte (0b10xxxxxx),
+        // back off until we land on a boundary (lead byte or ASCII).
+        while (take > 0) {
+            unsigned char b = (unsigned char)text[offset + take];
+            if ((b & 0xC0) != 0x80) break; // not a continuation byte: safe boundary
+            take--;
+        }
+        // If the whole chunk is one giant multibyte run (unlikely), fall back to min 1 byte
+        if (take == 0) take = 1;
+
+        // Prefer splitting on a newline if one exists reasonably close to the boundary
+        // (keeps code blocks / lists intact and avoids Telegram "message is too long"
+        // on markdown from a truncated fence). Search backwards within a bounded window.
+        if (take < len - offset) {
+            size_t win = take > 400 ? 400 : take;
+            size_t nl = take;
+            while (nl > 0 && (take - nl) < win && text[offset + nl - 1] != '\n') nl--;
+            if (nl > 0 && text[offset + nl - 1] == '\n') take = nl;
+        }
+
         char *chunk = malloc(take + 1);
         if (!chunk) return false;
         memcpy(chunk, text + offset, take);
@@ -214,17 +236,37 @@ typedef struct {
     char current_chat_id[64];
 } TelegramPromptContext;
 
+static void telegram_html_escape(const char *in, char *out, size_t out_sz) {
+    if (!in) { if (out_sz > 0) out[0] = '\0'; return; }
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o + 8 < out_sz; p++) {
+        switch (*p) {
+            case '&': memcpy(out + o, "&amp;", 5); o += 5; break;
+            case '<': memcpy(out + o, "&lt;", 4); o += 4; break;
+            case '>': memcpy(out + o, "&gt;", 4); o += 4; break;
+            case '"': memcpy(out + o, "&quot;", 6); o += 6; break;
+            case '\'': memcpy(out + o, "&#39;", 5); o += 5; break;
+            default: out[o++] = (char)*p; break;
+        }
+    }
+    out[o] = '\0';
+}
+
 static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *name, const char *args, void *userdata) {
     (void)h;
     TelegramPromptContext *ctx = (TelegramPromptContext *)userdata;
     if (!ctx || !ctx->bot || strlen(ctx->current_chat_id) == 0) return false;
 
     char prompt_text[4096];
+    char esc_args[1024];
+    telegram_html_escape(args ? args : "{}", esc_args, sizeof(esc_args));
+    char esc_name[128];
+    telegram_html_escape(name ? name : "unknown", esc_name, sizeof(esc_name));
     snprintf(prompt_text, sizeof(prompt_text),
         "🛡️ <b>Security Gate: Authorization Required</b>\n\n"
         "<b>Tool:</b> <code>%s</code>\n"
         "<b>Arguments:</b>\n<code>%s</code>",
-        name, args ? args : "{}");
+        esc_name, esc_args);
 
     // Build Inline Keyboard
     JsonValue *payload = json_create_object();
@@ -290,6 +332,40 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
                         JsonValue *cb_msg = json_obj_get(cb, "message");
                         double cb_msg_id = cb_msg ? json_obj_get_num(cb_msg, "message_id", 0) : 0;
 
+                        // M1: verify the callback sender before honoring an authorization decision.
+                        // Only the bot's configured owner (allowed_chat_id) may approve/deny —
+                        // in a group chat an arbitrary member must NOT be able to approve.
+                        bool sender_ok = false;
+                        JsonValue *cb_from = json_obj_get(cb, "from");
+                        double from_id = cb_from ? json_obj_get_num(cb_from, "id", 0) : 0;
+                        if (from_id > 0 && ctx->bot->allowed_chat_id && strlen(ctx->bot->allowed_chat_id) > 0) {
+                            char from_str[32];
+                            snprintf(from_str, sizeof(from_str), "%.0f", from_id);
+                            /* allowed_chat_id may be a comma-separated list; accept any entry */
+                            char *list_copy = strdup(ctx->bot->allowed_chat_id);
+                            if (list_copy) {
+                                char *saveptr = NULL;
+                                for (char *tok = strtok_r(list_copy, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+                                    while (*tok == ' ') tok++;
+                                    char *end = tok + strlen(tok);
+                                    while (end > tok && (end[-1] == ' ' || end[-1] == '\r' || end[-1] == '\n')) *--end = '\0';
+                                    if (strcmp(tok, from_str) == 0) { sender_ok = true; break; }
+                                }
+                                free(list_copy);
+                            }
+                        }
+                        if (!sender_ok) {
+                            if (cb_id) {
+                                JsonValue *ans_p = json_create_object();
+                                json_obj_add(ans_p, "callback_query_id", json_create_string(cb_id));
+                                json_obj_add(ans_p, "text", json_create_string("⛔ Unauthorized"));
+                                JsonValue *ans_r = telegram_http_post(ctx->bot, "answerCallbackQuery", ans_p);
+                                json_free(ans_p);
+                                if (ans_r) json_free(ans_r);
+                            }
+                            continue;
+                        }
+
                         // Only accept authorization decision if callback matches the message we just prompted
                         if (msg_id > 0 && cb_msg_id > 0 && (long)cb_msg_id != (long)msg_id) {
                             continue;
@@ -325,11 +401,15 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
     // Edit message with decision result
     if (msg_id > 0) {
         char edit_text[4096];
+        char esc_args2[1024];
+        telegram_html_escape(args ? args : "{}", esc_args2, sizeof(esc_args2));
+        char esc_name2[128];
+        telegram_html_escape(name ? name : "unknown", esc_name2, sizeof(esc_name2));
         snprintf(edit_text, sizeof(edit_text),
             "🛡️ <b>Security Gate:</b> %s\n"
             "<b>Tool:</b> <code>%s</code>\n"
             "<b>Decision:</b> %s",
-            name, args ? args : "{}", decision ? "✅ <b>APPROVED</b>" : "❌ <b>DENIED</b>");
+            esc_name2, esc_args2, decision ? "✅ <b>APPROVED</b>" : "❌ <b>DENIED</b>");
 
         JsonValue *edit_p = json_create_object();
         json_obj_add(edit_p, "chat_id", json_create_string(ctx->current_chat_id));
