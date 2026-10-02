@@ -1368,7 +1368,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
         if (subagent_failed) {
             char reset_cmd[1024];
             snprintf(reset_cmd, sizeof(reset_cmd),
-                     "git -C \"%s\" checkout -- . 2>/dev/null", parent_harness->cwd);
+                     "git -C \"%.900s\" checkout -- . 2>/dev/null", parent_harness->cwd);
             int ret = system(reset_cmd);
             (void)ret;
             rolled_back = true;
@@ -1960,7 +1960,7 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
     // Register into active harness
     char *name_copy2 = strdup(name);
     if (!name_copy2) {
-        return;
+        return false;
     }
     h->tools[h->tool_count].name = name_copy2;
     h->tools[h->tool_count].security = PERM_ALLOW;
