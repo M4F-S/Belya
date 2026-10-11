@@ -1,15 +1,17 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v7.0.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.0.0)
+[![Release](https://img.shields.io/badge/Release-v7.1.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.1.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
 [![Tests](https://img.shields.io/badge/Unit_Tests-34%2F34_Passed_(100%25)-brightgreen.svg)]()
+[![Compiler](https://img.shields.io/badge/Compiler-0_Warnings_Clean-brightgreen.svg)]()
+[![Memory_Safety](https://img.shields.io/badge/Memory_Safety-100%25_ASan_UBSan_Clean-success.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
 [![Tools](https://img.shields.io/badge/Native_Tools-18_Tools-informational.svg)]()
-[![Memory](https://img.shields.io/badge/Memory_Footprint-<3.5MB_Idle-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-<220KB-informational.svg)]()
+[![Memory](https://img.shields.io/badge/Memory_Footprint-<4.2MB_Idle-purple.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-<230KB-informational.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, dual-tier automatic model gateway provider failover, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
@@ -86,47 +88,59 @@ graph TD
 
 ---
 
-## Belya vs Almaz: Champion vs Challenger Architecture
+## Belya & Almaz: The Sovereign Twin Sibling Architecture
 
-Belya operates an empirical **Champion / Challenger** ecosystem deployed 24/7 on Ubuntu Linux VPS across two dedicated repositories:
+Belya and Almaz are **twin sovereign C99 siblings** that share a common low-level systems lineage, POSIX execution harness DNA, and zero-dependency philosophy. While born from the same computational roots, they serve two complementary, production-grade operational doctrines:
 
 ```
                   ┌─────────────────────────────────────────────────────────┐
-                  │                 GitHub Ecosystem                        │
+                  │          Twin Sovereign C99 Sibling Ecosystem           │
                   └─────────────┬─────────────────────────────┬─────────────┘
                                 │                             │
                                 ▼                             ▼
                   ┌──────────────────────────┐   ┌──────────────────────────┐
                   │   GitHub: M4F-S/Belya    │   │   GitHub: M4F-S/Almaz    │
-                  │     (Production Core)    │   │  (Autonomous Organism)   │
-                  │       Tag: v7.0.0        │   │    Tag: v0.1.0-organism  │
+                  │   (Deterministic Core)   │   │  (Metamorphic Organism)  │
+                  │       Tag: v7.1.0        │   │    Tag: v0.7.1-harden    │
                   └─────────────┬────────────┘   └─────────────┬────────────┘
                                 │                             │
                                 ▼                             ▼
                   ┌──────────────────────────┐   ┌──────────────────────────┐
-                  │      Belya (Champion)    │   │     Almaz (Challenger)   │
-                  │     Path: /opt/belya     │   │     Path: /opt/almaz     │
+                  │     Belya (The Core)     │   │     Almaz (The Organism) │
+                  │     Path: /opt/charness  │   │     Path: /opt/almaz     │
                   │   Systemd: belya.service │   │   Systemd: almaz.service │
-                  │     RAM: ~3.6 MB Idle    │   │  Watchdog: almaz-watchdog│
+                  │     RAM: ~4.1 MB Idle    │   │  Supervisor: watchdog.c  │
                   │   Telegram: Primary Bot  │   │   Telegram: @AlmaztheBot │
                   └─────────────┬────────────┘   └─────────────┬────────────┘
                                 │                             │
                                 │   Both run Belya Agency     │
                                 │   Multi-Agent Architecture  │
                                 ▼                             ▼
-                      [Deterministic C99 SE]        [Sovereign Self-Evolving]
-                      [Production Services ]        [Organism + SARSI + VIGIL]
+                      [Deterministic C99 SE]        [Autopoietic Self-Healing]
+                      [Security Sandboxing ]        [Organism + SARSI + VIGIL]
+                      [34/34 Tests ASan-OK ]        [42 Tests + 57 Holdouts  ]
 ```
 
-- **Belya (Champion)**: Production software engineering core maintained in repository [`M4F-S/Belya`](https://github.com/M4F-S/Belya). Runs as `belya.service` in `/opt/belya` on the VPS (~3.6 MB RAM). Receives audited, tagged releases (`v7.0.0`) with 100% test guarantees under AddressSanitizer (34/34 tests passing). Built to compete head-to-head with Claude Code, Aider, and Hermes-3.
-- **Almaz (Challenger)**: Sovereign self-evolving, self-healing autonomous organism graduated into its own dedicated repository [`M4F-S/Almaz`](https://github.com/M4F-S/Almaz). Runs as `almaz.service` in `/opt/almaz` on the VPS (~4.7 MB RAM with `almaz-watchdog` supervisor) connected to `@AlmaztheBot`. Implements SARSI persistent self-model, VIGIL emotional appraisal, KnowSelf situational memory gating, Darwinian AST self-evolution, and AIDE² 52-assertion holdout regression protection.
-- **Belya Agency**: Sovereign multi-agent orchestration (`Architect` → `Builder` → `Reviewer` → `Tester`) is natively embedded in both codebases via `--agency` (CLI) and `/agency` (Telegram/REPL).
+### 🧬 Sibling Lineage & Architectural Division
+- **Belya (The Deterministic Sibling & Software Engineering Core)**:
+  Maintained in [`M4F-S/Belya`](https://github.com/M4F-S/Belya), deployed 24/7 on the production VPS at `/opt/charness` (symlinked `/opt/belya`) as `belya.service`. Built for absolute determinism, rock-solid stability, zero memory leaks, and sub-millisecond local execution. Belya is the production engineering workhorse that reliably creates codebases, runs unit test batteries, performs git operations, manages filesystems, and interfaces directly with developers via terminal CLI and Telegram.
+- **Almaz (The Metamorphic Sibling & Cognitive Organism)**:
+  Maintained in [`M4F-S/Almaz`](https://github.com/M4F-S/Almaz), deployed 24/7 on the production VPS at `/opt/almaz` as `almaz.service` supervised by `almaz-watchdog`. Almaz takes Belya's deterministic foundation and elevates it into an autopoietic organism: a biological computing loop featuring a persistent self-model (SARSI), emotional appraisal dynamics (VIGIL), situational memory gating (KnowSelf), and Darwinian AST code mutation guarded by 57 hidden holdout assertions.
+- **Cross-Sibling Co-Evolution**:
+  Neither sibling operates in isolation. Hardening improvements discovered in Almaz (such as H2 SSE usage accounting, offset-based `memcpy` streaming, and Darwin compatibility) are ported into Belya. Conversely, Belya's security advances (such as H4 orphaned tool message stripping, H5 SQLite WAL batching, and socket-level SSRF filters) are ported into Almaz. Through `tools/evolution_supervisor.py`, both siblings participate in symmetric, like-for-like arena benchmarking.
 
 ---
 
-## Key Capabilities & v7.0.0 Architectural Innovations
+## Key Capabilities & v7.1.0 Architectural Innovations
 
-- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required (<3MB idle RAM footprint, <180KB binary size).
+- **Zero Heavy Dependencies:** Pure C99, POSIX, `libcurl`, and `sqlite3`. No Node.js, Python, or npm runtimes required (<4MB idle RAM footprint, <220KB binary size).
+- **Dual-Tier Automatic Provider Failover:** Transparent one-shot failover mechanism between primary (OpenCode Go) and secondary (OpenRouter) endpoints via `gateway_response_is_hard_failure()`. Automatically reroutes upon HTTP 429 rate limits, 401 auth expiration, 502 bad gateways, connection drops, or empty outputs without dropping active session state.
+- **SSE Stream Token Usage Accounting (H2):** Injects `"stream_options": {"include_usage": true}` into SSE model payloads, tracking exact prompt and completion token economics directly from streaming chunk usage objects.
+- **Linear $O(N)$ Streaming Tool Buffer Assembly:** Replaced quadratic $O(N^2)$ `strcat` with offset-based `memcpy` inside model response parsers, eliminating latency spikes during large tool arguments ingestion.
+- **SSRF Network Defense & Socket-Level IP Banning:** Implements `sockaddr_is_private()` with libcurl `CURLOPT_OPENSOCKETFUNCTION` to reject loopback (`127.0.0.1`), RFC1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local spaces, and cloud metadata services (`169.254.169.254`). Restricts protocols strictly to `http,https` via `CURLOPT_PROTOCOLS_STR`.
+- **Secret Path Protection & Jailing:** Dedicated `is_secret_path()` guard rejecting unauthorized tool reads or writes touching `.env`, `.ssh`, `.git/config`, AWS/GCP credential stores, or system keys.
+- **Zero-Tolerance Allocation & Capacity Hardening:** 100% verified non-NULL checks across all `malloc`, `calloc`, and `realloc` invocations. `dyn_str_grow()` hardened against `SIZE_MAX/2` capacity overflows; `tool_edit_file` hardened against unsigned `size_t` underflows.
+- **Symmetric Like-for-Like Arena Benchmark:** Evolution supervisor enforces symmetric battery compilation (`_ensure_battery()`), 90-second timeout boundaries, and temporary file sinks to prevent IPC buffer stalls and eliminate measurement distortion.
 - **Resilient Whitespace-Normalized Editing & Diagnostic Near-Match Hints:** `edit_file` incorporates a fuzzy whitespace-tolerant fallback that compares stripped lines if exact substring matching fails, alongside diagnostic anchor reporting showing similar lines to eliminate editing friction.
 - **POSIX Regex Code Intelligence:** `search_files` supports full POSIX extended regular expressions via `"regex": true` without external dependencies, allowing pattern-based symbol and function discovery across large repos.
 - **Head-Tail Context Pruning (8KB Truncation):** Intelligently preserves both the start (first 4KB) and end (last 4KB) of large command outputs with an informational diagnostic banner, keeping vital error traces and compiler diagnostics in context while preventing prompt bloat.
