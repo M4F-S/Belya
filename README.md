@@ -3,7 +3,7 @@
 [![Release](https://img.shields.io/badge/Release-v7.1.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.1.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-34%2F34_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-35%2F35_Passed_(100%25)-brightgreen.svg)]()
 [![Compiler](https://img.shields.io/badge/Compiler-0_Warnings_Clean-brightgreen.svg)]()
 [![Memory_Safety](https://img.shields.io/badge/Memory_Safety-100%25_ASan_UBSan_Clean-success.svg)]()
 [![Benchmarks](https://img.shields.io/badge/Benchmarks-Exercism_100%25_Pass@1-success.svg)]()
@@ -54,7 +54,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
   - [15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash](#15-jev-typesafe-ai-decision-coprocessor--deepseek-v41-flash)
   - [16. OpenCode Go Subscription Backend & Model Economics](#16-opencode-go-subscription-backend--model-economics)
-- [Automated Test Suite (34/34 Comprehensive Tests)](#automated-test-suite-3434-comprehensive-tests)
+- [Automated Test Suite (35/35 Comprehensive Tests)](#automated-test-suite-3535-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
@@ -676,7 +676,7 @@ In addition to OpenRouter and local Ollama/vLLM backends, Belya supports high-th
 
 ---
 
-## Automated Test Suite (34/34 Comprehensive Tests)
+## Automated Test Suite (35/35 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -753,7 +753,9 @@ make test
   -> Belya Agency Multi-Agent Architecture & Rollback Guard PASSED
 [Test] Jev TypeSafe AI Integration & Coprocessor Parser...
   -> Jev TypeSafe AI Integration & Coprocessor Parser PASSED
-================ All Tests Passed Successfully (34/34 - 100%) ================
+[Test] Security & Adversarial Hardening Suite (SSRF, Path Jailing, Fuzzing, SQLi)...
+  -> Security & Adversarial Hardening Suite PASSED
+================ All Tests Passed Successfully (35/35 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
@@ -762,7 +764,7 @@ Belya is compiled and validated with AddressSanitizer and UndefinedBehaviorSanit
 ```bash
 make clean && make test CFLAGS="-Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -g -D_POSIX_C_SOURCE=200809L"
 ```
-**Result**: **34/34 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: **35/35 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
 
 ---
 

@@ -4,6 +4,7 @@
 #include "belya_agent.h"
 #include "linenoise.h"
 #include "mcp_client.h"
+#include <sys/socket.h>
 
 typedef enum {
     PERM_ALLOW,
@@ -68,6 +69,8 @@ void belya_harness_reset_turn_state(BelyaHarness *h);
 bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_name, const char *args_json, const char *observation, char **out_breaker_msg);
 bool is_path_jailed(const char *path, const char *workspace_root, bool is_write);
 bool is_path_safe(const char *path);
+bool belya_harness_is_secret_path(const char *path);
+bool belya_harness_sockaddr_is_private(const struct sockaddr *sa);
 char *belya_troubleshooting_resolve(const char *error_trace, const char *troubleshooting_path);
 void belya_harness_free(BelyaHarness *h);
 
