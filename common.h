@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <ctype.h>
 
@@ -44,6 +45,10 @@ static inline void dyn_str_grow(DynString *ds, size_t needed) {
     if (ds->len + needed + 1 > ds->cap) {
         size_t new_cap = ds->cap ? ds->cap : 512;
         while (ds->len + needed + 1 > new_cap) {
+            if (new_cap > SIZE_MAX / 2) {
+                new_cap = ds->len + needed + 1;
+                break;
+            }
             new_cap *= 2;
         }
         char *new_data = realloc(ds->data, new_cap);

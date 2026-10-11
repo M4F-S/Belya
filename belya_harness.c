@@ -742,15 +742,15 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
         return err.data;
     }
 
-    size_t prefix_len = pos - content;
+    size_t prefix_len = (pos >= content) ? (size_t)(pos - content) : 0;
     size_t old_len = matched_span_len;
     size_t new_len = strlen(new_text);
-    size_t suffix_len = read_bytes - (prefix_len + old_len);
+    size_t suffix_len = (read_bytes >= prefix_len + old_len) ? (read_bytes - (prefix_len + old_len)) : 0;
 
     DynString updated = dyn_str_new();
-    dyn_str_append_len(&updated, content, prefix_len);
-    dyn_str_append_len(&updated, new_text, new_len);
-    dyn_str_append_len(&updated, pos + old_len, suffix_len);
+    if (prefix_len > 0) dyn_str_append_len(&updated, content, prefix_len);
+    if (new_len > 0) dyn_str_append_len(&updated, new_text, new_len);
+    if (suffix_len > 0) dyn_str_append_len(&updated, pos + old_len, suffix_len);
     FILE *out_f = fopen(path, "wb");
     if (!out_f) {
         dyn_str_free(&updated);
