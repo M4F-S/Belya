@@ -121,6 +121,15 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             "  tool_calls_json TEXT,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");"
+            "CREATE TABLE IF NOT EXISTS session_messages_archived ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  session_id TEXT,"
+            "  turn_idx INTEGER,"
+            "  role TEXT NOT NULL,"
+            "  content TEXT NOT NULL,"
+            "  tool_calls_json TEXT,"
+            "  archived_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
             "CREATE TABLE IF NOT EXISTS agent_checkpoints ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  label TEXT,"
@@ -556,6 +565,118 @@ void belya_agent_compact_history(BelyaAgent *agent, size_t keep_recent) {
         agent->messages[1 + i] = agent->messages[start + i];
     }
     agent->msg_count = 1 + remaining;
+}
+
+void belya_agent_compact_history_middle_out(BelyaAgent *agent, size_t keep_recent) {
+    if (!agent || agent->msg_count <= 2 + keep_recent) return;
+
+    /*
+       Late-2026 Root Intent Pinning & Middle-Out Semantic Compaction:
+       Index 0: System instructions (PINNED)
+       Index 1: Root user objective (PINNED)
+       Index 2 ... (drop_end - 1): Intermediate turns to compress & archive losslessly
+       Index drop_end ... (msg_count - 1): Recent working window
+    */
+    size_t drop_end = agent->msg_count - keep_recent;
+    if (drop_end <= 2) return;
+
+    // Archive intermediate messages into SQLite session_messages_archived
+    if (agent->db) {
+        sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0);
+        sqlite3_stmt *stmt = NULL;
+        const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('active', ?, ?, ?, ?);";
+        if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
+            for (size_t i = 2; i < drop_end; i++) {
+                sqlite3_bind_int(stmt, 1, (int)i);
+                sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
+                sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
+                if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+                    JsonValue *arr = json_create_array();
+                    for (size_t t = 0; t < agent->messages[i].tool_call_count; t++) {
+                        JsonValue *tc_obj = json_create_object();
+                        json_obj_add(tc_obj, "name", json_create_string(agent->messages[i].tool_calls[t].name ? agent->messages[i].tool_calls[t].name : ""));
+                        json_obj_add(tc_obj, "arguments", json_create_string(agent->messages[i].tool_calls[t].arguments_json ? agent->messages[i].tool_calls[t].arguments_json : ""));
+                        json_arr_add(arr, tc_obj);
+                    }
+                    char *tc_str = json_serialize(arr);
+                    sqlite3_bind_text(stmt, 4, tc_str, -1, SQLITE_TRANSIENT);
+                    free(tc_str);
+                    json_free(arr);
+                } else {
+                    sqlite3_bind_null(stmt, 4);
+                }
+                sqlite3_step(stmt);
+                sqlite3_reset(stmt);
+            }
+            sqlite3_finalize(stmt);
+        }
+        sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+    }
+
+    // Synthesize intermediate summary text
+    size_t user_turns = 0, assistant_turns = 0, tool_turns = 0;
+    DynString tools_used = dyn_str_new();
+    for (size_t i = 2; i < drop_end; i++) {
+        if (!agent->messages[i].role) continue;
+        if (strcmp(agent->messages[i].role, "user") == 0) user_turns++;
+        else if (strcmp(agent->messages[i].role, "assistant") == 0) {
+            assistant_turns++;
+            if (agent->messages[i].tool_calls) {
+                for (size_t t = 0; t < agent->messages[i].tool_call_count; t++) {
+                    const char *tname = agent->messages[i].tool_calls[t].name;
+                    if (tname && !strstr(tools_used.data ? tools_used.data : "", tname)) {
+                        if (tools_used.len > 0) dyn_str_append(&tools_used, ", ");
+                        dyn_str_append(&tools_used, tname);
+                    }
+                }
+            }
+        }
+        else if (strcmp(agent->messages[i].role, "tool") == 0) tool_turns++;
+    }
+
+    DynString summary = dyn_str_new();
+    dyn_str_appendf(&summary,
+        "[CONTEXT COMPACTOR: INTERMEDIATE TURNS 2-%zu COMPRESSED]\n"
+        "- Summary: Compressed %zu intermediate turns (%zu user inputs, %zu assistant reasoning steps, %zu tool outputs).\n"
+        "- Tools Executed: %s\n"
+        "- Status: Root mission constraints pinned; full intermediate traces archived in SQLite session_messages_archived.",
+        drop_end - 1, drop_end - 2, user_turns, assistant_turns, tool_turns,
+        tools_used.len > 0 ? tools_used.data : "none");
+    dyn_str_free(&tools_used);
+
+    // Free intermediate messages
+    for (size_t i = 2; i < drop_end; i++) {
+        free_single_message(&agent->messages[i]);
+    }
+
+    // Enforce H4 orphan tool filter on the start of the recent window
+    size_t start = drop_end;
+    while (start < agent->msg_count &&
+           agent->messages[start].role &&
+           strcmp(agent->messages[start].role, "tool") == 0) {
+        free_single_message(&agent->messages[start]);
+        start++;
+    }
+
+    // Create the compressed summary message at index 2
+    BelyaMessage summary_msg;
+    memset(&summary_msg, 0, sizeof(summary_msg));
+    summary_msg.role = xstrdup("assistant");
+    summary_msg.content = summary.data;
+    summary_msg.tool_call_id = NULL;
+    summary_msg.tool_calls = NULL;
+    summary_msg.tool_call_count = 0;
+
+    agent->messages[2] = summary_msg;
+
+    // Shift recent messages after index 2
+    size_t recent_count = agent->msg_count - start;
+    for (size_t i = 0; i < recent_count; i++) {
+        agent->messages[3 + i] = agent->messages[start + i];
+    }
+    agent->msg_count = 3 + recent_count;
+
+    belya_agent_log_timeline(agent, "context_compaction_middle_out", "Compacted intermediate turns with root intent pinning");
 }
 
 void belya_agent_clear_history(BelyaAgent *agent) {
@@ -1708,10 +1829,15 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         }
         size_t est_tokens = belya_agent_total_tokens(agent);
         size_t budget = agent->max_context_tokens > 0 ? agent->max_context_tokens : 128000;
-        if (est_tokens > ((budget / 100) * agent->compaction_percent) && agent->msg_count > agent->compaction_keep) {
-            keep = agent->compaction_keep;
+        size_t token_threshold = (budget >= 128000) ? 96000 : ((budget / 100) * agent->compaction_percent);
+        if (est_tokens >= token_threshold && agent->msg_count > (agent->compaction_keep > 0 ? agent->compaction_keep : 15)) {
+            keep = agent->compaction_keep > 0 ? agent->compaction_keep : 15;
             needs_compaction = true;
-            reason = "token budget threshold";
+            reason = "token budget threshold (96k SOTA guard)";
+        } else if (agent->turn_count >= 100 && agent->msg_count > 20) {
+            keep = 15;
+            needs_compaction = true;
+            reason = "turn limit attractor guard (100 turns)";
         }
 
         if (needs_compaction && agent->db) {
@@ -1764,8 +1890,8 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 belya_agent_log_timeline(agent, "memory_before_compaction", topic);
             }
 
-            // Now compact
-            belya_agent_compact_history(agent, keep);
+            // Now perform middle-out compaction with root intent pinning & lossless archival
+            belya_agent_compact_history_middle_out(agent, keep);
 
             // Log the compaction
             char comp_msg[128];

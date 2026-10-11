@@ -1402,7 +1402,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
         }
     }
 
-    // 7. Format output envelope
+    // 7. Format output envelope (Late-2026 ROMA Context Firewall)
     DynString envelope = dyn_str_new();
     dyn_str_appendf(&envelope, "=== Belya Agency Subagent Execution Envelope ===\n");
     dyn_str_appendf(&envelope, "Role: %s | Permitted Tools: [%s]\n", role_name, whitelist);
@@ -1411,10 +1411,9 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
     if (rolled_back) {
         dyn_str_appendf(&envelope, "Git Rollback Guard: ACTIVATED (Reverted working tree to snapshot %.8s)\n", snapshot_sha);
     }
-    if (tool_log.len > 0) {
-        dyn_str_append(&envelope, "\nExecution Trace:\n");
-        dyn_str_append(&envelope, tool_log.data);
-    }
+    // ROMA Context Firewall: Intermediate tool execution traces are strictly firewalled
+    // to prevent parent context contamination and token degradation.
+    dyn_str_appendf(&envelope, "ROMA Context Firewall: Child execution trace isolated (%zu bytes scrubbed from parent context)\n", tool_log.len);
     dyn_str_appendf(&envelope, "\nFinal Output:\n%s", final_ans.len > 0 ? final_ans.data : "(Subagent completed without output text)");
 
     dyn_str_free(&tool_log);
@@ -1437,6 +1436,446 @@ static char *tool_dispatch_agent(BelyaAgent *agent, const JsonValue *args) {
     if (!g_harness) return xstrdup("Error: Harness execution environment not available.");
 
     return belya_agency_dispatch_subagent(g_harness, role, task, context);
+}
+
+// Late-2026 Phase 3: AST Symbol Graph Navigation & ROMA Task Trees
+
+size_t belya_harness_index_symbols(BelyaHarness *h, const char *dir_path) {
+    if (!h || !h->agent || !h->agent->db) return 0;
+
+    sqlite3 *db = h->agent->db;
+    const char *create_tbl =
+        "CREATE TABLE IF NOT EXISTS symbols ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  file_path TEXT NOT NULL,"
+        "  symbol_name TEXT NOT NULL,"
+        "  kind TEXT NOT NULL,"
+        "  start_line INTEGER NOT NULL,"
+        "  end_line INTEGER NOT NULL,"
+        "  signature TEXT"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);"
+        "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);";
+    sqlite3_exec(db, create_tbl, 0, 0, 0);
+
+    const char *target = (dir_path && strlen(dir_path) > 0) ? dir_path : ".";
+
+    sqlite3_stmt *stmt = NULL;
+    const char *ins_sql = "INSERT INTO symbols (file_path, symbol_name, kind, start_line, end_line, signature) VALUES (?, ?, ?, ?, ?, ?);";
+    if (sqlite3_prepare_v2(db, ins_sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return 0;
+    }
+
+    size_t count = 0;
+    sqlite3_exec(db, "BEGIN TRANSACTION;", 0, 0, 0);
+
+    DIR *d = opendir(target);
+    if (!d) {
+        sqlite3_finalize(stmt);
+        sqlite3_exec(db, "COMMIT;", 0, 0, 0);
+        return 0;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        const char *ext = strrchr(ent->d_name, '.');
+        if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0)) continue;
+
+        char fpath[1024];
+        snprintf(fpath, sizeof(fpath), "%s/%s", target, ent->d_name);
+
+        FILE *f = fopen(fpath, "r");
+        if (!f) continue;
+
+        char line[2048];
+        int lineno = 0;
+        while (fgets(line, sizeof(line), f)) {
+            lineno++;
+            line[strcspn(line, "\r\n")] = '\0';
+
+            char *trim = line;
+            while (*trim == ' ' || *trim == '\t') trim++;
+            if (*trim == '\0') continue;
+
+            // 1. MACRO
+            if (strncmp(trim, "#define", 7) == 0 && (trim[7] == ' ' || trim[7] == '\t')) {
+                char *m = trim + 7;
+                while (*m == ' ' || *m == '\t') m++;
+                char sym[128] = {0};
+                int si = 0;
+                while (*m && (isalnum((unsigned char)*m) || *m == '_') && si < 127) {
+                    sym[si++] = *m++;
+                }
+                sym[si] = '\0';
+                if (si > 0) {
+                    sqlite3_reset(stmt);
+                    sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(stmt, 3, "MACRO", -1, SQLITE_STATIC);
+                    sqlite3_bind_int(stmt, 4, lineno);
+                    sqlite3_bind_int(stmt, 5, lineno);
+                    sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                    if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                }
+                continue;
+            }
+
+            // 2. STRUCT_DEF / TYPEDEF
+            if (strncmp(trim, "typedef struct", 14) == 0 || strncmp(trim, "struct ", 7) == 0 || strncmp(trim, "typedef enum", 12) == 0) {
+                char *s = trim;
+                if (strncmp(s, "typedef struct", 14) == 0) s += 14;
+                else if (strncmp(s, "struct", 6) == 0) s += 6;
+                else s += 12;
+                while (*s == ' ' || *s == '\t') s++;
+                char sym[128] = {0};
+                int si = 0;
+                while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) {
+                    sym[si++] = *s++;
+                }
+                sym[si] = '\0';
+                if (si > 0) {
+                    sqlite3_reset(stmt);
+                    sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                    sqlite3_bind_text(stmt, 3, "STRUCT_DEF", -1, SQLITE_STATIC);
+                    sqlite3_bind_int(stmt, 4, lineno);
+                    sqlite3_bind_int(stmt, 5, lineno);
+                    sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                    if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                }
+            }
+
+            // 3. FUNC_DEF
+            char *open_p = strchr(trim, '(');
+            if (open_p && !strchr(trim, ';') && strchr(trim, '{')) {
+                char *fn_end = open_p - 1;
+                while (fn_end > trim && (*fn_end == ' ' || *fn_end == '\t')) fn_end--;
+                char *fn_start = fn_end;
+                while (fn_start > trim && (isalnum((unsigned char)*fn_start) || *fn_start == '_')) fn_start--;
+                if (!isalnum((unsigned char)*fn_start) && *fn_start != '_') fn_start++;
+
+                if (fn_end >= fn_start) {
+                    char sym[128] = {0};
+                    size_t len = (size_t)(fn_end - fn_start + 1);
+                    if (len < sizeof(sym)) {
+                        memcpy(sym, fn_start, len);
+                        sym[len] = '\0';
+                        if (strcmp(sym, "if") != 0 && strcmp(sym, "while") != 0 && strcmp(sym, "for") != 0 &&
+                            strcmp(sym, "switch") != 0 && strcmp(sym, "catch") != 0) {
+                            sqlite3_reset(stmt);
+                            sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 3, "FUNC_DEF", -1, SQLITE_STATIC);
+                            sqlite3_bind_int(stmt, 4, lineno);
+                            sqlite3_bind_int(stmt, 5, lineno);
+                            sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                            if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                        }
+                    }
+                }
+            }
+
+            // 4. CALL extraction
+            char *p = trim;
+            while ((open_p = strchr(p, '(')) != NULL) {
+                char *c_end = open_p - 1;
+                while (c_end >= trim && (*c_end == ' ' || *c_end == '\t')) c_end--;
+                char *c_start = c_end;
+                while (c_start >= trim && (isalnum((unsigned char)*c_start) || *c_start == '_')) c_start--;
+                if (c_start < trim || (!isalnum((unsigned char)*c_start) && *c_start != '_')) c_start++;
+
+                if (c_end >= c_start) {
+                    char sym[128] = {0};
+                    size_t len = (size_t)(c_end - c_start + 1);
+                    if (len > 0 && len < sizeof(sym)) {
+                        memcpy(sym, c_start, len);
+                        sym[len] = '\0';
+                        if (strcmp(sym, "if") != 0 && strcmp(sym, "while") != 0 && strcmp(sym, "for") != 0 &&
+                            strcmp(sym, "switch") != 0 && strcmp(sym, "sizeof") != 0 && strcmp(sym, "assert") != 0 &&
+                            strcmp(sym, "return") != 0) {
+                            sqlite3_reset(stmt);
+                            sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 3, "CALL", -1, SQLITE_STATIC);
+                            sqlite3_bind_int(stmt, 4, lineno);
+                            sqlite3_bind_int(stmt, 5, lineno);
+                            sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                            if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                        }
+                    }
+                }
+                p = open_p + 1;
+            }
+        }
+        fclose(f);
+    }
+    closedir(d);
+
+    sqlite3_finalize(stmt);
+    sqlite3_exec(db, "COMMIT;", 0, 0, 0);
+    return count;
+}
+
+char *belya_harness_goto_definition(BelyaHarness *h, const char *symbol_name) {
+    if (!h || !symbol_name || strlen(symbol_name) == 0) {
+        return xstrdup("Error: Invalid symbol name.");
+    }
+    if (!h->agent || !h->agent->db) {
+        return xstrdup("Error: Agent database unavailable.");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    const char *q = "SELECT file_path, kind, start_line, end_line, signature FROM symbols WHERE symbol_name = ? AND kind != 'CALL' ORDER BY (CASE kind WHEN 'FUNC_DEF' THEN 1 WHEN 'STRUCT_DEF' THEN 2 ELSE 3 END) LIMIT 5;";
+    if (sqlite3_prepare_v2(h->agent->db, q, -1, &stmt, NULL) != SQLITE_OK) {
+        belya_harness_index_symbols(h, ".");
+        if (sqlite3_prepare_v2(h->agent->db, q, -1, &stmt, NULL) != SQLITE_OK) {
+            return xstrdup("Error: Failed to query symbols database.");
+        }
+    }
+
+    sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
+
+    DynString ds = dyn_str_new();
+    int matches = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *fpath = (const char *)sqlite3_column_text(stmt, 0);
+        const char *kind = (const char *)sqlite3_column_text(stmt, 1);
+        int s_line = sqlite3_column_int(stmt, 2);
+        int e_line = sqlite3_column_int(stmt, 3);
+        const char *sig = (const char *)sqlite3_column_text(stmt, 4);
+
+        if (matches == 0) {
+            dyn_str_appendf(&ds, "🎯 Symbol Definition: '%s'\n", symbol_name);
+        }
+        dyn_str_appendf(&ds, "  [%s] %s:%d-%d\n    Signature: %s\n", kind ? kind : "SYM", fpath ? fpath : "", s_line, e_line, sig ? sig : "");
+        matches++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (matches == 0) {
+        dyn_str_free(&ds);
+        DynString not_found = dyn_str_new();
+        dyn_str_appendf(&not_found, "Symbol '%s' not found in symbols index.", symbol_name);
+        return not_found.data;
+    }
+
+    return ds.data;
+}
+
+char *belya_harness_find_callers(BelyaHarness *h, const char *symbol_name) {
+    if (!h || !symbol_name || strlen(symbol_name) == 0) {
+        return xstrdup("Error: Invalid symbol name.");
+    }
+    if (!h->agent || !h->agent->db) {
+        return xstrdup("Error: Agent database unavailable.");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    const char *q = "SELECT file_path, start_line, signature FROM symbols WHERE symbol_name = ? AND kind = 'CALL' ORDER BY file_path, start_line LIMIT 30;";
+    if (sqlite3_prepare_v2(h->agent->db, q, -1, &stmt, NULL) != SQLITE_OK) {
+        belya_harness_index_symbols(h, ".");
+        if (sqlite3_prepare_v2(h->agent->db, q, -1, &stmt, NULL) != SQLITE_OK) {
+            return xstrdup("Error: Failed to query callers database.");
+        }
+    }
+
+    sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
+
+    DynString ds = dyn_str_new();
+    int callers = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *fpath = (const char *)sqlite3_column_text(stmt, 0);
+        int line = sqlite3_column_int(stmt, 1);
+        const char *sig = (const char *)sqlite3_column_text(stmt, 2);
+
+        if (callers == 0) {
+            dyn_str_appendf(&ds, "📞 Callers of Symbol: '%s'\n", symbol_name);
+        }
+        dyn_str_appendf(&ds, "  • %s:%d => %s\n", fpath ? fpath : "", line, sig ? sig : "");
+        callers++;
+    }
+    sqlite3_finalize(stmt);
+
+    if (callers == 0) {
+        dyn_str_free(&ds);
+        DynString not_found = dyn_str_new();
+        dyn_str_appendf(&not_found, "No callers found for symbol '%s' in symbols index.", symbol_name);
+        return not_found.data;
+    }
+    dyn_str_appendf(&ds, "Total Callers: %d\n", callers);
+    return ds.data;
+}
+
+// Late-2026 Phase 3: Repo-to-MCP Dynamic Synthesis
+
+bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_name, const char *tool_name, const char *desc, const char *script_cmd, const char *schema_json) {
+    if (!h || !server_name || !tool_name || !script_cmd) return false;
+
+    mkdir(".belya", 0755);
+    mkdir(".belya/mcp", 0755);
+
+    char server_path[512];
+    snprintf(server_path, sizeof(server_path), ".belya/mcp/%s_server.sh", server_name);
+
+    FILE *f = fopen(server_path, "w");
+    if (!f) return false;
+
+    const char *effective_schema = (schema_json && strlen(schema_json) > 0) ? schema_json : "{\"type\":\"object\"}";
+
+    fprintf(f, "#!/bin/sh\n");
+    fprintf(f, "# Auto-synthesized Paper2Agent MCP Server: %s\n", server_name);
+    fprintf(f, "while IFS= read -r line; do\n");
+    fprintf(f, "  [ -z \"$line\" ] && continue\n");
+    fprintf(f, "  id=$(echo \"$line\" | sed -n 's/.*\"id\":\\([0-9]*\\).*/\\1/p')\n");
+    fprintf(f, "  [ -z \"$id\" ] && id=1\n");
+    fprintf(f, "  if echo \"$line\" | grep -q '\"method\":\"initialize\"'; then\n");
+    fprintf(f, "    echo \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":$id,\\\"result\\\":{\\\"protocolVersion\\\":\\\"2024-11-05\\\",\\\"capabilities\\\":{\\\"tools\\\":{}},\\\"serverInfo\\\":{\\\"name\\\":\\\"%s\\\",\\\"version\\\":\\\"1.0.0\\\"}}}\"\n", server_name);
+    fprintf(f, "  elif echo \"$line\" | grep -q '\"method\":\"tools/list\"'; then\n");
+    fprintf(f, "    echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":{\"tools\":[{\"name\":\"%s\",\"description\":\"%s\",\"inputSchema\":%s}]}}'\n", tool_name, desc ? desc : "", effective_schema);
+    fprintf(f, "  elif echo \"$line\" | grep -q '\"method\":\"tools/call\"'; then\n");
+    fprintf(f, "    output=$(%s 2>&1)\n", script_cmd);
+    fprintf(f, "    clean_out=$(printf '%%s' \"$output\" | tr '\\n' ' ' | sed 's/\"/\\\\\"/g')\n");
+    fprintf(f, "    echo \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":$id,\\\"result\\\":{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"$clean_out\\\"}]}}\"\n");
+    fprintf(f, "  elif echo \"$line\" | grep -q '\"method\":\"ping\"'; then\n");
+    fprintf(f, "    echo \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":$id,\\\"result\\\":{}}\"\n");
+    fprintf(f, "  fi\n");
+    fprintf(f, "done\n");
+    fclose(f);
+    chmod(server_path, 0755);
+
+    // Validation Gating: Test running with initialize & tools/list
+    char test_cmd[1024];
+    snprintf(test_cmd, sizeof(test_cmd),
+             "printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\\n' | %s 2>/dev/null | grep -q '\"name\":\"%s\"'",
+             server_path, tool_name);
+    int rc = system(test_cmd);
+    if (rc != 0) {
+        unlink(server_path);
+        return false;
+    }
+
+    return belya_harness_connect_mcp(h, server_path);
+}
+
+// Late-2026 Phase 3: Mythos Variant Security Analysis
+
+char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern_type, const char *target_path) {
+    (void)h;
+    const char *path = (target_path && strlen(target_path) > 0) ? target_path : ".";
+    const char *pat = (pattern_type && strlen(pattern_type) > 0) ? pattern_type : "all";
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "🛡️ === Mythos Variant Security Sweeper Report ===\n");
+    dyn_str_appendf(&ds, "Target Path: %s | Pattern Filter: %s\n\n", path, pat);
+
+    DIR *d = opendir(path);
+    if (!d) {
+        dyn_str_appendf(&ds, "Error: Target directory '%s' cannot be opened.\n", path);
+        return ds.data;
+    }
+
+    struct dirent *ent;
+    int findings = 0;
+
+    bool check_overflow = (strcmp(pat, "all") == 0 || strstr(pat, "overflow") != NULL || strstr(pat, "unbounded") != NULL);
+    bool check_fmt = (strcmp(pat, "all") == 0 || strstr(pat, "format") != NULL);
+
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        const char *ext = strrchr(ent->d_name, '.');
+        if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0)) continue;
+
+        char fpath[1024];
+        snprintf(fpath, sizeof(fpath), "%s/%s", path, ent->d_name);
+
+        FILE *f = fopen(fpath, "r");
+        if (!f) continue;
+
+        char line[2048];
+        int lineno = 0;
+        while (fgets(line, sizeof(line), f)) {
+            lineno++;
+            line[strcspn(line, "\r\n")] = '\0';
+            char *trim = line;
+            while (*trim == ' ' || *trim == '\t') trim++;
+
+            if (strncmp(trim, "//", 2) == 0 || strncmp(trim, "/*", 2) == 0) continue;
+
+            if (check_overflow) {
+                if (strstr(trim, "strcpy(") != NULL || strstr(trim, "strcat(") != NULL ||
+                    strstr(trim, "gets(") != NULL || strstr(trim, "sprintf(") != NULL) {
+                    dyn_str_appendf(&ds, "[CWE-120: Buffer Copy without Checking Size of Input]\n");
+                    dyn_str_appendf(&ds, "  Location: %s:%d\n  Code:     %s\n  Remedy:   Replace with snprintf() or bounded strncpy().\n\n", fpath, lineno, trim);
+                    findings++;
+                }
+            }
+
+            if (check_fmt) {
+                if ((strstr(trim, "printf(") != NULL || strstr(trim, "fprintf(") != NULL) &&
+                    strstr(trim, "\"") == NULL && strchr(trim, ',') == NULL) {
+                    dyn_str_appendf(&ds, "[CWE-134: Use of Externally-Controlled Format String]\n");
+                    dyn_str_appendf(&ds, "  Location: %s:%d\n  Code:     %s\n  Remedy:   Use string literal format: printf(\"%%s\", ...).\n\n", fpath, lineno, trim);
+                    findings++;
+                }
+            }
+        }
+        fclose(f);
+    }
+    closedir(d);
+
+    dyn_str_appendf(&ds, "Summary: %d security variant finding(s) detected.\n", findings);
+    dyn_str_appendf(&ds, "PoC Verification Command: gcc -fsanitize=address,undefined -O1 -g -o /tmp/audit_test %s/main.c\n", path);
+
+    return ds.data;
+}
+
+static char *tool_goto_definition(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness runtime not active.");
+    const char *sym = json_obj_get_str(args, "symbol");
+    if (!sym) sym = json_obj_get_str(args, "name");
+    if (!sym) return xstrdup("Error: Missing required argument 'symbol'.");
+    return belya_harness_goto_definition(g_harness, sym);
+}
+
+static char *tool_find_callers(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness runtime not active.");
+    const char *sym = json_obj_get_str(args, "symbol");
+    if (!sym) sym = json_obj_get_str(args, "name");
+    if (!sym) return xstrdup("Error: Missing required argument 'symbol'.");
+    return belya_harness_find_callers(g_harness, sym);
+}
+
+static char *tool_synthesize_mcp_server(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness runtime not active.");
+    const char *srv = json_obj_get_str(args, "server_name");
+    const char *tl = json_obj_get_str(args, "tool_name");
+    const char *desc = json_obj_get_str(args, "description");
+    const char *cmd = json_obj_get_str(args, "script_cmd");
+    const char *sch = json_obj_get_str(args, "schema_json");
+
+    if (!srv || !tl || !cmd) {
+        return xstrdup("Error: Missing required arguments (server_name, tool_name, script_cmd).");
+    }
+
+    bool ok = belya_harness_synthesize_mcp_server(g_harness, srv, tl, desc, cmd, sch);
+    if (ok) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Successfully synthesized and connected MCP server '%s' exposing tool '%s'.", srv, tl);
+        return ds.data;
+    }
+    return xstrdup("Error: Failed to synthesize or validate MCP server.");
+}
+
+static char *tool_audit_security_variants(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness runtime not active.");
+    const char *pat = json_obj_get_str(args, "pattern_type");
+    const char *target = json_obj_get_str(args, "target_path");
+    return belya_harness_audit_security_variants(g_harness, pat ? pat : "all", target ? target : ".");
 }
 
 bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***out_pipeline, size_t *out_count, char **out_direct_reply) {
@@ -2424,6 +2863,61 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(da_params, "required", da_req);
     REGISTER_IF_PERMITTED("dispatch_agent", "Dispatch a specialized autonomous engineering subagent with least-privilege bounding and Git rollback guard", da_params, PERM_ALLOW, tool_dispatch_agent);
 
+    // 19. goto_definition (AST Symbol Graph Navigation)
+    REGISTER_IF_PERMITTED("goto_definition", "Navigate to symbol definition (functions, structs, macros) using AST index",
+        build_string_param_schema("symbol", "Function, struct, or macro name to resolve"), PERM_ALLOW, tool_goto_definition);
+
+    // 20. find_callers (AST Call-Graph Traversal)
+    REGISTER_IF_PERMITTED("find_callers", "Find all call sites and invocations of a symbol across codebase",
+        build_string_param_schema("symbol", "Target function or symbol name"), PERM_ALLOW, tool_find_callers);
+
+    // 21. synthesize_mcp_server (Paper2Agent Executable Knowledge)
+    JsonValue *mcp_syn_params = json_create_object();
+    json_obj_add(mcp_syn_params, "type", json_create_string("object"));
+    JsonValue *msp_props = json_create_object();
+    JsonValue *msp_srv = json_create_object();
+    json_obj_add(msp_srv, "type", json_create_string("string"));
+    json_obj_add(msp_srv, "description", json_create_string("Name of the MCP server"));
+    json_obj_add(msp_props, "server_name", msp_srv);
+    JsonValue *msp_tool = json_create_object();
+    json_obj_add(msp_tool, "type", json_create_string("string"));
+    json_obj_add(msp_tool, "description", json_create_string("Name of the exposed tool"));
+    json_obj_add(msp_props, "tool_name", msp_tool);
+    JsonValue *msp_desc = json_create_object();
+    json_obj_add(msp_desc, "type", json_create_string("string"));
+    json_obj_add(msp_desc, "description", json_create_string("Description of tool"));
+    json_obj_add(msp_props, "description", msp_desc);
+    JsonValue *msp_cmd = json_create_object();
+    json_obj_add(msp_cmd, "type", json_create_string("string"));
+    json_obj_add(msp_cmd, "description", json_create_string("Shell or Python script command to execute"));
+    json_obj_add(msp_props, "script_cmd", msp_cmd);
+    JsonValue *msp_sch = json_create_object();
+    json_obj_add(msp_sch, "type", json_create_string("string"));
+    json_obj_add(msp_sch, "description", json_create_string("JSON Schema string for parameters"));
+    json_obj_add(msp_props, "schema_json", msp_sch);
+    json_obj_add(mcp_syn_params, "properties", msp_props);
+    JsonValue *msp_req = json_create_array();
+    json_arr_add(msp_req, json_create_string("server_name"));
+    json_arr_add(msp_req, json_create_string("tool_name"));
+    json_arr_add(msp_req, json_create_string("script_cmd"));
+    json_obj_add(mcp_syn_params, "required", msp_req);
+    REGISTER_IF_PERMITTED("synthesize_mcp_server", "Synthesize a standalone Model Context Protocol (MCP) server from any executable script with validation gating", mcp_syn_params, PERM_ALLOW, tool_synthesize_mcp_server);
+
+    // 22. audit_security_variants (Mythos Variant Security Sweeper)
+    JsonValue *audit_params = json_create_object();
+    json_obj_add(audit_params, "type", json_create_string("object"));
+    JsonValue *ap_props = json_create_object();
+    JsonValue *ap_pat = json_create_object();
+    json_obj_add(ap_pat, "type", json_create_string("string"));
+    json_obj_add(ap_pat, "description", json_create_string("Pattern type: 'all', 'buffer_overflow', 'format_string', 'unchecked_alloc'"));
+    json_obj_add(ap_props, "pattern_type", ap_pat);
+    JsonValue *ap_tgt = json_create_object();
+    json_obj_add(ap_tgt, "type", json_create_string("string"));
+    json_obj_add(ap_tgt, "description", json_create_string("Target directory path to audit"));
+    json_obj_add(ap_props, "target_path", ap_tgt);
+    json_obj_add(audit_params, "properties", ap_props);
+    REGISTER_IF_PERMITTED("audit_security_variants", "Run Mythos variant analysis across codebase to detect unsafe sinks, buffer overflows, and memory vulnerabilities", audit_params, PERM_ALLOW, tool_audit_security_variants);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -3008,6 +3502,60 @@ char *belya_troubleshooting_resolve(const char *error_trace, const char *trouble
     return matched_remedy;
 }
 
+static uint64_t fnv1a_hash_str(const char *s, uint64_t hash) {
+    if (!s) return hash;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        hash ^= (uint64_t)(*p++);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static uint64_t compute_action_hash(const char *tool_name, const char *args_json) {
+    uint64_t h = 14695981039346656037ULL;
+    h = fnv1a_hash_str(tool_name, h);
+    h = fnv1a_hash_str(":", h);
+    h = fnv1a_hash_str(args_json, h);
+    return h;
+}
+
+int belya_harness_detect_loop(BelyaHarness *h, int *out_period) {
+    if (!h || h->loop_detector.count < 3) return 0;
+    if (out_period) *out_period = 0;
+
+    int total = h->loop_detector.count;
+    int head = h->loop_detector.head;
+
+    // Check periods k = 1, 2, 3
+    for (int k = 1; k <= 3; k++) {
+        // To verify 3 consecutive cycles of length k, we need at least 3 * k records
+        if (total < 3 * k) continue;
+
+        bool cycle_matched = true;
+        for (int i = 0; i < k; i++) {
+            int idx_curr = (head - 1 - i + HARNESS_ACTION_HISTORY_SIZE) % HARNESS_ACTION_HISTORY_SIZE;
+            int idx_prev1 = (head - 1 - i - k + HARNESS_ACTION_HISTORY_SIZE) % HARNESS_ACTION_HISTORY_SIZE;
+            int idx_prev2 = (head - 1 - i - 2 * k + HARNESS_ACTION_HISTORY_SIZE) % HARNESS_ACTION_HISTORY_SIZE;
+
+            uint64_t h_curr = h->loop_detector.history[idx_curr].action_hash;
+            uint64_t h_prev1 = h->loop_detector.history[idx_prev1].action_hash;
+            uint64_t h_prev2 = h->loop_detector.history[idx_prev2].action_hash;
+
+            if (h_curr != h_prev1 || h_curr != h_prev2) {
+                cycle_matched = false;
+                break;
+            }
+        }
+
+        if (cycle_matched) {
+            if (out_period) *out_period = k;
+            return k;
+        }
+    }
+    return 0;
+}
+
 void belya_harness_reset_turn_state(BelyaHarness *h) {
     if (!h) return;
     h->files_modified_in_turn = false;
@@ -3016,6 +3564,8 @@ void belya_harness_reset_turn_state(BelyaHarness *h) {
     h->consecutive_tool_failures = 0;
     memset(h->last_failed_tool, 0, sizeof(h->last_failed_tool));
     memset(h->last_failed_args, 0, sizeof(h->last_failed_args));
+    h->loop_breaker_tripped = false;
+    memset(&h->loop_detector, 0, sizeof(h->loop_detector));
 }
 
 bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_name, const char *args_json, const char *observation, char **out_breaker_msg) {
@@ -3045,6 +3595,21 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
         is_failure = true;
     }
 
+    // Record into Loop Detector ring buffer
+    int head_idx = h->loop_detector.head;
+    h->loop_detector.history[head_idx].action_hash = compute_action_hash(tool_name, args_json);
+    snprintf(h->loop_detector.history[head_idx].tool_name, sizeof(h->loop_detector.history[head_idx].tool_name), "%s", tool_name ? tool_name : "");
+    h->loop_detector.history[head_idx].return_code = is_failure ? 1 : 0;
+    h->loop_detector.history[head_idx].timestamp = time(NULL);
+    h->loop_detector.head = (head_idx + 1) % HARNESS_ACTION_HISTORY_SIZE;
+    if (h->loop_detector.count < HARNESS_ACTION_HISTORY_SIZE) {
+        h->loop_detector.count++;
+    }
+
+    // Check for In-Context Locking / Attractor Loop
+    int detected_k = 0;
+    belya_harness_detect_loop(h, &detected_k);
+
     if (is_failure) {
         char args_prefix[256];
         snprintf(args_prefix, sizeof(args_prefix), "%.255s", args_json ? args_json : "");
@@ -3058,11 +3623,24 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
 
         char *remedy = observation ? belya_troubleshooting_resolve(observation, "TROUBLESHOOTING.md") : NULL;
 
-        if (h->consecutive_tool_failures >= 3) {
+        if (h->consecutive_tool_failures >= 3 || detected_k > 0) {
+            h->loop_breaker_tripped = true;
+            if (detected_k > 0) {
+                h->loop_detector.consecutive_cycle_matches++;
+                h->loop_detector.detected_period = detected_k;
+            }
+
             DynString cb = dyn_str_new();
             dyn_str_appendf(&cb, "%s\n\n[METACOGNITIVE CIRCUIT BREAKER]: You have attempted tool '%s' with identical/failing arguments 3 times consecutively. "
                                  "STOP repeating this action. Step back, re-evaluate assumptions, inspect error details, or switch to an alternate strategy.",
                             observation ? observation : "Tool returned empty observation", tool_name);
+            if (detected_k > 1) {
+                dyn_str_appendf(&cb, "\n\n[CIRCUIT INTERRUPT: DETERMINISTIC ATTRACTOR DETECTED (Period %d)]\n"
+                                     "You have executed the exact same sequence of %d action(s) (%s) 3 consecutive times with identical parameters.\n"
+                                     "Your current hypothesis is fundamentally flawed. You are strictly forbidden from repeating this action.\n"
+                                     "Step back, re-read your initial constraints, and select an alternative hypothesis.",
+                                detected_k, detected_k, tool_name);
+            }
             if (remedy) {
                 dyn_str_appendf(&cb, "\n\n💡 [TROUBLESHOOTING RESOLVER]: Known Failure Pattern Remedy:\n%s", remedy);
                 free(remedy);
@@ -3084,6 +3662,28 @@ bool belya_harness_record_tool_observation(BelyaHarness *h, const char *tool_nam
         h->consecutive_tool_failures = 0;
         memset(h->last_failed_tool, 0, sizeof(h->last_failed_tool));
         memset(h->last_failed_args, 0, sizeof(h->last_failed_args));
+
+        // Even on success, an infinite attractor loop (e.g. bash ls in a loop) must be broken!
+        if (detected_k > 0) {
+            h->loop_breaker_tripped = true;
+            h->loop_detector.consecutive_cycle_matches++;
+            h->loop_detector.detected_period = detected_k;
+
+            DynString loop_cb = dyn_str_new();
+            dyn_str_appendf(&loop_cb, "%s\n\n[CIRCUIT INTERRUPT: DETERMINISTIC ATTRACTOR DETECTED (Period %d)]\n"
+                                      "You have executed the exact same sequence of %d action(s) (%s) 3 consecutive times with identical parameters.\n"
+                                      "Your current hypothesis is fundamentally flawed. You are strictly forbidden from repeating this action.\n"
+                                      "Step back, re-read your initial constraints, and select an alternative hypothesis.",
+                            observation ? observation : "Tool returned empty observation",
+                            detected_k, detected_k, tool_name);
+            if (out_breaker_msg) {
+                if (*out_breaker_msg) free(*out_breaker_msg);
+                *out_breaker_msg = loop_cb.data;
+            } else {
+                dyn_str_free(&loop_cb);
+            }
+            return true;
+        }
     }
     return false;
 }
@@ -3208,7 +3808,9 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                 const char *final_obs = breaker_alert ? breaker_alert : (observation ? observation : "Success");
 
                 printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", final_obs ? strlen(final_obs) : 0);
-                if (tripped) {
+                if (h->loop_breaker_tripped) {
+                    printf("\033[1;35m[In-Context Locking Breaker Tripped (Period %d)]: Attractor loop broken!\033[0m\n", h->loop_detector.detected_period);
+                } else if (tripped) {
                     printf("\033[1;35m[Metacognitive Circuit Breaker Tripped]: Loop interrupted!\033[0m\n");
                 }
                 belya_agent_add_tool_result(h->agent, tc->id, tc->name, final_obs);

@@ -50,6 +50,7 @@ void belya_agent_persist_memory(BelyaAgent *agent, const char *topic, const char
 void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, const char *content, const char *wing, const char *room);
 char *belya_agent_search_memory(BelyaAgent *agent, const char *query);
 void belya_agent_compact_history(BelyaAgent *agent, size_t keep_recent);
+void belya_agent_compact_history_middle_out(BelyaAgent *agent, size_t keep_recent);
 void belya_agent_clear_history(BelyaAgent *agent);
 
 // Token Budgeting & Estimation

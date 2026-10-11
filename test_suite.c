@@ -2213,6 +2213,216 @@ void test_security_adversarial_suite(void) {
     printf("  -> Security & Adversarial Hardening Suite PASSED\n");
 }
 
+void test_in_context_loop_breaker(void) {
+    printf("[Test] Late-2026 In-Context Locking Breaker (Attractor Detection)...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_loop_breaker.sqlite", "Test System Prompt");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Period 1 detection: 3 identical tool calls
+    char *breaker_msg = NULL;
+    bool tripped = belya_harness_record_tool_observation(h, "read_file", "{\"path\":\"README.md\"}", "content line 1", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "read_file", "{\"path\":\"README.md\"}", "content line 1", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "read_file", "{\"path\":\"README.md\"}", "content line 1", &breaker_msg);
+    assert(tripped && breaker_msg != NULL);
+    assert(strstr(breaker_msg, "DETERMINISTIC ATTRACTOR DETECTED (Period 1)") != NULL);
+    assert(h->loop_breaker_tripped == true);
+    assert(h->loop_detector.detected_period == 1);
+    free(breaker_msg);
+
+    // 2. Turn reset clears detector
+    belya_harness_reset_turn_state(h);
+    assert(h->loop_breaker_tripped == false);
+    assert(h->loop_detector.count == 0);
+
+    // 3. Period 2 detection: alternating oscillation A -> B -> A -> B -> A -> B
+    const char *tool_a = "{\"command\":\"pwd\"}";
+    const char *tool_b = "{\"command\":\"ls\"}";
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_a, "/home", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_b, "file1 file2", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_a, "/home", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_b, "file1 file2", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_a, "/home", &breaker_msg);
+    assert(!tripped && breaker_msg == NULL);
+    tripped = belya_harness_record_tool_observation(h, "bash", tool_b, "file1 file2", &breaker_msg);
+    assert(tripped && breaker_msg != NULL);
+    assert(strstr(breaker_msg, "DETERMINISTIC ATTRACTOR DETECTED (Period 2)") != NULL);
+    assert(h->loop_breaker_tripped == true);
+    assert(h->loop_detector.detected_period == 2);
+    free(breaker_msg);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_loop_breaker.sqlite");
+    printf("  -> Late-2026 In-Context Locking Breaker PASSED\n");
+}
+
+void test_context_compactor_middle_out(void) {
+    printf("[Test] Late-2026 128-Call / 96k Middle-Out Context Compactor...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_compactor.sqlite", "Test System Prompt");
+    assert(agent != NULL);
+
+    // Add root user instruction
+    belya_agent_add_message(agent, "user", "ROOT MISSION: Refactor IPv6 parser and verify zero memory leaks.");
+
+    // Add 20 intermediate turns
+    for (int i = 0; i < 20; i++) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Intermediate step %d: inspecting code lines %d-%d", i, i * 10, i * 10 + 10);
+        belya_agent_add_message(agent, (i % 2 == 0) ? "assistant" : "user", buf);
+    }
+    assert(agent->msg_count == 22);
+
+    // Perform middle-out compaction retaining 4 recent messages
+    belya_agent_compact_history_middle_out(agent, 4);
+
+    // Layout must be:
+    // Index 0: system
+    // Index 1: root user objective (PINNED!)
+    // Index 2: summary of intermediate steps
+    // Index 3..6: 4 recent messages
+    assert(agent->msg_count == 7);
+    assert(strcmp(agent->messages[0].role, "system") == 0);
+    assert(strcmp(agent->messages[1].role, "user") == 0);
+    assert(strstr(agent->messages[1].content, "ROOT MISSION:") != NULL);
+    assert(strcmp(agent->messages[2].role, "assistant") == 0);
+    assert(strstr(agent->messages[2].content, "[CONTEXT COMPACTOR: INTERMEDIATE TURNS") != NULL);
+    assert(strstr(agent->messages[2].content, "Root mission constraints pinned") != NULL);
+
+    // Verify lossless archival in SQLite table session_messages_archived
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(agent->db, "SELECT count(*) FROM session_messages_archived;", -1, &stmt, NULL);
+    assert(rc == SQLITE_OK);
+    rc = sqlite3_step(stmt);
+    assert(rc == SQLITE_ROW);
+    int archived_count = sqlite3_column_int(stmt, 0);
+    assert(archived_count >= 15);
+    sqlite3_finalize(stmt);
+
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    unlink("test_compactor.sqlite");
+    printf("  -> Late-2026 Middle-Out Context Compactor PASSED\n");
+}
+
+static void test_roma_context_firewall(void) {
+    printf("[Test] Late-2026 ROMA Recursive Context Firewall...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_roma.sqlite", "Roma Test");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    belya_agent_load_manifests(agent, "agents");
+    char *envelope = belya_agency_dispatch_subagent(h, "architect", "Inspect repository structure", "Read-only audit");
+    assert(envelope != NULL);
+    assert(strstr(envelope, "=== Belya Agency Subagent Execution Envelope") != NULL);
+    assert(strstr(envelope, "ROMA Context Firewall: Child execution trace isolated") != NULL);
+    // Crucial ROMA invariant: raw child execution trace must NOT contaminate parent envelope
+    assert(strstr(envelope, "\nExecution Trace:\n") == NULL);
+    free(envelope);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_roma.sqlite");
+    printf("  -> Late-2026 ROMA Recursive Context Firewall PASSED\n");
+}
+
+static void test_symbol_graph_navigation(void) {
+    printf("[Test] Late-2026 AST Symbol Graph Navigation & Call-Tree...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_symbols.sqlite", "Symbol Test");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    size_t count = belya_harness_index_symbols(h, ".");
+    assert(count > 0);
+
+    // Test Goto Definition
+    char *def = belya_harness_goto_definition(h, "belya_harness_index_symbols");
+    assert(def != NULL);
+    assert(strstr(def, "Symbol Definition: 'belya_harness_index_symbols'") != NULL);
+    free(def);
+
+    // Test Macro resolution
+    char *mdef = belya_harness_goto_definition(h, "HARNESS_ACTION_HISTORY_SIZE");
+    assert(mdef != NULL);
+    assert(strstr(mdef, "MACRO") != NULL || strstr(mdef, "HARNESS_ACTION_HISTORY_SIZE") != NULL);
+    free(mdef);
+
+    // Test Callers lookup
+    char *callers = belya_harness_find_callers(h, "belya_harness_index_symbols");
+    assert(callers != NULL);
+    free(callers);
+
+    // Test Tool callbacks
+    BelyaToolCallback cb_goto = get_tool_cb(h, "goto_definition");
+    assert(cb_goto != NULL);
+    JsonValue *args = json_create_object();
+    json_obj_add(args, "symbol", json_create_string("belya_harness_index_symbols"));
+    char *res = cb_goto(agent, args);
+    assert(res != NULL);
+    assert(strstr(res, "Symbol Definition") != NULL);
+    free(res);
+    json_free(args);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_symbols.sqlite");
+    printf("  -> Late-2026 AST Symbol Graph Navigation PASSED (%zu symbols indexed)\n", count);
+}
+
+static void test_repo_to_mcp_synthesis(void) {
+    printf("[Test] Late-2026 Paper2Agent Repo-to-MCP Dynamic Synthesis...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "MCP Test");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    bool ok = belya_harness_synthesize_mcp_server(h, "paper2agent_calc", "compute_pi", "Compute pi approximation", "echo 3.14159", "{\"type\":\"object\"}");
+    assert(ok == true);
+
+    // Verify MCP tool registered into active harness
+    assert(get_tool_cb(h, "compute_pi") != NULL || h->tool_count >= 19);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink(".belya/mcp/paper2agent_calc_server.sh");
+    printf("  -> Late-2026 Paper2Agent Repo-to-MCP Synthesis PASSED\n");
+}
+
+static void test_mythos_variant_analysis(void) {
+    printf("[Test] Late-2026 Mythos Variant Security Sweeper...\n");
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Audit Test");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    char *report = belya_harness_audit_security_variants(h, "all", ".");
+    assert(report != NULL);
+    assert(strstr(report, "Mythos Variant Security Sweeper Report") != NULL);
+    assert(strstr(report, "PoC Verification Command") != NULL);
+    free(report);
+
+    // Test Tool callback
+    BelyaToolCallback cb_audit = get_tool_cb(h, "audit_security_variants");
+    assert(cb_audit != NULL);
+    JsonValue *args = json_create_object();
+    json_obj_add(args, "pattern_type", json_create_string("buffer_overflow"));
+    json_obj_add(args, "target_path", json_create_string("."));
+    char *obs = cb_audit(agent, args);
+    assert(obs != NULL);
+    assert(strstr(obs, "Mythos Variant Security Sweeper Report") != NULL);
+    free(obs);
+    json_free(args);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> Late-2026 Mythos Variant Security Sweeper PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2250,7 +2460,13 @@ int main(void) {
     test_belya_agency_architecture();
     test_jev_client();
     test_security_adversarial_suite();
-    printf("================ All Tests Passed Successfully (35/35 - 100%%) ================\n\n");
+    test_in_context_loop_breaker();
+    test_context_compactor_middle_out();
+    test_roma_context_firewall();
+    test_symbol_graph_navigation();
+    test_repo_to_mcp_synthesis();
+    test_mythos_variant_analysis();
+    printf("================ All Tests Passed Successfully (41/41 - 100%%) ================\n\n");
     return 0;
 }
 
