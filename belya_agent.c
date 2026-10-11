@@ -1,10 +1,11 @@
-#include "common.h"
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE 1
 #endif
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
+
+#include "common.h"
 
 #include "belya_agent.h"
 #include "minifrontmatter.h"

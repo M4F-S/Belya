@@ -120,14 +120,15 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                             if (!ctx->tool_calls[idx].name) {
                                 ctx->tool_calls[idx].name = xstrdup(f_name);
                             } else {
-                                size_t nlen = strlen(ctx->tool_calls[idx].name) + strlen(f_name) + 1;
-                                char *ntmp = realloc(ctx->tool_calls[idx].name, nlen);
+                                size_t old_nlen = strlen(ctx->tool_calls[idx].name);
+                                size_t add_nlen = strlen(f_name);
+                                char *ntmp = realloc(ctx->tool_calls[idx].name, old_nlen + add_nlen + 1);
                                 if (!ntmp) {
                                     fprintf(stderr, "[Fatal] Out of memory appending tool name\n");
                                     abort();
                                 }
+                                memcpy(ntmp + old_nlen, f_name, add_nlen + 1);
                                 ctx->tool_calls[idx].name = ntmp;
-                                strcat(ctx->tool_calls[idx].name, f_name);
                             }
                         }
                         const char *f_args = json_obj_get_str(fn, "arguments");
@@ -135,14 +136,15 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                             if (!ctx->tool_calls[idx].arguments_json) {
                                 ctx->tool_calls[idx].arguments_json = xstrdup(f_args);
                             } else {
-                                size_t alen = strlen(ctx->tool_calls[idx].arguments_json) + strlen(f_args) + 1;
-                                char *atmp = realloc(ctx->tool_calls[idx].arguments_json, alen);
+                                size_t old_alen = strlen(ctx->tool_calls[idx].arguments_json);
+                                size_t add_alen = strlen(f_args);
+                                char *atmp = realloc(ctx->tool_calls[idx].arguments_json, old_alen + add_alen + 1);
                                 if (!atmp) {
                                     fprintf(stderr, "[Fatal] Out of memory appending tool arguments\n");
                                     abort();
                                 }
+                                memcpy(atmp + old_alen, f_args, add_alen + 1);
                                 ctx->tool_calls[idx].arguments_json = atmp;
-                                strcat(ctx->tool_calls[idx].arguments_json, f_args);
                             }
                         }
                     }
@@ -180,20 +182,28 @@ static size_t curl_sink_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
     return total;
 }
 
-static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema) {
+static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema, bool use_fallback) {
     ModelGatewayResponse res = {0};
 
+    const char *ep = (use_fallback && self->fallback_endpoint) ? self->fallback_endpoint : self->endpoint;
+    const char *key = (use_fallback && self->fallback_api_key) ? self->fallback_api_key : self->api_key;
+    const char *mod = (use_fallback && self->fallback_model) ? self->fallback_model : self->model;
+
     JsonValue *payload = json_create_object();
-    json_obj_add(payload, "model", json_create_string(self->model));
+    json_obj_add(payload, "model", json_create_string(mod ? mod : "hermes-3"));
     json_obj_add(payload, "messages", (JsonValue *)messages_json); // Shared reference
     if (tools_schema && tools_schema->type == JSON_ARRAY && tools_schema->u.array.count > 0) {
-        if (!self->model || strstr(self->model, "deepseek-r1") == NULL) {
+        if (!mod || strstr(mod, "deepseek-r1") == NULL) {
             json_obj_add(payload, "tools", (JsonValue *)tools_schema);
             json_obj_add(payload, "tool_choice", json_create_string("auto"));
         }
     }
     if (self->streaming) {
         json_obj_add(payload, "stream", json_create_bool(true));
+        /* Request usage in SSE stream chunks */
+        JsonValue *stream_opts = json_create_object();
+        json_obj_add(stream_opts, "include_usage", json_create_bool(true));
+        json_obj_add(payload, "stream_options", stream_opts);
     }
 
     char *json_body = json_serialize(payload);
@@ -229,24 +239,24 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         headers = curl_slist_append(headers, "Content-Type: application/json");
 
         char auth_header[512];
-        if (self->api_key && strlen(self->api_key) > 0 && strcmp(self->api_key, "none") != 0) {
-            snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
+        if (key && strlen(key) > 0 && strcmp(key, "none") != 0) {
+            snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", key);
             headers = curl_slist_append(headers, auth_header);
         }
 
         if (self->prompt_caching) {
             // Only send anthropic prompt caching header for anthropic endpoints
-            if (self->endpoint && strstr(self->endpoint, "anthropic") != NULL) {
+            if (ep && strstr(ep, "anthropic") != NULL) {
                 headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
             }
         }
 
-        if (self->endpoint && strstr(self->endpoint, "openrouter.ai") != NULL) {
+        if (ep && strstr(ep, "openrouter.ai") != NULL) {
             headers = curl_slist_append(headers, "HTTP-Referer: https://github.com/M4F-S/Belya");
             headers = curl_slist_append(headers, "X-Title: Belya Agent");
         }
 
-        if (self->endpoint && strstr(self->endpoint, "opencode.ai") != NULL) {
+        if (ep && strstr(ep, "opencode.ai") != NULL) {
             const char *oc_sess = getenv("OPENCODE_SESSION_ID");
             char sess_hdr[256];
             snprintf(sess_hdr, sizeof(sess_hdr), "x-opencode-session: %s", (oc_sess && strlen(oc_sess) > 0) ? oc_sess : "belya-agent-session");
@@ -254,7 +264,7 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         }
 
         long timeout = self->timeout_sec > 0 ? (long)self->timeout_sec : 60L;
-        curl_easy_setopt(curl, CURLOPT_URL, self->endpoint);
+        curl_easy_setopt(curl, CURLOPT_URL, ep);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
@@ -479,6 +489,34 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
 
     free(json_body);
     res.content = xstrdup("Error: Maximum retry attempts exceeded.");
+    return res;
+}
+
+static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema) {
+    if (!self) {
+        ModelGatewayResponse r = {0};
+        r.content = xstrdup("Error: gateway not initialized.");
+        return r;
+    }
+
+    ModelGatewayResponse res = openai_chat_complete_inner(self, messages_json, tools_schema, false);
+    bool failed = !res.has_tool_call && (
+        !res.content ||
+        strncmp(res.content, "Network Error", 13) == 0 ||
+        strncmp(res.content, "API Error", 9) == 0 ||
+        strncmp(res.content, "Connection Error", 16) == 0 ||
+        strncmp(res.content, "Error: Maximum retry", 20) == 0
+    );
+
+    if (failed && self->fallback_endpoint && self->fallback_api_key && strlen(self->fallback_api_key) > 0) {
+        fprintf(stderr, "\033[1;33m[ModelGateway Failover]: Primary endpoint '%s' failed. Switching to fallback '%s' (%s)...\033[0m\n",
+                self->endpoint ? self->endpoint : "unknown",
+                self->fallback_endpoint,
+                self->fallback_model ? self->fallback_model : "");
+        model_gateway_response_free(&res);
+        res = openai_chat_complete_inner(self, messages_json, tools_schema, true);
+    }
+
     return res;
 }
 
@@ -734,7 +772,31 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
         gw->prompt_caching = true;
     }
     gw->chat_complete = openai_chat_complete;
+
+    // Auto-detect fallback provider if configured (e.g. OpenRouter failover)
+    const char *fb_ep = getenv("FALLBACK_MODEL_ENDPOINT");
+    const char *fb_key = getenv("FALLBACK_MODEL_API_KEY");
+    if (!fb_key || strlen(fb_key) == 0) fb_key = getenv("OPENROUTER_API_KEY");
+    const char *fb_mod = getenv("FALLBACK_MODEL_NAME");
+    if (!fb_mod || strlen(fb_mod) == 0) fb_mod = getenv("OPENROUTER_MODEL");
+    if ((!fb_mod || strlen(fb_mod) == 0) && fb_key && strlen(fb_key) > 0) fb_mod = "deepseek/deepseek-v4-flash";
+    if ((!fb_ep || strlen(fb_ep) == 0) && fb_key && strlen(fb_key) > 0) fb_ep = "https://openrouter.ai/api/v1/chat/completions";
+
+    if (fb_ep && fb_key && strlen(fb_key) > 0) {
+        model_gateway_set_fallback(gw, fb_ep, fb_key, fb_mod);
+    }
+
     return gw;
+}
+
+void model_gateway_set_fallback(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model) {
+    if (!gw) return;
+    if (gw->fallback_endpoint) { free(gw->fallback_endpoint); gw->fallback_endpoint = NULL; }
+    if (gw->fallback_api_key) { free(gw->fallback_api_key); gw->fallback_api_key = NULL; }
+    if (gw->fallback_model) { free(gw->fallback_model); gw->fallback_model = NULL; }
+    if (endpoint && strlen(endpoint) > 0) gw->fallback_endpoint = xstrdup(endpoint);
+    if (api_key && strlen(api_key) > 0) gw->fallback_api_key = xstrdup(api_key);
+    if (model && strlen(model) > 0) gw->fallback_model = xstrdup(model);
 }
 
 void model_gateway_free(ModelGateway *gw) {
@@ -747,6 +809,9 @@ void model_gateway_free(ModelGateway *gw) {
     free(gw->api_key);
     free(gw->model);
     free(gw->user_agent);
+    if (gw->fallback_endpoint) free(gw->fallback_endpoint);
+    if (gw->fallback_api_key) free(gw->fallback_api_key);
+    if (gw->fallback_model) free(gw->fallback_model);
     free(gw);
 }
 

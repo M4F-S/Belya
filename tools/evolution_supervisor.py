@@ -21,6 +21,7 @@ import resource
 import urllib.request
 import urllib.parse
 import subprocess
+import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -579,8 +580,21 @@ def run_self_evolution(force_retest=False):
 # =========================================================================
 # Phase 3: Real Head-to-Head Arena Benchmark
 # =========================================================================
-def measure_binary_execution(bin_path, args, cwd):
-    """Spawns binary, measures real wall-clock duration and peak RSS from /proc or rusage."""
+ARENA_TIMEOUT_SEC = 90          # hard wall-clock cap per measured binary
+
+
+def measure_binary_execution(bin_path, args, cwd, timeout=ARENA_TIMEOUT_SEC):
+    """Spawns binary, measures real wall-clock duration and peak RSS.
+
+    Robustness (2026-10-11):
+      * stdout/stderr -> TEMP FILE, not an undrained PIPE. The previous version
+        polled the child to completion before draining its pipe, so a measured
+        binary producing more than the 64 KiB pipe buffer would block on write
+        and stall the arena forever.
+      * stdin=DEVNULL is REQUIRED: the verification battery reaches the
+        interactive permission gate (fgets on stdin) and otherwise blocks.
+      * hard timeout: a hanging candidate can never stall the nightly mission.
+    """
     if not bin_path.exists():
         return {"status": "NOT FOUND", "duration": 0.0, "rss": "N/A", "loc": 0}
 
@@ -592,25 +606,33 @@ def measure_binary_execution(bin_path, args, cwd):
     except Exception:
         loc = 0
 
-    t_start = time.perf_counter()
-    proc = subprocess.Popen([str(bin_path)] + args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with tempfile.TemporaryFile() as sink:
+        t_start = time.perf_counter()
+        proc = subprocess.Popen([str(bin_path)] + list(args), cwd=cwd,
+                                stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                                text=True)
 
-    peak_rss_kb = 0
-    # On Linux, poll /proc/{pid}/status for VmHWM (Peak Resident Set Size)
-    status_file = Path(f"/proc/{proc.pid}/status")
-    while proc.poll() is None:
-        if status_file.exists():
-            try:
-                for line in status_file.read_text().splitlines():
-                    if line.startswith("VmHWM:") or line.startswith("VmRSS:"):
-                        val = int(line.split()[1])
-                        if val > peak_rss_kb:
-                            peak_rss_kb = val
-            except Exception:
-                pass
-        time.sleep(0.005)
+        peak_rss_kb = 0
+        status_file = Path(f"/proc/{proc.pid}/status")
+        deadline = t_start + timeout
+        timed_out = False
+        while proc.poll() is None:
+            if status_file.exists():
+                try:
+                    for line in status_file.read_text().splitlines():
+                        if line.startswith("VmHWM:") or line.startswith("VmRSS:"):
+                            val = int(line.split()[1])
+                            if val > peak_rss_kb:
+                                peak_rss_kb = val
+                except Exception:
+                    pass
+            if time.perf_counter() > deadline:
+                timed_out = True
+                proc.kill()
+                break
+            time.sleep(0.005)
+        proc.wait()
 
-    stdout, stderr = proc.communicate()
     duration = time.perf_counter() - t_start
 
     # Fallback to rusage if /proc wasn't readable (e.g. macOS)
@@ -622,7 +644,10 @@ def measure_binary_execution(bin_path, args, cwd):
         else:
             peak_rss_kb = ru.ru_maxrss
 
-    status = "PASSED" if proc.returncode == 0 else f"ERROR({proc.returncode})"
+    if timed_out:
+        status = f"TIMEOUT(>{timeout}s)"
+    else:
+        status = "PASSED" if proc.returncode == 0 else f"ERROR({proc.returncode})"
     rss_mb = f"{peak_rss_kb / 1024.0:.1f} MB" if peak_rss_kb > 0 else "3.2 MB"
 
     return {
@@ -632,42 +657,88 @@ def measure_binary_execution(bin_path, args, cwd):
         "loc": loc
     }
 
+def _ensure_battery(dirpath, names, timeout=180):
+    """Pick the side's canonical unit-battery binary, rebuilding it when missing
+    or older than the newest source file in that tree.
+
+    Returns (path_or_None, note_or_None). `make <test-target>` compiles ONLY the
+    battery -- the Makefile's test rule depends on the test sources, never on the
+    `almaz`/`belya` binary -- so this never touches the deployed A/B slot.
+    """
+    try:
+        srcs = list(dirpath.glob("*.c")) + list(dirpath.glob("*.h"))
+        newest_src = max([f.stat().st_mtime for f in srcs] or [0.0])
+    except Exception:
+        newest_src = 0.0
+
+    for name in names:
+        cand = dirpath / name
+        if cand.exists() and cand.stat().st_mtime >= newest_src:
+            return cand, None
+
+    target = names[0]
+    try:
+        r = subprocess.run(["make", "-s", target], cwd=dirpath, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
+        cand = dirpath / target
+        if r.returncode == 0 and cand.exists():
+            return cand, None
+        return None, f"make {target} failed (rc={r.returncode})"
+    except Exception as e:
+        return None, f"make {target} error: {type(e).__name__}"
+
+
 def run_arena_benchmark():
-    """Runs genuine algorithmic execution comparison between Core Belya and Almaz."""
+    """Head-to-head comparison on an IDENTICAL artifact class and arg set.
+
+    Champion = the Belya tree, Challenger = the Almaz tree. Both sides run the
+    verification battery when BOTH batteries are present; otherwise both sides
+    fall back to startup (`--help`) and the run is flagged DEGRADED. The two
+    sides are never compared across different artifact classes.
+    """
     print("\n--- PHASE 3: HEAD-TO-HEAD ARENA BENCHMARK ---")
-    belya_bin = Path("/opt/belya/belya")
-    almaz_bin = WORKSPACE_DIR / "almaz"
+    belya_dir = Path("/opt/belya")
+    if not (belya_dir / "belya").exists():
+        belya_dir = WORKSPACE_DIR
+    almaz_dir = Path("/opt/almaz")
+    if not (almaz_dir / "almaz").exists():
+        almaz_dir = WORKSPACE_DIR
 
-    # Fallback paths for local or relative testing
-    if not belya_bin.exists():
-        belya_bin = WORKSPACE_DIR / "belya"
-    if not almaz_bin.exists():
-        almaz_bin = WORKSPACE_DIR / "belya"
+    # Per-side canonical battery names (Almaz builds `almaz_test`, Belya `belya_test`).
+    belya_test, belya_note = _ensure_battery(belya_dir, ["belya_test", "almaz_test"])
+    almaz_test, almaz_note = _ensure_battery(almaz_dir, ["almaz_test", "belya_test"])
 
-    belya_test = belya_bin.parent / "belya_test"
-    almaz_test = WORKSPACE_DIR / "almaz_test"
-    if not almaz_test.exists():
-        almaz_test = WORKSPACE_DIR / "belya_test"
-
-    print(f"[*] Running Champion:  {belya_test if belya_test.exists() else belya_bin}")
-    if belya_test.exists():
-        bench_belya = measure_binary_execution(belya_test, [], cwd=belya_bin.parent)
+    if belya_test and almaz_test:
+        mode = "verification battery (like-for-like)"
+        belya_target, belya_args = belya_test, []
+        almaz_target, almaz_args = almaz_test, []
     else:
-        bench_belya = measure_binary_execution(belya_bin, ["--help"], cwd=belya_bin.parent)
+        notes = ", ".join(str(n) for n in (belya_note, almaz_note) if n)
+        mode = f"startup-only (DEGRADED: {notes or 'test battery unavailable'})"
+        belya_target, belya_args = belya_dir / "belya", ["--help"]
+        almaz_target, almaz_args = almaz_dir / "almaz", ["--help"]
 
-    print(f"[*] Running Challenger:{almaz_test if almaz_test.exists() else almaz_bin}")
-    if almaz_test.exists():
-        bench_almaz = measure_binary_execution(almaz_test, [], cwd=almaz_bin.parent)
-    else:
-        bench_almaz = measure_binary_execution(almaz_bin, ["--help"], cwd=almaz_bin.parent)
+    print(f"[*] Arena mode: {mode}")
+    print(f"[*] Running Champion:  {belya_target}")
+    bench_belya = measure_binary_execution(belya_target, belya_args, cwd=belya_dir)
+
+    print(f"[*] Running Challenger:{almaz_target}")
+    bench_almaz = measure_binary_execution(almaz_target, almaz_args, cwd=almaz_dir)
+
+    b_d = bench_belya.get("duration", 0.0)
+    a_d = bench_almaz.get("duration", 0.0)
+    ratio = round(a_d / b_d, 3) if b_d > 0 else None
 
     results = {
         "belya": bench_belya,
-        "almaz": bench_almaz
+        "almaz": bench_almaz,
+        "mode": mode,
+        "ratio": ratio
     }
 
     print(f"[+] Champion (Core Belya): {results['belya']}")
     print(f"[+] Challenger (Almaz):    {results['almaz']}")
+    print(f"[+] Ratio (Almaz/Belya):   {ratio}x")
     return results
 
 # =========================================================================
