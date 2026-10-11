@@ -63,19 +63,21 @@ static ModelGatewayResponse benchmark_parse_model_json(const char *json_src) {
             // 1. Standard OpenAI tool_calls
             JsonValue *tc_arr = json_obj_get(message, "tool_calls");
             if (tc_arr && tc_arr->type == JSON_ARRAY && tc_arr->u.array.count > 0) {
-                res.has_tool_call = true;
-                res.tool_call_count = tc_arr->u.array.count;
-                res.tool_calls = calloc(res.tool_call_count, sizeof(ModelParsedToolCall));
-                for (size_t i = 0; i < res.tool_call_count; i++) {
-                    JsonValue *tc_item = tc_arr->u.array.items[i];
-                    const char *t_id = json_obj_get_str(tc_item, "id");
-                    JsonValue *fn = json_obj_get(tc_item, "function");
-                    const char *f_name = fn ? json_obj_get_str(fn, "name") : "unknown";
-                    const char *f_args = fn ? json_obj_get_str(fn, "arguments") : "{}";
+                res.tool_calls = calloc(tc_arr->u.array.count, sizeof(ModelParsedToolCall));
+                if (res.tool_calls) {
+                    res.has_tool_call = true;
+                    res.tool_call_count = tc_arr->u.array.count;
+                    for (size_t i = 0; i < res.tool_call_count; i++) {
+                        JsonValue *tc_item = tc_arr->u.array.items[i];
+                        const char *t_id = json_obj_get_str(tc_item, "id");
+                        JsonValue *fn = json_obj_get(tc_item, "function");
+                        const char *f_name = fn ? json_obj_get_str(fn, "name") : "unknown";
+                        const char *f_args = fn ? json_obj_get_str(fn, "arguments") : "{}";
 
-                    res.tool_calls[i].id = xstrdup(t_id ? t_id : "call_default");
-                    res.tool_calls[i].name = xstrdup(f_name ? f_name : "");
-                    res.tool_calls[i].arguments_json = xstrdup(f_args ? f_args : "{}");
+                        res.tool_calls[i].id = xstrdup(t_id ? t_id : "call_default");
+                        res.tool_calls[i].name = xstrdup(f_name ? f_name : "");
+                        res.tool_calls[i].arguments_json = xstrdup(f_args ? f_args : "{}");
+                    }
                 }
             }
 

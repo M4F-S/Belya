@@ -309,7 +309,12 @@ void linenoiseAddCompletion(linenoiseCompletions *lc, const char *str) {
     char *copy = malloc(len + 1);
     if (!copy) return;
     memcpy(copy, str, len + 1);
-    lc->cvec = realloc(lc->cvec, sizeof(char *) * (lc->len + 1));
+    char **new_cvec = realloc(lc->cvec, sizeof(char *) * (lc->len + 1));
+    if (!new_cvec) {
+        free(copy);
+        return;
+    }
+    lc->cvec = new_cvec;
     lc->cvec[lc->len++] = copy;
 }
 

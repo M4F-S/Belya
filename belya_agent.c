@@ -1980,12 +1980,16 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     ast_msg->role = xstrdup("assistant");
     ast_msg->content = xstrdup(resp.content ? resp.content : "");
     if (resp.has_tool_call) {
-        ast_msg->tool_call_count = resp.tool_call_count;
         ast_msg->tool_calls = calloc(resp.tool_call_count, sizeof(ModelParsedToolCall));
-        for (size_t i = 0; i < resp.tool_call_count; i++) {
-            ast_msg->tool_calls[i].id = xstrdup(resp.tool_calls[i].id);
-            ast_msg->tool_calls[i].name = xstrdup(resp.tool_calls[i].name);
-            ast_msg->tool_calls[i].arguments_json = xstrdup(resp.tool_calls[i].arguments_json);
+        if (ast_msg->tool_calls) {
+            ast_msg->tool_call_count = resp.tool_call_count;
+            for (size_t i = 0; i < resp.tool_call_count; i++) {
+                ast_msg->tool_calls[i].id = xstrdup(resp.tool_calls[i].id ? resp.tool_calls[i].id : "");
+                ast_msg->tool_calls[i].name = xstrdup(resp.tool_calls[i].name ? resp.tool_calls[i].name : "");
+                ast_msg->tool_calls[i].arguments_json = xstrdup(resp.tool_calls[i].arguments_json ? resp.tool_calls[i].arguments_json : "{}");
+            }
+        } else {
+            ast_msg->tool_call_count = 0;
         }
     }
 
