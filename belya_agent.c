@@ -1,3 +1,4 @@
+#include "common.h"
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE 1
 #endif
@@ -259,8 +260,8 @@ void belya_agent_register_schema(BelyaAgent *agent, const char *name, const char
     }
     agent->schemas = new_schemas;
     BelyaToolSchema *s = &agent->schemas[agent->schema_count - 1];
-    s->name = strdup(name);
-    s->description = strdup(desc);
+    s->name = xstrdup(name);
+    s->description = xstrdup(desc);
     s->parameters_schema = params;
 }
 
@@ -276,8 +277,8 @@ void belya_agent_add_message(BelyaAgent *agent, const char *role, const char *co
     }
     BelyaMessage *m = &agent->messages[agent->msg_count++];
     memset(m, 0, sizeof(BelyaMessage));
-    m->role = strdup(role);
-    m->content = strdup(content ? content : "");
+    m->role = xstrdup(role);
+    m->content = xstrdup(content ? content : "");
 }
 
 void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, const char *name, const char *result) {
@@ -293,8 +294,8 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
     }
     BelyaMessage *m = &agent->messages[agent->msg_count++];
     memset(m, 0, sizeof(BelyaMessage));
-    m->role = strdup("tool");
-    m->tool_call_id = strdup(tool_call_id ? tool_call_id : "call_default");
+    m->role = xstrdup("tool");
+    m->tool_call_id = xstrdup(tool_call_id ? tool_call_id : "call_default");
     const char *limit_env = getenv("TOOL_OUTPUT_LIMIT");
     size_t limit_bytes = (limit_env && atoi(limit_env) > 500) ? (size_t)atoi(limit_env) : 8000;
 
@@ -315,7 +316,7 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
         dyn_str_append_len(&ds, result + (total_len - tail_len), tail_len);
         m->content = ds.data;
     } else {
-        m->content = strdup(result ? result : "");
+        m->content = xstrdup(result ? result : "");
     }
 }
 
@@ -332,13 +333,13 @@ void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const c
 }
 
 char *belya_agent_get_timeline(BelyaAgent *agent, int limit) {
-    if (!agent || !agent->db) return strdup("Timeline database not active.");
+    if (!agent || !agent->db) return xstrdup("Timeline database not active.");
     if (limit <= 0) limit = 15;
 
     sqlite3_stmt *stmt;
     const char *sql = "SELECT event_type, summary, created_at FROM agent_timeline ORDER BY id DESC LIMIT ?;";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        return strdup("Failed to query agent timeline.");
+        return xstrdup("Failed to query agent timeline.");
     }
 
     sqlite3_bind_int(stmt, 1, limit);
@@ -429,7 +430,7 @@ void belya_agent_persist_memory(BelyaAgent *agent, const char *topic, const char
 }
 
 static char *sanitize_fts5_query(const char *raw) {
-    if (!raw) return strdup("");
+    if (!raw) return xstrdup("");
     DynString ds = dyn_str_new();
     for (size_t i = 0; raw[i]; i++) {
         char c = raw[i];
@@ -443,7 +444,7 @@ static char *sanitize_fts5_query(const char *raw) {
 }
 
 char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
-    if (!agent->db) return strdup("Memory database not active.");
+    if (!agent->db) return xstrdup("Memory database not active.");
     DynString out = dyn_str_new();
 
     if (agent->has_fts5 && query && strlen(query) > 0) {
@@ -698,15 +699,15 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
 
         BelyaMessage *m = &loaded[count++];
         memset(m, 0, sizeof(BelyaMessage));
-        m->role = strdup(role ? role : "user");
-        m->content = strdup(content ? content : "");
+        m->role = xstrdup(role ? role : "user");
+        m->content = xstrdup(content ? content : "");
         if (!m->role || !m->content) {
             for (size_t i = 0; i < count; i++) free_single_message(&loaded[i]);
             free(loaded);
             sqlite3_finalize(stmt);
             return false;
         }
-        if (t_id && strlen(t_id) > 0) m->tool_call_id = strdup(t_id);
+        if (t_id && strlen(t_id) > 0) m->tool_call_id = xstrdup(t_id);
 
         if (tc_json && strlen(tc_json) > 0) {
             JsonValue *tc_arr = json_parse(tc_json);
@@ -724,9 +725,9 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
                     const char *tid = json_obj_get_str(tc_o, "id");
                     const char *tname = json_obj_get_str(tc_o, "name");
                     const char *targs = json_obj_get_str(tc_o, "arguments");
-                    m->tool_calls[k].id = strdup(tid ? tid : "");
-                    m->tool_calls[k].name = strdup(tname ? tname : "");
-                    m->tool_calls[k].arguments_json = strdup(targs ? targs : "{}");
+                    m->tool_calls[k].id = xstrdup(tid ? tid : "");
+                    m->tool_calls[k].name = xstrdup(tname ? tname : "");
+                    m->tool_calls[k].arguments_json = xstrdup(targs ? targs : "{}");
                 }
             }
             if (tc_arr) json_free(tc_arr);
@@ -757,14 +758,14 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
 }
 
 char *belya_agent_list_sessions(BelyaAgent *agent) {
-    if (!agent || !agent->db) return strdup("Session store not active.");
+    if (!agent || !agent->db) return xstrdup("Session store not active.");
 
     sqlite3_stmt *stmt;
     const char *sql = "SELECT s.id, s.title, s.model, s.updated_at, COUNT(m.id) "
                       "FROM sessions s LEFT JOIN session_messages m ON s.id = m.session_id "
                       "GROUP BY s.id ORDER BY s.updated_at DESC LIMIT 15;";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        return strdup("Failed to query sessions table.");
+        return xstrdup("Failed to query sessions table.");
     }
 
     DynString ds = dyn_str_new();
@@ -789,7 +790,7 @@ char *belya_agent_list_sessions(BelyaAgent *agent) {
 
 char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
     if (!agent || agent->msg_count <= 2) {
-        return strdup("Not enough conversation turns to distill a reusable skill.");
+        return xstrdup("Not enough conversation turns to distill a reusable skill.");
     }
 
     DynString skill = dyn_str_new();
@@ -809,7 +810,7 @@ char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
 
     if (tool_uses == 0) {
         dyn_str_free(&skill);
-        return strdup("No tool actions detected in recent turns to distill.");
+        return xstrdup("No tool actions detected in recent turns to distill.");
     }
 
     char topic[128];
@@ -1021,7 +1022,7 @@ size_t belya_agent_load_rule_packs(BelyaAgent *agent, const char *rules_dir, Dyn
 }
 
 char *belya_agent_search_skills(BelyaAgent *agent, const char *query) {
-    if (!agent || !agent->db) return strdup("Memory database not active.");
+    if (!agent || !agent->db) return xstrdup("Memory database not active.");
     DynString ds = dyn_str_new();
     sqlite3_stmt *stmt;
     const char *sql = "SELECT topic, room, content, salience, access_count FROM agent_memory "
@@ -1104,7 +1105,7 @@ char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_pro
 
         bool matches = false;
         if (trig && strlen(trig) > 0) {
-            char *trig_copy = strdup(trig);
+            char *trig_copy = xstrdup(trig);
             if (trig_copy) {
                 char *token_ctx = NULL;
                 char *tok = strtok_r(trig_copy, ",;", &token_ctx);
@@ -1129,7 +1130,7 @@ char *belya_agent_match_skill_for_prompt(BelyaAgent *agent, const char *user_pro
         }
 
         if (matches && content) {
-            matched_content = strdup(content);
+            matched_content = xstrdup(content);
             // Boost salience and access count
             sqlite3_stmt *up_stmt;
             const char *up_sql = "UPDATE agent_memory SET access_count = access_count + 1, "
@@ -1296,12 +1297,12 @@ BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name
     int c_turns = sqlite3_column_int(stmt, 4);
     const char *c_inst = (const char *)sqlite3_column_text(stmt, 5);
 
-    m->name = strdup(c_name ? c_name : "");
-    m->role = strdup(c_role ? c_role : "");
-    m->tools = strdup(c_tools ? c_tools : "");
-    m->model = strdup(c_model ? c_model : "inherit");
+    m->name = xstrdup(c_name ? c_name : "");
+    m->role = xstrdup(c_role ? c_role : "");
+    m->tools = xstrdup(c_tools ? c_tools : "");
+    m->model = xstrdup(c_model ? c_model : "inherit");
     m->max_turns = c_turns > 0 ? c_turns : 5;
-    m->instructions = strdup(c_inst ? c_inst : "");
+    m->instructions = xstrdup(c_inst ? c_inst : "");
 
     if (!m->name || !m->role || !m->tools || !m->model || !m->instructions) {
         belya_agent_manifest_free(m);
@@ -1498,11 +1499,11 @@ bool belya_agent_rollback_to_checkpoint(BelyaAgent *agent, const char *checkpoin
 }
 
 char *belya_agent_list_checkpoints(BelyaAgent *agent) {
-    if (!agent || !agent->db) return strdup("Checkpoint store not active.");
+    if (!agent || !agent->db) return xstrdup("Checkpoint store not active.");
     sqlite3_stmt *stmt;
     const char *sql = "SELECT id, label, git_tree_sha, turn_id, msg_count, created_at FROM agent_checkpoints ORDER BY id DESC LIMIT 15;";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-        return strdup("Failed to query checkpoints table.");
+        return xstrdup("Failed to query checkpoints table.");
     }
 
     DynString ds = dyn_str_new();
@@ -1609,8 +1610,8 @@ bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, co
 }
 
 char *belya_agent_search_conversations(BelyaAgent *agent, const char *query) {
-    if (!agent || !agent->db) return strdup("Database not available for conversation history search.");
-    if (!query || strlen(query) == 0) return strdup("Error: Missing query string for conversation search.");
+    if (!agent || !agent->db) return xstrdup("Database not available for conversation history search.");
+    if (!query || strlen(query) == 0) return xstrdup("Error: Missing query string for conversation search.");
 
     DynString out = dyn_str_new();
     sqlite3_stmt *stmt;
@@ -1975,15 +1976,15 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     }
     BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
     memset(ast_msg, 0, sizeof(BelyaMessage));
-    ast_msg->role = strdup("assistant");
-    ast_msg->content = strdup(resp.content ? resp.content : "");
+    ast_msg->role = xstrdup("assistant");
+    ast_msg->content = xstrdup(resp.content ? resp.content : "");
     if (resp.has_tool_call) {
         ast_msg->tool_call_count = resp.tool_call_count;
         ast_msg->tool_calls = calloc(resp.tool_call_count, sizeof(ModelParsedToolCall));
         for (size_t i = 0; i < resp.tool_call_count; i++) {
-            ast_msg->tool_calls[i].id = strdup(resp.tool_calls[i].id);
-            ast_msg->tool_calls[i].name = strdup(resp.tool_calls[i].name);
-            ast_msg->tool_calls[i].arguments_json = strdup(resp.tool_calls[i].arguments_json);
+            ast_msg->tool_calls[i].id = xstrdup(resp.tool_calls[i].id);
+            ast_msg->tool_calls[i].name = xstrdup(resp.tool_calls[i].name);
+            ast_msg->tool_calls[i].arguments_json = xstrdup(resp.tool_calls[i].arguments_json);
         }
     }
 
@@ -2092,8 +2093,8 @@ ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char 
     }
     BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
     memset(ast_msg, 0, sizeof(BelyaMessage));
-    ast_msg->role = strdup("assistant");
-    ast_msg->content = strdup(resp.content ? resp.content : "");
+    ast_msg->role = xstrdup("assistant");
+    ast_msg->content = xstrdup(resp.content ? resp.content : "");
 
     agent->turn_count++;
     agent->turns_since_save++;

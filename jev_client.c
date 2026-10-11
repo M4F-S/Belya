@@ -1,3 +1,4 @@
+#include "common.h"
 #include "jev_client.h"
 #include <curl/curl.h>
 #include <string.h>
@@ -16,13 +17,13 @@ JevClient *jev_client_init(const char *api_key) {
     JevClient *client = calloc(1, sizeof(JevClient));
     if (!client) return NULL;
 
-    client->api_key = strdup(api_key);
+    client->api_key = xstrdup(api_key);
     if (!client->api_key) {
         free(client);
         return NULL;
     }
 
-    client->base_url = strdup("https://jevtypesafeai.com/api/v1");
+    client->base_url = xstrdup("https://jevtypesafeai.com/api/v1");
     if (!client->base_url) {
         free(client->api_key);
         free(client);
@@ -97,7 +98,7 @@ char *jev_parse_triage_response(const char *json_str) {
         JsonValue *route_ans = json_obj_get(answers, "route");
         if (route_ans) {
             const char *c = json_obj_get_str(route_ans, "choice");
-            if (c) selected_role = strdup(c);
+            if (c) selected_role = xstrdup(c);
         }
     }
 
@@ -152,7 +153,7 @@ JevRiskResult *jev_parse_risk_response(const char *json_str) {
     }
 
     const char *action_str = json_obj_get_str(resp_val, "action");
-    res->action = strdup(action_str ? action_str : "allow");
+    res->action = xstrdup(action_str ? action_str : "allow");
     if (!res->action) {
         free(res);
         json_free(resp_val);
@@ -207,8 +208,8 @@ JevContextFilterResult *jev_parse_filter_response(const char *json_str) {
 
     const char *act = json_obj_get_str(resp_val, "action");
     const char *rel = json_obj_get_str(resp_val, "relevance");
-    res->action = strdup(act ? act : "keep");
-    res->relevance = strdup(rel ? rel : "minor");
+    res->action = xstrdup(act ? act : "keep");
+    res->relevance = xstrdup(rel ? rel : "minor");
     if (!res->action || !res->relevance) {
         if (res->action) free(res->action);
         if (res->relevance) free(res->relevance);

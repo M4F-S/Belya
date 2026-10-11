@@ -1,3 +1,4 @@
+#include "common.h"
 #include "linenoise.h"
 #include <termios.h>
 #include <unistd.h>
@@ -230,7 +231,7 @@ static void linenoiseEditDelete(struct linenoiseState *l) {
 static void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
     if (history_len > 1) {
         free(history[history_len - 1 - l->history_index]);
-        history[history_len - 1 - l->history_index] = strdup(l->buf);
+        history[history_len - 1 - l->history_index] = xstrdup(l->buf);
         l->history_index += (dir == 1) ? 1 : -1;
         if (l->history_index < 0) {
             l->history_index = 0;
@@ -452,7 +453,7 @@ static char *linenoiseRaw(const char *prompt) {
             len--;
             buf[len] = '\0';
         }
-        return strdup(buf);
+        return xstrdup(buf);
     }
 
     if (enableRawMode(STDIN_FILENO) == -1) return NULL;
@@ -460,7 +461,7 @@ static char *linenoiseRaw(const char *prompt) {
     disableRawMode(STDIN_FILENO);
     printf("\n");
     if (count == -1) return NULL;
-    return strdup(buf);
+    return xstrdup(buf);
 }
 
 char *linenoise(const char *prompt) {
@@ -487,7 +488,7 @@ int linenoiseHistoryAdd(const char *line) {
         memset(history, 0, (sizeof(char *) * history_max_len));
     }
     if (history_len && !strcmp(history[history_len - 1], line)) return 0;
-    linecopy = strdup(line);
+    linecopy = xstrdup(line);
     if (!linecopy) return 0;
     if (history_len == history_max_len) {
         free(history[0]);

@@ -1,3 +1,4 @@
+#include "common.h"
 #include "minifrontmatter.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ static void parse_bracket_list(FrontmatterEntry *entry, const char *raw_val) {
     while (token && entry->list_count < MAX_FM_LIST_ITEMS) {
         char *cleaned = unquote(token);
         if (cleaned && strlen(cleaned) > 0) {
-            char *item = strdup(cleaned);
+            char *item = xstrdup(cleaned);
             if (item) {
                 entry->list_items[entry->list_count++] = item;
             }
@@ -123,7 +124,7 @@ Frontmatter *frontmatter_parse(const char *markdown_content) {
     if (!fm) return NULL;
 
     // Copy body
-    fm->body = strdup(body_start);
+    fm->body = xstrdup(body_start);
     if (!fm->body) {
         free(fm);
         return NULL;
@@ -156,7 +157,7 @@ Frontmatter *frontmatter_parse(const char *markdown_content) {
                 if (last->list_count < MAX_FM_LIST_ITEMS) {
                     char *item = unquote(trimmed_line + 2);
                     if (item && strlen(item) > 0) {
-                        char *dup_item = strdup(item);
+                        char *dup_item = xstrdup(item);
                         if (dup_item) {
                             last->list_items[last->list_count++] = dup_item;
                         }
@@ -174,8 +175,8 @@ Frontmatter *frontmatter_parse(const char *markdown_content) {
             char *val = unquote(colon + 1);
 
             if (key && strlen(key) > 0) {
-                char *dup_key = strdup(key);
-                char *dup_val = strdup(val ? val : "");
+                char *dup_key = xstrdup(key);
+                char *dup_val = xstrdup(val ? val : "");
                 if (dup_key && dup_val) {
                     FrontmatterEntry *entry = &fm->entries[fm->entry_count++];
                     entry->key = dup_key;
@@ -239,7 +240,7 @@ char *frontmatter_get_list_as_string(const Frontmatter *fm, const char *key, con
         if (fm->entries[i].key && strcmp(fm->entries[i].key, key) == 0) {
             FrontmatterEntry *entry = (FrontmatterEntry *)&fm->entries[i];
             if (entry->list_count == 0) {
-                return entry->value ? strdup(entry->value) : strdup("");
+                return entry->value ? xstrdup(entry->value) : xstrdup("");
             }
             size_t total_len = 0;
             size_t dlen = strlen(delim);

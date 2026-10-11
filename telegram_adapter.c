@@ -1,3 +1,4 @@
+#include "common.h"
 #include "telegram_adapter.h"
 #include <curl/curl.h>
 #include <signal.h>
@@ -27,7 +28,7 @@ static JsonValue *telegram_http_post(TelegramBot *bot, const char *method, const
     char url[512];
     snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", bot->bot_token, method);
 
-    char *json_body = payload ? json_serialize(payload) : strdup("{}");
+    char *json_body = payload ? json_serialize(payload) : xstrdup("{}");
 
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -65,7 +66,7 @@ static bool telegram_is_authorized(TelegramBot *bot, const char *chat_id) {
     if (!chat_id) return false;
 
     // Check exact match or comma-separated list
-    char *list_copy = strdup(bot->allowed_chat_id);
+    char *list_copy = xstrdup(bot->allowed_chat_id);
     if (!list_copy) return false;
     char *token = strtok(list_copy, ", ");
     bool authorized = false;
@@ -86,8 +87,8 @@ TelegramBot *telegram_bot_init(const char *bot_token, const char *allowed_chat_i
 
     TelegramBot *bot = calloc(1, sizeof(TelegramBot));
     if (!bot) return NULL;
-    bot->bot_token = strdup(bot_token);
-    bot->allowed_chat_id = strdup(allowed_chat_id ? allowed_chat_id : "");
+    bot->bot_token = xstrdup(bot_token);
+    bot->allowed_chat_id = xstrdup(allowed_chat_id ? allowed_chat_id : "");
     if (!bot->bot_token || !bot->allowed_chat_id) {
         free(bot->bot_token);
         free(bot->allowed_chat_id);
@@ -342,7 +343,7 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
                             char from_str[32];
                             snprintf(from_str, sizeof(from_str), "%.0f", from_id);
                             /* allowed_chat_id may be a comma-separated list; accept any entry */
-                            char *list_copy = strdup(ctx->bot->allowed_chat_id);
+                            char *list_copy = xstrdup(ctx->bot->allowed_chat_id);
                             if (list_copy) {
                                 char *saveptr = NULL;
                                 for (char *tok = strtok_r(list_copy, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
@@ -745,7 +746,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             }
                             // Pure conversational response - save as final
                             if (final_response_text) free(final_response_text);
-                            final_response_text = strdup(resp.content);
+                            final_response_text = xstrdup(resp.content);
                             turn_running = false;
                         } else {
                             // Accumulate reasoning and partial explanations alongside tool calls
@@ -838,7 +839,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         );
                         if (final_resp.content && strlen(final_resp.content) > 0) {
                             if (final_response_text) free(final_response_text);
-                            final_response_text = strdup(final_resp.content);
+                            final_response_text = xstrdup(final_resp.content);
                         }
                         model_gateway_response_free(&final_resp);
                         turn_running = false;

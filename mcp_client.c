@@ -1,3 +1,4 @@
+#include "common.h"
 #include "mcp_client.h"
 #include <time.h>
 #include <unistd.h>
@@ -93,7 +94,7 @@ MCPClient *mcp_client_start(const char *command_line) {
         close(stdout_pipe[0]);
         return NULL;
     }
-    client->command = strdup(command_line);
+    client->command = xstrdup(command_line);
     client->stdin_fd = stdin_pipe[1];
     client->stdout_fd = stdout_pipe[0];
     client->pid = pid;
@@ -202,7 +203,7 @@ JsonValue *mcp_client_list_tools(MCPClient *client) {
 }
 
 char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonValue *arguments) {
-    if (!client || !client->connected) return strdup("Error: MCP client not connected.");
+    if (!client || !client->connected) return xstrdup("Error: MCP client not connected.");
 
     JsonValue *params = json_create_object();
     json_obj_add(params, "name", json_create_string(tool_name));
@@ -222,7 +223,7 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
     }
     json_free(params);
 
-    if (!resp) return strdup("Error: MCP server request timed out or returned empty response.");
+    if (!resp) return xstrdup("Error: MCP server request timed out or returned empty response.");
 
     JsonValue *err_obj = json_obj_get(resp, "error");
     if (err_obj) {
@@ -236,7 +237,7 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
     JsonValue *result = json_obj_get(resp, "result");
     if (!result) {
         json_free(resp);
-        return strdup("Error: Missing result in MCP response.");
+        return xstrdup("Error: Missing result in MCP response.");
     }
 
     JsonValue *content = json_obj_get(result, "content");

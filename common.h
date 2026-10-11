@@ -8,6 +8,17 @@
 #include <stdarg.h>
 #include <ctype.h>
 
+/* R1 (2026-10-11): fail-fast strdup. NULL-in -> NULL-out; OOM -> log + abort.
+   A supervised daemon must never dereference a NULL returned by a failed dup. */
+static inline char *xstrdup(const char *s) {
+    if (!s) return NULL;
+    size_t _n = strlen(s) + 1;
+    char *_p = malloc(_n);
+    if (!_p) { fprintf(stderr, "[xstrdup] FATAL: out of memory (%zu bytes)\n", _n); abort(); }
+    memcpy(_p, s, _n);
+    return _p;
+}
+
 typedef struct {
     char *data;
     size_t len;

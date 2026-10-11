@@ -1,3 +1,4 @@
+#include "common.h"
 #include "minijson.h"
 #include <ctype.h>
 
@@ -213,7 +214,7 @@ JsonValue *json_create_string(const char *val) {
     JsonValue *v = calloc(1, sizeof(JsonValue));
     if (!v) return NULL;
     v->type = JSON_STRING;
-    v->u.string = strdup(val ? val : "");
+    v->u.string = xstrdup(val ? val : "");
     if (!v->u.string) {
         free(v);
         return NULL;
@@ -256,7 +257,7 @@ void json_obj_add(JsonValue *obj, const char *key, JsonValue *val) {
         obj->u.object.members = new_members;
         obj->u.object.cap = new_cap;
     }
-    char *k = strdup(key);
+    char *k = xstrdup(key);
     if (!k) {
         fprintf(stderr, "[Fatal] Out of memory in json_obj_add duplicating key\n");
         abort();
