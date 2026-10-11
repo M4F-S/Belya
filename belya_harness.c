@@ -1587,7 +1587,9 @@ static bool sockaddr_is_private(const struct sockaddr *sa) {
     if (!sa) return false;
     if (sa->sa_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)sa;
-        uint32_t a = ntohl(in->sin_addr.s_addr);
+        uint32_t raw_ip;
+        memcpy(&raw_ip, &in->sin_addr, sizeof(raw_ip));
+        uint32_t a = ntohl(raw_ip);
         if ((a & 0xFF000000u) == 0x00000000u) return true;   /* 0.0.0.0/8 */
         if ((a & 0xFF000000u) == 0x0A000000u) return true;   /* 10.0.0.0/8 */
         if ((a & 0xFF000000u) == 0x7F000000u) return true;   /* 127.0.0.0/8 */
@@ -1599,16 +1601,30 @@ static bool sockaddr_is_private(const struct sockaddr *sa) {
     if (sa->sa_family == AF_INET6) {
         const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)sa;
         const uint8_t *b = in6->sin6_addr.s6_addr;
-        if (IN6_IS_ADDR_LOOPBACK(&in6->sin6_addr)) return true;
-        if (IN6_IS_ADDR_LINKLOCAL(&in6->sin6_addr)) return true;
-        if (IN6_IS_ADDR_SITELOCAL(&in6->sin6_addr)) return true;
-        if ((b[0] & 0xFE) == 0xFC) return true;              /* fc00::/7 ULA */
-        if (IN6_IS_ADDR_V4MAPPED(&in6->sin6_addr)) {         /* ::ffff:a.b.c.d */
-            struct sockaddr_in v4;
-            memset(&v4, 0, sizeof(v4));
-            v4.sin_family = AF_INET;
-            memcpy(&v4.sin_addr, &in6->sin6_addr.s6_addr[12], 4);
-            return sockaddr_is_private((const struct sockaddr *)&v4);
+        /* IPv6 Loopback ::1 */
+        if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+            b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+            b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
+            b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] == 1) {
+            return true;
+        }
+        /* IPv6 Link-local fe80::/10 */
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return true;
+        /* IPv6 Unique Local Address ULA fc00::/7 */
+        if ((b[0] & 0xfe) == 0xfc) return true;
+        /* IPv4-mapped IPv6 ::ffff:0:0/96 */
+        if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+            b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+            b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff) {
+            uint32_t a = ((uint32_t)b[12] << 24) | ((uint32_t)b[13] << 16) |
+                         ((uint32_t)b[14] << 8) | (uint32_t)b[15];
+            if ((a & 0xFF000000u) == 0x00000000u) return true;   /* 0.0.0.0/8 */
+            if ((a & 0xFF000000u) == 0x0A000000u) return true;   /* 10.0.0.0/8 */
+            if ((a & 0xFF000000u) == 0x7F000000u) return true;   /* 127.0.0.0/8 */
+            if ((a & 0xFFF00000u) == 0xAC100000u) return true;   /* 172.16.0.0/12 */
+            if ((a & 0xFFFF0000u) == 0xC0A80000u) return true;   /* 192.168.0.0/16 */
+            if ((a & 0xFFFF0000u) == 0xA9FE0000u) return true;   /* 169.254.0.0/16 */
+            return false;
         }
         return false;
     }
