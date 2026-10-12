@@ -956,19 +956,20 @@ static char *tool_list_dir(BelyaAgent *agent, const JsonValue *args) {
 }
 
 static void search_files_recursive(const char *dir_path, const char *pattern, const char *glob_pat, bool is_regex, regex_t *preg, DynString *out, int *match_count) {
-    if (*match_count >= 50) return;
+    if (*match_count >= 100) return;
     DIR *d = opendir(dir_path);
     if (!d) return;
 
     struct dirent *dir;
     while ((dir = readdir(d)) != NULL) {
-        if (*match_count >= 50) break;
+        if (*match_count >= 100) break;
         if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
         if (dir->d_name[0] == '.') continue;
         if (strcmp(dir->d_name, "node_modules") == 0 || strcmp(dir->d_name, "build") == 0) continue;
 
         char sub_path[4096];
         snprintf(sub_path, sizeof(sub_path), "%s/%s", dir_path, dir->d_name);
+        if (belya_harness_is_secret_path(sub_path)) continue;
 
         struct stat st;
         if (stat(sub_path, &st) == -1) continue;
@@ -990,10 +991,20 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
             FILE *f = fopen(sub_path, "r");
             if (!f) continue;
 
+            // Binary file probe: skip files containing NUL bytes in first 512 bytes
+            unsigned char probe[512];
+            size_t n_read = fread(probe, 1, sizeof(probe), f);
+            if (n_read > 0 && memchr(probe, '\0', n_read) != NULL) {
+                fclose(f);
+                continue;
+            }
+            rewind(f);
+
             char line[2048];
             size_t line_num = 1;
+            int file_matches = 0;
             while (fgets(line, sizeof(line), f)) {
-                if (*match_count >= 50) break;
+                if (*match_count >= 100) break;
                 bool matched = false;
                 if (is_regex && preg) {
                     matched = (regexec(preg, line, 0, NULL, 0) == 0);
@@ -1002,9 +1013,14 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
                 }
 
                 if (matched) {
+                    if (file_matches >= 15) {
+                        dyn_str_appendf(out, "%s: ... [file matches capped at 15]\n", sub_path);
+                        break;
+                    }
                     line[strcspn(line, "\r\n")] = '\0';
                     dyn_str_appendf(out, "%s:%zu: %s\n", sub_path, line_num, line);
                     (*match_count)++;
+                    file_matches++;
                 }
                 line_num++;
             }
@@ -1048,8 +1064,8 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
 
     if (match_count == 0) {
         dyn_str_appendf(&out, "No matches found for '%s' in '%s'.", pattern, path);
-    } else if (match_count >= 50) {
-        dyn_str_append(&out, "\n[Search capped at 50 matches]");
+    } else if (match_count >= 100) {
+        dyn_str_append(&out, "\n[Search capped at 100 matches]");
     }
 
     return out.data;
