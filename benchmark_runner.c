@@ -430,7 +430,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_c.c", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_c.c");
 
         if (res && strstr(res, "successfully") && strstr(buf, "return a + b;")) {
@@ -466,7 +466,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_py.py", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_py.py");
 
         if (res && strstr(res, "successfully") && strstr(buf, "return True\n    return False")) {
@@ -501,7 +501,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_rs.rs", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_rs.rs");
 
         if (res && strstr(res, "successfully") && strstr(buf, "pub enable_watchdog: bool,")) {
@@ -538,7 +538,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_go.go", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_go.go");
 
         if (res && strstr(res, "successfully") && strstr(buf, "fmt.Printf")) {
@@ -572,7 +572,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_js.js", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_js.js");
 
         if (res && strstr(res, "successfully") && strstr(buf, "async function fetchData")) {
@@ -604,7 +604,7 @@ static void benchmark_arena2_polyglot_editing(void) {
 
         FILE *rf = fopen("bench_guard.c", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_guard.c");
 
         // The watchdog should reject the edit, auto-revert the file, and return compiler diagnostics
@@ -816,7 +816,7 @@ static void benchmark_arena4_swe_autonomous(void) {
 
         FILE *rf = fopen("bench_patch.txt", "r");
         char buf[512] = {0};
-        if (rf) { fread(buf, 1, sizeof(buf)-1, rf); fclose(rf); }
+        if (rf) { size_t nr = fread(buf, 1, sizeof(buf)-1, rf); (void)nr; fclose(rf); }
         unlink("bench_patch.txt");
 
         if (res && strstr(res, "successfully") && strstr(buf, "int b = 42;")) {
