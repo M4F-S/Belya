@@ -119,6 +119,16 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     const char *cmd = json_obj_get_str(args, "command");
     if (!cmd) return xstrdup("Error: Missing command argument.");
 
+    // Plan Mode Read-Only Shell Guard
+    if (g_harness && g_harness->plan_mode) {
+        if (strstr(cmd, "rm ") || strstr(cmd, "mv ") || strstr(cmd, "cp ") ||
+            strstr(cmd, "mkdir ") || strstr(cmd, "git commit") || strstr(cmd, "git push") ||
+            strstr(cmd, "sed -i") || strstr(cmd, ">") || strstr(cmd, ">>") ||
+            strstr(cmd, "chmod ") || strstr(cmd, "chown ")) {
+            return xstrdup("Blocked: Plan Mode is active (read-only execution). Shell commands with write/delete mutations are prohibited. Call exit_plan_mode first.");
+        }
+    }
+
     // Tester Restricted Execution Guard: allow only build/test/read/verify targets.
     // H3 fix: substring/prefix matching was bypassable (e.g. "echo;rm -rf /",
     // "ls&&curl x|sh", any command containing "make test"). Now: reject shell
@@ -603,6 +613,9 @@ static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->plan_mode) {
+        return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
+    }
     const char *path = json_obj_get_str(args, "path");
     const char *content = json_obj_get_str(args, "content");
     if (!path || !content) return xstrdup("Error: Missing path or content argument.");
@@ -628,6 +641,9 @@ static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->plan_mode) {
+        return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
+    }
     const char *path = json_obj_get_str(args, "path");
     const char *old_text = json_obj_get_str(args, "old_text");
     const char *new_text = json_obj_get_str(args, "new_text");
@@ -810,6 +826,9 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->plan_mode) {
+        return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
+    }
     const char *path = json_obj_get_str(args, "path");
     const char *patch = json_obj_get_str(args, "patch");
 
@@ -1297,6 +1316,45 @@ static char *tool_cron_tick(BelyaAgent *agent, const JsonValue *args) {
         return xstrdup("No cron jobs currently due.");
     }
     return logs.data;
+}
+
+static char *tool_enter_plan_mode(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    (void)args;
+    if (g_harness) {
+        belya_harness_enter_plan_mode(g_harness);
+        return xstrdup("Plan Mode activated. All mutating file and shell operations are locked to read-only until exit_plan_mode is called.");
+    }
+    return xstrdup("Plan Mode activated.");
+}
+
+static char *tool_exit_plan_mode(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    (void)args;
+    if (g_harness) {
+        belya_harness_exit_plan_mode(g_harness);
+        return xstrdup("Plan Mode deactivated. Read-write filesystem and shell execution restored.");
+    }
+    return xstrdup("Plan Mode deactivated.");
+}
+
+static char *tool_enter_worktree(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *branch = json_obj_get_str(args, "branch");
+    if (g_harness) {
+        return belya_harness_enter_worktree(g_harness, branch);
+    }
+    return xstrdup("Error: Harness execution environment unavailable.");
+}
+
+static char *tool_leave_worktree(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const JsonValue *keep_val = json_obj_get(args, "keep");
+    bool keep = (keep_val && keep_val->type == JSON_BOOL) ? keep_val->u.boolean : false;
+    if (g_harness) {
+        return belya_harness_leave_worktree(g_harness, keep);
+    }
+    return xstrdup("Error: Harness execution environment unavailable.");
 }
 
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
@@ -3229,6 +3287,40 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(ct_params, "properties", json_create_object());
     REGISTER_IF_PERMITTED("cron_tick", "Evaluate and trigger due background cron jobs immediately", ct_params, PERM_ALLOW, tool_cron_tick);
 
+    // 31. enter_plan_mode
+    JsonValue *epm_params = json_create_object();
+    json_obj_add(epm_params, "type", json_create_string("object"));
+    json_obj_add(epm_params, "properties", json_create_object());
+    REGISTER_IF_PERMITTED("enter_plan_mode", "Enter read-only Plan Mode. Locks all mutating file and shell operations until exit_plan_mode is called", epm_params, PERM_ALLOW, tool_enter_plan_mode);
+
+    // 32. exit_plan_mode
+    JsonValue *xpm_params = json_create_object();
+    json_obj_add(xpm_params, "type", json_create_string("object"));
+    json_obj_add(xpm_params, "properties", json_create_object());
+    REGISTER_IF_PERMITTED("exit_plan_mode", "Exit read-only Plan Mode. Restores read-write filesystem and shell execution", xpm_params, PERM_ALLOW, tool_exit_plan_mode);
+
+    // 33. enter_worktree
+    JsonValue *ew_params = json_create_object();
+    json_obj_add(ew_params, "type", json_create_string("object"));
+    JsonValue *ew_props = json_create_object();
+    JsonValue *ew_branch = json_create_object();
+    json_obj_add(ew_branch, "type", json_create_string("string"));
+    json_obj_add(ew_branch, "description", json_create_string("Branch or identifier name for the isolated git worktree"));
+    json_obj_add(ew_props, "branch", ew_branch);
+    json_obj_add(ew_params, "properties", ew_props);
+    REGISTER_IF_PERMITTED("enter_worktree", "Create and switch into an isolated git worktree sandbox", ew_params, PERM_ALLOW, tool_enter_worktree);
+
+    // 34. leave_worktree
+    JsonValue *lw_params = json_create_object();
+    json_obj_add(lw_params, "type", json_create_string("object"));
+    JsonValue *lw_props = json_create_object();
+    JsonValue *lw_keep = json_create_object();
+    json_obj_add(lw_keep, "type", json_create_string("boolean"));
+    json_obj_add(lw_keep, "description", json_create_string("Whether to keep the worktree branch instead of force-removing it"));
+    json_obj_add(lw_props, "keep", lw_keep);
+    json_obj_add(lw_params, "properties", lw_props);
+    REGISTER_IF_PERMITTED("leave_worktree", "Leave isolated git worktree sandbox and restore original working directory", lw_params, PERM_ALLOW, tool_leave_worktree);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -3547,6 +3639,95 @@ void belya_hook_result_free(BelyaHookResult *res) {
     }
 }
 
+// 2026 Competitive Parity Phase 4: Plan Mode Gate & Git Worktree Sandbox
+bool belya_harness_enter_plan_mode(BelyaHarness *h) {
+    if (!h) return false;
+    h->plan_mode = true;
+    belya_agent_log_timeline(h->agent, "plan_mode_entered", "Activated read-only Plan Mode");
+    return true;
+}
+
+bool belya_harness_exit_plan_mode(BelyaHarness *h) {
+    if (!h) return false;
+    h->plan_mode = false;
+    belya_agent_log_timeline(h->agent, "plan_mode_exited", "Deactivated Plan Mode");
+    return true;
+}
+
+char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (h->in_worktree) return xstrdup("Error: Already active inside an isolated worktree.");
+
+    if (!getcwd(h->original_worktree_cwd, sizeof(h->original_worktree_cwd))) {
+        snprintf(h->original_worktree_cwd, sizeof(h->original_worktree_cwd), "%s", h->cwd);
+    }
+
+    char wt_id[128];
+    if (branch_or_id && strlen(branch_or_id) > 0) {
+        snprintf(wt_id, sizeof(wt_id), "wt_%s", branch_or_id);
+    } else {
+        snprintf(wt_id, sizeof(wt_id), "wt_agent_%ld", (long)time(NULL));
+    }
+
+    char wt_path[4096];
+    snprintf(wt_path, sizeof(wt_path), ".belya/worktrees/%s", wt_id);
+
+    system("mkdir -p .belya/worktrees");
+
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "git worktree add -b \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
+    int rc = system(cmd);
+    if (rc != 0) {
+        snprintf(cmd, sizeof(cmd), "git worktree add \"%s\" HEAD >/dev/null 2>&1", wt_path);
+        rc = system(cmd);
+    }
+
+    if (rc != 0) {
+        return xstrdup("Error: Failed to create isolated git worktree (ensure repository has commits).");
+    }
+
+    if (chdir(wt_path) != 0) {
+        return xstrdup("Error: Failed to enter newly created worktree directory.");
+    }
+
+    if (!getcwd(h->cwd, sizeof(h->cwd))) {
+        snprintf(h->cwd, sizeof(h->cwd), "%s", wt_path);
+    }
+    snprintf(h->active_worktree_path, sizeof(h->active_worktree_path), "%s", wt_path);
+    h->in_worktree = true;
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Entered isolated git worktree at '%s'. Working directory shifted to isolated workspace.", wt_path);
+    belya_agent_log_timeline(h->agent, "worktree_entered", wt_path);
+    return ds.data;
+}
+
+char *belya_harness_leave_worktree(BelyaHarness *h, bool keep) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (!h->in_worktree) return xstrdup("Error: Not currently in a worktree.");
+
+    char prev_wt_path[4096];
+    snprintf(prev_wt_path, sizeof(prev_wt_path), "%s", h->active_worktree_path);
+
+    if (chdir(h->original_worktree_cwd) != 0) {
+        return xstrdup("Error: Failed to restore original working directory.");
+    }
+    snprintf(h->cwd, sizeof(h->cwd), "%s", h->original_worktree_cwd);
+    h->in_worktree = false;
+
+    if (!keep) {
+        char cmd[4096];
+        snprintf(cmd, sizeof(cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1", prev_wt_path);
+        system(cmd);
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Left git worktree. Restored workspace to '%s' (worktree %s).",
+        h->cwd, keep ? "preserved" : "reaped");
+    belya_agent_log_timeline(h->agent, "worktree_left", h->cwd);
+    return ds.data;
+}
+
 static void print_help(BelyaHarness *h) {
     printf("\n\033[1;36m=== BelyaHarness & BelyaAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
@@ -3587,6 +3768,7 @@ static void print_help(BelyaHarness *h) {
     printf("  /tasks [filter]  List active tasks from SQLite task board\n");
     printf("  /cron            List scheduled recurring background cron jobs\n");
     printf("  /dream           Trigger cross-session memory consolidation sweep\n");
+    printf("  /plan            Toggle read-only Plan Mode sandbox\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
@@ -3617,7 +3799,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/cost",
-            "/tasks", "/cron", "/dream",
+            "/tasks", "/cron", "/dream", "/plan",
             "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -3890,6 +4072,16 @@ void belya_harness_repl(BelyaHarness *h) {
                 char *dr = belya_agent_dream_sweep(h->agent);
                 printf("\n%s\n", dr ? dr : "Dream consolidation complete.");
                 if (dr) free(dr);
+                continue;
+            }
+            if (strcmp(input_buf, "/plan") == 0) {
+                if (h->plan_mode) {
+                    belya_harness_exit_plan_mode(h);
+                    printf("\n\033[1;32m[Plan Mode]: Deactivated. Mutating filesystem and shell actions restored.\033[0m\n\n");
+                } else {
+                    belya_harness_enter_plan_mode(h);
+                    printf("\n\033[1;33m[Plan Mode]: Activated (Read-Only Sandbox). Write, edit, patch, and mutating shell commands are locked.\033[0m\n\n");
+                }
                 continue;
             }
             if (strncmp(input_buf, "/openrouter", 11) == 0) {
@@ -4349,6 +4541,18 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                     printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
                     belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
                     continue;
+                }
+
+                // 2026 Competitive Parity Phase 4: Plan Mode Gate
+                if (h->plan_mode) {
+                    if (strcmp(tc->name, "write_file") == 0 ||
+                        strcmp(tc->name, "edit_file") == 0 ||
+                        strcmp(tc->name, "apply_patch") == 0 ||
+                        strcmp(tc->name, "define_tool") == 0) {
+                        printf("\033[1;31m[Plan Mode Guard]: Mutating tool '%s' blocked in read-only plan mode.\033[0m\n", tc->name);
+                        belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
+                        continue;
+                    }
                 }
 
                 if (matched->security == PERM_ASK_USER) {

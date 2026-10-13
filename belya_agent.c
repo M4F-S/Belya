@@ -261,8 +261,9 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
     // Load Composable Rule Packs dynamically based on project context
     belya_agent_load_rule_packs(agent, "rules", &sys);
 
-    // File-First Skills System: Scan skills/ directory and index into SQLite FTS5
+    // File-First Skills System: Scan skills/ and .belya/skills directories and index into SQLite FTS5
     belya_agent_load_disk_skills(agent, "skills");
+    belya_agent_load_disk_skills(agent, ".belya/skills");
 
     // Belya Agency: Scan agents/ directory and index declarative agent manifests into SQLite FTS5
     belya_agent_load_manifests(agent, "agents");

@@ -2674,6 +2674,140 @@ static void test_phase3_task_board_fts5_recall_and_cron(void) {
     printf("  -> Phase 3: Task Board, FTS5 Recall & Background Cron Engine PASSED\n");
 }
 
+static void test_phase4_plan_mode_and_worktrees(void) {
+    printf("[Test] Phase 4: Plan Mode Sandbox, Isolated Git Worktrees & SKILL.md Parity...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_phase4.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Verify Tool Callbacks are Registered
+    BelyaToolCallback cb_epm = get_tool_cb(h, "enter_plan_mode");
+    BelyaToolCallback cb_xpm = get_tool_cb(h, "exit_plan_mode");
+    BelyaToolCallback cb_ew = get_tool_cb(h, "enter_worktree");
+    BelyaToolCallback cb_lw = get_tool_cb(h, "leave_worktree");
+    assert(cb_epm != NULL);
+    assert(cb_xpm != NULL);
+    assert(cb_ew != NULL);
+    assert(cb_lw != NULL);
+
+    // 2. Test Plan Mode Activation & Mutating Guards
+    assert(h->plan_mode == false);
+    JsonValue *empty_args = json_create_object();
+    char *epm_res = cb_epm(agent, empty_args);
+    json_free(empty_args);
+    assert(epm_res && strstr(epm_res, "Plan Mode activated") != NULL);
+    free(epm_res);
+    assert(h->plan_mode == true);
+
+    // Test write_file blocked in Plan Mode
+    BelyaToolCallback cb_write = get_tool_cb(h, "write_file");
+    assert(cb_write != NULL);
+    JsonValue *wr_args = json_create_object();
+    json_obj_add(wr_args, "path", json_create_string("test_blocked.txt"));
+    json_obj_add(wr_args, "content", json_create_string("blocked content"));
+    char *wr_res = cb_write(agent, wr_args);
+    json_free(wr_args);
+    assert(wr_res && strstr(wr_res, "Blocked: Plan Mode is active") != NULL);
+    free(wr_res);
+
+    // Test edit_file blocked in Plan Mode
+    BelyaToolCallback cb_edit = get_tool_cb(h, "edit_file");
+    assert(cb_edit != NULL);
+    JsonValue *ed_args = json_create_object();
+    json_obj_add(ed_args, "path", json_create_string("test_blocked.txt"));
+    json_obj_add(ed_args, "old_text", json_create_string("old"));
+    json_obj_add(ed_args, "new_text", json_create_string("new"));
+    char *ed_res = cb_edit(agent, ed_args);
+    json_free(ed_args);
+    assert(ed_res && strstr(ed_res, "Blocked: Plan Mode is active") != NULL);
+    free(ed_res);
+
+    // Test apply_patch blocked in Plan Mode
+    BelyaToolCallback cb_patch = get_tool_cb(h, "apply_patch");
+    assert(cb_patch != NULL);
+    JsonValue *pt_args = json_create_object();
+    json_obj_add(pt_args, "path", json_create_string("test_blocked.txt"));
+    json_obj_add(pt_args, "patch", json_create_string("patch data"));
+    char *pt_res = cb_patch(agent, pt_args);
+    json_free(pt_args);
+    assert(pt_res && strstr(pt_res, "Blocked: Plan Mode is active") != NULL);
+    free(pt_res);
+
+    // Test bash mutating command blocked in Plan Mode
+    BelyaToolCallback cb_bash = get_tool_cb(h, "bash");
+    assert(cb_bash != NULL);
+    JsonValue *bsh_mut = json_create_object();
+    json_obj_add(bsh_mut, "command", json_create_string("rm -rf nonexistent_file.txt"));
+    char *bsh_mut_res = cb_bash(agent, bsh_mut);
+    json_free(bsh_mut);
+    assert(bsh_mut_res && strstr(bsh_mut_res, "Blocked: Plan Mode is active") != NULL);
+    free(bsh_mut_res);
+
+    // Test read-only bash command allowed in Plan Mode
+    JsonValue *bsh_ro = json_create_object();
+    json_obj_add(bsh_ro, "command", json_create_string("echo plan_mode_read_only_ok"));
+    char *bsh_ro_res = cb_bash(agent, bsh_ro);
+    json_free(bsh_ro);
+    assert(bsh_ro_res && strstr(bsh_ro_res, "plan_mode_read_only_ok") != NULL);
+    free(bsh_ro_res);
+
+    // Deactivate Plan Mode
+    empty_args = json_create_object();
+    char *xpm_res = cb_xpm(agent, empty_args);
+    json_free(empty_args);
+    assert(xpm_res && strstr(xpm_res, "Plan Mode deactivated") != NULL);
+    free(xpm_res);
+    assert(h->plan_mode == false);
+
+    // 3. Test Git Worktree Sandbox Lifecycle
+    char orig_cwd[4096];
+    assert(getcwd(orig_cwd, sizeof(orig_cwd)) != NULL);
+
+    char *wt_enter = belya_harness_enter_worktree(h, "test_phase4_branch");
+    assert(wt_enter != NULL);
+    assert(strstr(wt_enter, "Entered isolated git worktree") != NULL);
+    free(wt_enter);
+    assert(h->in_worktree == true);
+
+    char current_cwd[4096];
+    assert(getcwd(current_cwd, sizeof(current_cwd)) != NULL);
+    assert(strstr(current_cwd, ".belya/worktrees/wt_test_phase4_branch") != NULL);
+
+    char *wt_leave = belya_harness_leave_worktree(h, false);
+    assert(wt_leave != NULL);
+    assert(strstr(wt_leave, "Left git worktree") != NULL);
+    free(wt_leave);
+    assert(h->in_worktree == false);
+
+    char restored_cwd[4096];
+    assert(getcwd(restored_cwd, sizeof(restored_cwd)) != NULL);
+    assert(strcmp(restored_cwd, orig_cwd) == 0);
+
+    // 4. Test .belya/skills/ Discovery
+    system("mkdir -p .belya/skills/test_p4_skill");
+    FILE *skf = fopen(".belya/skills/test_p4_skill/SKILL.md", "w");
+    assert(skf != NULL);
+    fprintf(skf, "---\nname: test_p4_skill\ndescription: Phase 4 Plan Mode Verification Skill\ntriggers: p4, plan_test\n---\nStep 1: Check invariants\nStep 2: Assert.\n");
+    fclose(skf);
+
+    size_t loaded_skills = belya_agent_load_disk_skills(agent, ".belya/skills");
+    assert(loaded_skills >= 1);
+
+    char *found_skill = belya_agent_search_skills(agent, "plan_test");
+    assert(found_skill != NULL);
+    assert(strstr(found_skill, "test_p4_skill") != NULL);
+    free(found_skill);
+
+    unlink(".belya/skills/test_p4_skill/SKILL.md");
+    rmdir(".belya/skills/test_p4_skill");
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_phase4.sqlite");
+    printf("  -> Phase 4: Plan Mode Sandbox, Isolated Git Worktrees & SKILL.md Parity PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2720,7 +2854,8 @@ int main(void) {
     test_phase1_diff_colorizer_and_ask_user();
     test_phase2_deterministic_hooks_and_5tier_compactor();
     test_phase3_task_board_fts5_recall_and_cron();
-    printf("================ All Tests Passed Successfully (44/44 - 100%%) ================\n\n");
+    test_phase4_plan_mode_and_worktrees();
+    printf("================ All Tests Passed Successfully (45/45 - 100%%) ================\n\n");
     return 0;
 }
 

@@ -74,6 +74,12 @@ struct BelyaHarness {
     char active_role[64];
     bool bash_restricted;
     char tools_whitelist[512];
+
+    // 2026 Competitive Parity Phase 4: Plan Mode Gate & Git Worktree Sandbox
+    bool plan_mode;
+    char original_worktree_cwd[4096];
+    char active_worktree_path[4096];
+    bool in_worktree;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
@@ -130,6 +136,12 @@ typedef struct {
 
 BelyaHookResult belya_run_lifecycle_hook(BelyaHarness *h, BelyaHookType hook_type, const char *tool_name, const char *tool_args, const char *observation);
 void belya_hook_result_free(BelyaHookResult *res);
+
+// 2026 Competitive Parity Phase 4: Plan Mode Gate & Git Worktrees
+bool belya_harness_enter_plan_mode(BelyaHarness *h);
+bool belya_harness_exit_plan_mode(BelyaHarness *h);
+char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id);
+char *belya_harness_leave_worktree(BelyaHarness *h, bool keep);
 
 extern const char *g_active_custom_script_path;
 
