@@ -46,6 +46,41 @@ typedef struct {
     int detected_period;
 } HarnessLoopDetector;
 
+// 2026 Competitive Parity Phase 5: POSIX PTY Subshells & Background Task Manager
+#define BELYA_MAX_BACKGROUND_TASKS 16
+#define BELYA_TASK_RING_BUFFER_SIZE 65536
+
+typedef enum {
+    BELYA_TASK_STATE_UNUSED = 0,
+    BELYA_TASK_STATE_RUNNING,
+    BELYA_TASK_STATE_COMPLETED,
+    BELYA_TASK_STATE_FAILED,
+    BELYA_TASK_STATE_KILLED
+} BelyaTaskState;
+
+typedef struct {
+    int id;
+    pid_t pid;
+    pid_t pgid;
+    int master_fd;
+    BelyaTaskState state;
+    int exit_code;
+    time_t start_time;
+    time_t end_time;
+    char command[512];
+    char ring_buffer[BELYA_TASK_RING_BUFFER_SIZE];
+    size_t ring_head;
+    size_t ring_tail;
+    size_t ring_count;
+    size_t total_bytes_captured;
+} BelyaBackgroundTask;
+
+typedef struct {
+    BelyaBackgroundTask tasks[BELYA_MAX_BACKGROUND_TASKS];
+    size_t count;
+    int next_id;
+} BelyaTaskTable;
+
 struct BelyaHarness {
     BelyaAgent *agent;
     BelyaRegisteredTool tools[64];
@@ -80,6 +115,9 @@ struct BelyaHarness {
     char original_worktree_cwd[4096];
     char active_worktree_path[4096];
     bool in_worktree;
+
+    // 2026 Competitive Parity Phase 5: POSIX PTY Subshells & Background Task Manager
+    BelyaTaskTable task_table;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
@@ -142,6 +180,13 @@ bool belya_harness_enter_plan_mode(BelyaHarness *h);
 bool belya_harness_exit_plan_mode(BelyaHarness *h);
 char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id);
 char *belya_harness_leave_worktree(BelyaHarness *h, bool keep);
+
+// 2026 Competitive Parity Phase 5: POSIX PTY Subshells & Background Task Manager
+int belya_harness_spawn_task(BelyaHarness *h, const char *command);
+char *belya_harness_task_list(BelyaHarness *h);
+char *belya_harness_task_status(BelyaHarness *h, int id);
+char *belya_harness_task_send_input(BelyaHarness *h, int id, const char *input);
+char *belya_harness_task_kill(BelyaHarness *h, int id);
 
 extern const char *g_active_custom_script_path;
 

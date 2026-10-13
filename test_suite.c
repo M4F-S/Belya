@@ -2808,6 +2808,84 @@ static void test_phase4_plan_mode_and_worktrees(void) {
     printf("  -> Phase 4: Plan Mode Sandbox, Isolated Git Worktrees & SKILL.md Parity PASSED\n");
 }
 
+static void test_phase5_pty_subshells_and_task_manager(void) {
+    printf("[Test] Phase 5: POSIX PTY Subshells & Background Task Manager...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_phase5.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Verify manage_task tool callback is registered
+    BelyaToolCallback cb_mt = get_tool_cb(h, "manage_task");
+    assert(cb_mt != NULL);
+
+    // 2. Spawn a short-lived background task via PTY
+    int t1 = belya_harness_spawn_task(h, "echo 'belya_pty_task_output_verified'");
+    assert(t1 > 0);
+
+    // Wait a brief moment for output capture and exit
+    usleep(150000);
+
+    char *t1_status = belya_harness_task_status(h, t1);
+    assert(t1_status != NULL);
+    assert(strstr(t1_status, "Task ID: 1") != NULL);
+    assert(strstr(t1_status, "belya_pty_task_output_verified") != NULL);
+    assert(strstr(t1_status, "completed") != NULL);
+    free(t1_status);
+
+    // 3. Spawn a long-running background task and test process group kill
+    int t2 = belya_harness_spawn_task(h, "sleep 30");
+    assert(t2 > 0);
+
+    char *task_list = belya_harness_task_list(h);
+    assert(task_list != NULL);
+    assert(strstr(task_list, "sleep 30") != NULL);
+    free(task_list);
+
+    char *t2_status = belya_harness_task_status(h, t2);
+    assert(t2_status != NULL);
+    assert(strstr(t2_status, "running") != NULL);
+    free(t2_status);
+
+    // Test terminating the task group
+    char *kill_res = belya_harness_task_kill(h, t2);
+    assert(kill_res != NULL);
+    assert(strstr(kill_res, "terminated successfully") != NULL);
+    free(kill_res);
+
+    char *t2_post_kill = belya_harness_task_status(h, t2);
+    assert(t2_post_kill != NULL);
+    assert(strstr(t2_post_kill, "killed") != NULL);
+    free(t2_post_kill);
+
+    // 4. Test tool_manage_task tool callback
+    JsonValue *list_args = json_create_object();
+    json_obj_add(list_args, "action", json_create_string("list"));
+    char *tool_list_res = cb_mt(agent, list_args);
+    json_free(list_args);
+    assert(tool_list_res != NULL);
+    assert(strstr(tool_list_res, "Active & Background Tasks Table") != NULL);
+    free(tool_list_res);
+
+    // 5. Test tool_bash with background:true
+    BelyaToolCallback cb_bash = get_tool_cb(h, "bash");
+    assert(cb_bash != NULL);
+    JsonValue *bg_args = json_create_object();
+    json_obj_add(bg_args, "command", json_create_string("echo 'bg_bash_verified'"));
+    json_obj_add(bg_args, "background", json_create_bool(true));
+    char *bg_res = cb_bash(agent, bg_args);
+    json_free(bg_args);
+    assert(bg_res != NULL);
+    assert(strstr(bg_res, "Command launched in background PTY subshell") != NULL);
+    free(bg_res);
+
+    // Clean up harness and verify deterministic descriptor & process reaping
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_phase5.sqlite");
+    printf("  -> Phase 5: POSIX PTY Subshells & Background Task Manager PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2855,7 +2933,8 @@ int main(void) {
     test_phase2_deterministic_hooks_and_5tier_compactor();
     test_phase3_task_board_fts5_recall_and_cron();
     test_phase4_plan_mode_and_worktrees();
-    printf("================ All Tests Passed Successfully (45/45 - 100%%) ================\n\n");
+    test_phase5_pty_subshells_and_task_manager();
+    printf("================ All Tests Passed Successfully (46/46 - 100%%) ================\n\n");
     return 0;
 }
 

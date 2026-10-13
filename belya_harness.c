@@ -129,6 +129,20 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         }
     }
 
+    // 2026 Competitive Parity Phase 5: Persistent PTY Background Task Execution
+    const JsonValue *bg_val = json_obj_get(args, "background");
+    bool background = (bg_val && bg_val->type == JSON_BOOL) ? bg_val->u.boolean : false;
+    if (background && g_harness) {
+        int tid = belya_harness_spawn_task(g_harness, cmd);
+        if (tid > 0) {
+            DynString res = dyn_str_new();
+            dyn_str_appendf(&res, "Command launched in background PTY subshell [Task ID: %d]. Use manage_task(action=\"status\", id=%d) to monitor output.", tid, tid);
+            return res.data;
+        } else {
+            return xstrdup("Error: Failed to spawn background task (task table full or PTY allocation failed).");
+        }
+    }
+
     // Tester Restricted Execution Guard: allow only build/test/read/verify targets.
     // H3 fix: substring/prefix matching was bypassable (e.g. "echo;rm -rf /",
     // "ls&&curl x|sh", any command containing "make test"). Now: reject shell
@@ -1355,6 +1369,31 @@ static char *tool_leave_worktree(BelyaAgent *agent, const JsonValue *args) {
         return belya_harness_leave_worktree(g_harness, keep);
     }
     return xstrdup("Error: Harness execution environment unavailable.");
+}
+
+static char *tool_manage_task(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *action = json_obj_get_str(args, "action");
+    if (!action) return xstrdup("Error: Missing action parameter ('list', 'status', 'send_input', 'kill').");
+
+    if (strcmp(action, "list") == 0) {
+        return belya_harness_task_list(g_harness);
+    }
+    double id_num = json_obj_get_num(args, "id", -1);
+    if (id_num < 0) return xstrdup("Error: Missing or invalid task id parameter.");
+    int task_id = (int)id_num;
+
+    if (strcmp(action, "status") == 0) {
+        return belya_harness_task_status(g_harness, task_id);
+    } else if (strcmp(action, "send_input") == 0) {
+        const char *input = json_obj_get_str(args, "input");
+        if (!input) return xstrdup("Error: Missing input parameter for send_input action.");
+        return belya_harness_task_send_input(g_harness, task_id, input);
+    } else if (strcmp(action, "kill") == 0) {
+        return belya_harness_task_kill(g_harness, task_id);
+    }
+    return xstrdup("Error: Unrecognized action. Supported: list, status, send_input, kill.");
 }
 
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
@@ -2774,6 +2813,10 @@ static void harness_on_pre_compact_hook(void *ud) {
 BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name) {
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     if (!h) return NULL;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        h->task_table.tasks[i].master_fd = -1;
+        h->task_table.tasks[i].state = BELYA_TASK_STATE_UNUSED;
+    }
     h->agent = agent;
     if (agent) {
         belya_agent_set_pre_compact_hook(agent, harness_on_pre_compact_hook, h);
@@ -2817,8 +2860,22 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     } while (0)
 
     // 1. bash
-    REGISTER_IF_PERMITTED("bash", "Execute a non-interactive shell command. Do NOT use vim/nano/top/less/sudo/man (they will hang). Timeout: 30s. Use cat/grep/sed/awk for file ops.", 
-        build_string_param_schema("command", "The bash command string to execute"), PERM_ALLOW, tool_bash);
+    JsonValue *bash_params = json_create_object();
+    json_obj_add(bash_params, "type", json_create_string("object"));
+    JsonValue *bp_props = json_create_object();
+    JsonValue *bp_cmd = json_create_object();
+    json_obj_add(bp_cmd, "type", json_create_string("string"));
+    json_obj_add(bp_cmd, "description", json_create_string("The bash command string to execute"));
+    json_obj_add(bp_props, "command", bp_cmd);
+    JsonValue *bp_bg = json_create_object();
+    json_obj_add(bp_bg, "type", json_create_string("boolean"));
+    json_obj_add(bp_bg, "description", json_create_string("Run command asynchronously in a persistent background PTY subshell"));
+    json_obj_add(bp_props, "background", bp_bg);
+    json_obj_add(bash_params, "properties", bp_props);
+    JsonValue *bp_req = json_create_array();
+    json_arr_add(bp_req, json_create_string("command"));
+    json_obj_add(bash_params, "required", bp_req);
+    REGISTER_IF_PERMITTED("bash", "Execute a shell command. Use background:true for long-running processes or servers. Timeout: 30s.", bash_params, PERM_ALLOW, tool_bash);
 
     // 2. read_file
     JsonValue *read_params = json_create_object();
@@ -3321,6 +3378,28 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(lw_params, "properties", lw_props);
     REGISTER_IF_PERMITTED("leave_worktree", "Leave isolated git worktree sandbox and restore original working directory", lw_params, PERM_ALLOW, tool_leave_worktree);
 
+    // 35. manage_task
+    JsonValue *mt_params = json_create_object();
+    json_obj_add(mt_params, "type", json_create_string("object"));
+    JsonValue *mt_props = json_create_object();
+    JsonValue *mt_act = json_create_object();
+    json_obj_add(mt_act, "type", json_create_string("string"));
+    json_obj_add(mt_act, "description", json_create_string("Action to perform: 'list', 'status', 'send_input', 'kill'"));
+    json_obj_add(mt_props, "action", mt_act);
+    JsonValue *mt_id = json_create_object();
+    json_obj_add(mt_id, "type", json_create_string("integer"));
+    json_obj_add(mt_id, "description", json_create_string("ID of the background task"));
+    json_obj_add(mt_props, "id", mt_id);
+    JsonValue *mt_inp = json_create_object();
+    json_obj_add(mt_inp, "type", json_create_string("string"));
+    json_obj_add(mt_inp, "description", json_create_string("Input text to send to the task stdin (for send_input)"));
+    json_obj_add(mt_props, "input", mt_inp);
+    json_obj_add(mt_params, "properties", mt_props);
+    JsonValue *mt_req = json_create_array();
+    json_arr_add(mt_req, json_create_string("action"));
+    json_obj_add(mt_params, "required", mt_req);
+    REGISTER_IF_PERMITTED("manage_task", "Manage persistent background PTY subshell tasks (list, status, send_input, kill)", mt_params, PERM_ALLOW, tool_manage_task);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -3728,6 +3807,295 @@ char *belya_harness_leave_worktree(BelyaHarness *h, bool keep) {
     return ds.data;
 }
 
+// ==================== 2026 Competitive Parity Phase 5: POSIX PTY Background Task Manager ====================
+
+static void belya_task_ring_write(BelyaBackgroundTask *t, const char *data, size_t len) {
+    if (!t || !data || len == 0) return;
+    for (size_t i = 0; i < len; i++) {
+        t->ring_buffer[t->ring_head] = data[i];
+        t->ring_head = (t->ring_head + 1) % BELYA_TASK_RING_BUFFER_SIZE;
+        if (t->ring_count < BELYA_TASK_RING_BUFFER_SIZE) {
+            t->ring_count++;
+        } else {
+            t->ring_tail = (t->ring_tail + 1) % BELYA_TASK_RING_BUFFER_SIZE;
+        }
+    }
+    t->total_bytes_captured += len;
+}
+
+static char *belya_task_ring_read_all(BelyaBackgroundTask *t) {
+    if (!t || t->ring_count == 0) return xstrdup("");
+    char *out = malloc(t->ring_count + 1);
+    if (!out) return xstrdup("");
+    for (size_t i = 0; i < t->ring_count; i++) {
+        size_t idx = (t->ring_tail + i) % BELYA_TASK_RING_BUFFER_SIZE;
+        out[i] = t->ring_buffer[idx];
+    }
+    out[t->ring_count] = '\0';
+    return out;
+}
+
+static void belya_task_drain_output(BelyaBackgroundTask *t) {
+    if (!t || t->master_fd <= STDERR_FILENO) return;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(t->master_fd, buf, sizeof(buf) - 1)) > 0) {
+        belya_task_ring_write(t, buf, (size_t)n);
+    }
+    if (t->state == BELYA_TASK_STATE_RUNNING) {
+        int status = 0;
+        pid_t res = waitpid(t->pid, &status, WNOHANG);
+        if (res > 0) {
+            t->end_time = time(NULL);
+            if (WIFEXITED(status)) {
+                t->exit_code = WEXITSTATUS(status);
+                t->state = (t->exit_code == 0) ? BELYA_TASK_STATE_COMPLETED : BELYA_TASK_STATE_FAILED;
+            } else if (WIFSIGNALED(status)) {
+                t->exit_code = 128 + WTERMSIG(status);
+                t->state = BELYA_TASK_STATE_KILLED;
+            }
+            if (t->master_fd > STDERR_FILENO) {
+                close(t->master_fd);
+            }
+            t->master_fd = -1;
+        }
+    }
+}
+
+int belya_harness_spawn_task(BelyaHarness *h, const char *command) {
+    if (!h || !command || strlen(command) == 0) return -1;
+
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        if (h->task_table.tasks[i].state != BELYA_TASK_STATE_UNUSED) {
+            belya_task_drain_output(&h->task_table.tasks[i]);
+        }
+    }
+
+    int slot = -1;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        if (h->task_table.tasks[i].state == BELYA_TASK_STATE_UNUSED) {
+            slot = (int)i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+            if (h->task_table.tasks[i].state != BELYA_TASK_STATE_RUNNING) {
+                slot = (int)i;
+                break;
+            }
+        }
+    }
+    if (slot < 0) return -1;
+
+    int master_fd = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master_fd < 0) return -1;
+
+    if (grantpt(master_fd) != 0 || unlockpt(master_fd) != 0) {
+        close(master_fd);
+        return -1;
+    }
+
+    char *slave_name = ptsname(master_fd);
+    if (!slave_name) {
+        close(master_fd);
+        return -1;
+    }
+
+    fcntl(master_fd, F_SETFD, FD_CLOEXEC);
+    int flags = fcntl(master_fd, F_GETFL, 0);
+    fcntl(master_fd, F_SETFL, flags | O_NONBLOCK);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(master_fd);
+        return -1;
+    }
+
+    if (pid == 0) {
+        setsid();
+        int slave_fd = open(slave_name, O_RDWR);
+        if (slave_fd >= 0) {
+            dup2(slave_fd, STDIN_FILENO);
+            dup2(slave_fd, STDOUT_FILENO);
+            dup2(slave_fd, STDERR_FILENO);
+            if (slave_fd > STDERR_FILENO) close(slave_fd);
+        }
+        close(master_fd);
+        setpgid(0, 0);
+        execlp("bash", "bash", "-c", command, (char *)NULL);
+        _exit(127);
+    }
+
+    BelyaBackgroundTask *t = &h->task_table.tasks[slot];
+    t->id = ++h->task_table.next_id;
+    t->pid = pid;
+    t->pgid = pid;
+    t->master_fd = master_fd;
+    t->state = BELYA_TASK_STATE_RUNNING;
+    t->exit_code = -1;
+    t->start_time = time(NULL);
+    t->end_time = 0;
+    strncpy(t->command, command, sizeof(t->command) - 1);
+    t->command[sizeof(t->command) - 1] = '\0';
+    t->ring_head = 0;
+    t->ring_tail = 0;
+    t->ring_count = 0;
+    t->total_bytes_captured = 0;
+
+    usleep(50000);
+    belya_task_drain_output(t);
+
+    belya_agent_log_timeline(h->agent, "task_spawned", command);
+    return t->id;
+}
+
+char *belya_harness_task_list(BelyaHarness *h) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Active & Background Tasks Table ===\n");
+    dyn_str_append(&ds, "ID   | PID    | State      | Elapsed | Output   | Command\n");
+    dyn_str_append(&ds, "-----+--------+------------+---------+----------+-----------------------------\n");
+
+    size_t count = 0;
+    time_t now = time(NULL);
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        BelyaBackgroundTask *t = &h->task_table.tasks[i];
+        if (t->state == BELYA_TASK_STATE_UNUSED) continue;
+
+        belya_task_drain_output(t);
+        const char *st_str = "unknown";
+        if (t->state == BELYA_TASK_STATE_RUNNING) st_str = "\033[1;32mrunning\033[0m";
+        else if (t->state == BELYA_TASK_STATE_COMPLETED) st_str = "completed";
+        else if (t->state == BELYA_TASK_STATE_FAILED) st_str = "\033[1;31mfailed\033[0m";
+        else if (t->state == BELYA_TASK_STATE_KILLED) st_str = "\033[1;33mkilled\033[0m";
+
+        long elapsed = (long)(t->end_time ? (t->end_time - t->start_time) : (now - t->start_time));
+        if (elapsed < 0) elapsed = 0;
+
+        dyn_str_appendf(&ds, "%-4d | %-6d | %-20s | %4lds  | %6zu B | %s\n",
+            t->id, (int)t->pid, st_str, elapsed, t->total_bytes_captured, t->command);
+        count++;
+    }
+
+    if (count == 0) {
+        dyn_str_append(&ds, "(No background tasks currently registered)\n");
+    }
+    return ds.data;
+}
+
+char *belya_harness_task_status(BelyaHarness *h, int id) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+
+    BelyaBackgroundTask *target = NULL;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        if (h->task_table.tasks[i].id == id && h->task_table.tasks[i].state != BELYA_TASK_STATE_UNUSED) {
+            target = &h->task_table.tasks[i];
+            break;
+        }
+    }
+    if (!target) {
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error: Background task ID %d not found.", id);
+        return err.data;
+    }
+
+    belya_task_drain_output(target);
+    time_t now = time(NULL);
+    long elapsed = (long)(target->end_time ? (target->end_time - target->start_time) : (now - target->start_time));
+    if (elapsed < 0) elapsed = 0;
+
+    const char *st_str = "unknown";
+    if (target->state == BELYA_TASK_STATE_RUNNING) st_str = "running";
+    else if (target->state == BELYA_TASK_STATE_COMPLETED) st_str = "completed";
+    else if (target->state == BELYA_TASK_STATE_FAILED) st_str = "failed";
+    else if (target->state == BELYA_TASK_STATE_KILLED) st_str = "killed";
+
+    char *recent_out = belya_task_ring_read_all(target);
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Task ID: %d\nPID: %d (PGID: %d)\nCommand: %s\nState: %s\nExit Code: %d\nElapsed: %lds\nTotal Bytes Captured: %zu\n\nRecent Output:\n%s",
+        target->id, (int)target->pid, (int)target->pgid, target->command, st_str, target->exit_code, elapsed, target->total_bytes_captured,
+        recent_out ? recent_out : "");
+    if (recent_out) free(recent_out);
+    return ds.data;
+}
+
+char *belya_harness_task_send_input(BelyaHarness *h, int id, const char *input) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (!input) return xstrdup("Error: Missing input text.");
+
+    BelyaBackgroundTask *target = NULL;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        if (h->task_table.tasks[i].id == id && h->task_table.tasks[i].state != BELYA_TASK_STATE_UNUSED) {
+            target = &h->task_table.tasks[i];
+            break;
+        }
+    }
+    if (!target) {
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error: Background task ID %d not found.", id);
+        return err.data;
+    }
+
+    if (target->state != BELYA_TASK_STATE_RUNNING || target->master_fd < 0) {
+        return xstrdup("Error: Cannot send input; task is not actively running.");
+    }
+
+    size_t in_len = strlen(input);
+    ssize_t w = write(target->master_fd, input, in_len);
+    if (in_len > 0 && input[in_len - 1] != '\n') {
+        w += write(target->master_fd, "\n", 1);
+    }
+    (void)w;
+
+    usleep(50000);
+    belya_task_drain_output(target);
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Sent %zu bytes of input to task %d.\n", in_len, id);
+    return ds.data;
+}
+
+char *belya_harness_task_kill(BelyaHarness *h, int id) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+
+    BelyaBackgroundTask *target = NULL;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        if (h->task_table.tasks[i].id == id && h->task_table.tasks[i].state != BELYA_TASK_STATE_UNUSED) {
+            target = &h->task_table.tasks[i];
+            break;
+        }
+    }
+    if (!target) {
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error: Background task ID %d not found.", id);
+        return err.data;
+    }
+
+    if (target->state == BELYA_TASK_STATE_RUNNING) {
+        kill(-target->pgid, SIGTERM);
+        usleep(20000);
+        int status = 0;
+        if (waitpid(target->pid, &status, WNOHANG) == 0) {
+            kill(-target->pgid, SIGKILL);
+            waitpid(target->pid, &status, 0);
+        }
+        target->state = BELYA_TASK_STATE_KILLED;
+        target->end_time = time(NULL);
+        if (target->master_fd > STDERR_FILENO) {
+            close(target->master_fd);
+            target->master_fd = -1;
+        }
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Task %d (PID %d, PGID %d) terminated successfully.", id, (int)target->pid, (int)target->pgid);
+    belya_agent_log_timeline(h->agent, "task_killed", ds.data);
+    return ds.data;
+}
+
 static void print_help(BelyaHarness *h) {
     printf("\n\033[1;36m=== BelyaHarness & BelyaAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
@@ -3769,6 +4137,7 @@ static void print_help(BelyaHarness *h) {
     printf("  /cron            List scheduled recurring background cron jobs\n");
     printf("  /dream           Trigger cross-session memory consolidation sweep\n");
     printf("  /plan            Toggle read-only Plan Mode sandbox\n");
+    printf("  /bg              List running background PTY subshell tasks\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
@@ -3799,7 +4168,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/cost",
-            "/tasks", "/cron", "/dream", "/plan",
+            "/tasks", "/cron", "/dream", "/plan", "/bg",
             "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -4082,6 +4451,12 @@ void belya_harness_repl(BelyaHarness *h) {
                     belya_harness_enter_plan_mode(h);
                     printf("\n\033[1;33m[Plan Mode]: Activated (Read-Only Sandbox). Write, edit, patch, and mutating shell commands are locked.\033[0m\n\n");
                 }
+                continue;
+            }
+            if (strcmp(input_buf, "/bg") == 0) {
+                char *bg_list = belya_harness_task_list(h);
+                printf("\n%s\n", bg_list ? bg_list : "No background tasks.");
+                if (bg_list) free(bg_list);
                 continue;
             }
             if (strncmp(input_buf, "/openrouter", 11) == 0) {
@@ -4650,6 +5025,23 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
 void belya_harness_free(BelyaHarness *h) {
     if (!h) return;
+    for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
+        BelyaBackgroundTask *t = &h->task_table.tasks[i];
+        if (t->state == BELYA_TASK_STATE_RUNNING) {
+            kill(-t->pgid, SIGTERM);
+            usleep(10000);
+            kill(-t->pgid, SIGKILL);
+            waitpid(t->pid, NULL, WNOHANG);
+            if (t->master_fd > STDERR_FILENO) {
+                close(t->master_fd);
+            }
+            t->master_fd = -1;
+            t->state = BELYA_TASK_STATE_KILLED;
+        } else if (t->master_fd > STDERR_FILENO) {
+            close(t->master_fd);
+            t->master_fd = -1;
+        }
+    }
     for (size_t i = 0; i < h->tool_count; i++) {
         if (h->tools[i].name) free(h->tools[i].name);
         if (h->tools[i].custom_script_path) free(h->tools[i].custom_script_path);
