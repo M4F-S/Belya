@@ -2491,6 +2491,92 @@ static void test_phase1_diff_colorizer_and_ask_user(void) {
     printf("  -> Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal PASSED\n");
 }
 
+static void test_phase2_deterministic_hooks_and_5tier_compactor(void) {
+    printf("[Test] Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary...\n");
+
+    // 1. Test Lifecycle Hook Runner (Exit 2 = Blocked policy, Exit 0 = Allowed)
+    system("mkdir -p .belya/hooks");
+    FILE *fhook = fopen(".belya/hooks/pre_tool_use.sh", "w");
+    assert(fhook != NULL);
+    fprintf(fhook, "#!/bin/sh\n"
+                   "if [ \"$BELYA_TOOL_NAME\" = \"forbidden_tool\" ]; then\n"
+                   "    echo \"Policy Violation: forbidden_tool is strictly blocked.\"\n"
+                   "    exit 2\n"
+                   "fi\n"
+                   "echo \"Tool approved\"\n"
+                   "exit 0\n");
+    fclose(fhook);
+    chmod(".belya/hooks/pre_tool_use.sh", 0755);
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Static System Instructions");
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // Call blocked hook
+    BelyaHookResult r_block = belya_run_lifecycle_hook(h, BELYA_HOOK_PRE_TOOL_USE, "forbidden_tool", "{}", NULL);
+    assert(r_block.blocked == true);
+    assert(r_block.exit_code == 2);
+    assert(r_block.output != NULL);
+    assert(strstr(r_block.output, "forbidden_tool is strictly blocked") != NULL);
+    belya_hook_result_free(&r_block);
+
+    // Call allowed hook
+    BelyaHookResult r_allow = belya_run_lifecycle_hook(h, BELYA_HOOK_PRE_TOOL_USE, "allowed_tool", "{}", NULL);
+    assert(r_allow.blocked == false);
+    assert(r_allow.exit_code == 0);
+    assert(r_allow.output != NULL);
+    assert(strstr(r_allow.output, "Tool approved") != NULL);
+    belya_hook_result_free(&r_allow);
+
+    // Clean up hook script
+    unlink(".belya/hooks/pre_tool_use.sh");
+    rmdir(".belya/hooks");
+
+    // 2. Test SYSTEM_PROMPT_DYNAMIC_BOUNDARY presence
+    assert(strlen(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) > 5);
+
+    // 3. Test 5-Tier Compactor
+    // Add messages
+    belya_agent_add_message(agent, "user", "ROOT MISSION: Verify pure C99 5-tier compaction.");
+    belya_agent_add_message(agent, "assistant", "Working on tier tests...    \n\n\n");
+    assert(agent->msg_count == 3);
+
+    // Tier 1: Micro-pruning (trims trailing whitespace)
+    belya_agent_compact_5tier(agent, COMPACT_TIER_1_MICRO, 0);
+    assert(strcmp(agent->messages[2].content, "Working on tier tests...") == 0);
+
+    // Tier 2: Truncate large tool observation older than 3 turns
+    char *big_tool_obs = malloc(2000);
+    memset(big_tool_obs, 'A', 1999);
+    big_tool_obs[1999] = '\0';
+    belya_agent_add_message(agent, "tool", big_tool_obs);
+    free(big_tool_obs);
+    // Add 3 turns to make tool observation older than 3 turns
+    belya_agent_add_message(agent, "assistant", "Step 1");
+    belya_agent_add_message(agent, "user", "Step 2");
+    belya_agent_add_message(agent, "assistant", "Step 3");
+    assert(agent->msg_count == 7);
+    belya_agent_compact_5tier(agent, COMPACT_TIER_2_TRUNCATE_TOOLS, 0);
+    assert(strstr(agent->messages[3].content, "Truncated") != NULL);
+
+    // Tier 3: Middle-out semantic pruning
+    belya_agent_compact_5tier(agent, COMPACT_TIER_3_MIDDLE_OUT, 2);
+    // Preserves index 0, index 1 (root mission), summary at index 2, and 2 recent turns
+    assert(agent->msg_count == 5);
+    assert(strcmp(agent->messages[0].role, "system") == 0);
+    assert(strstr(agent->messages[1].content, "ROOT MISSION:") != NULL);
+    assert(strstr(agent->messages[2].content, "CONTEXT COMPACTOR") != NULL);
+
+    // Tier 5: Emergency compaction
+    belya_agent_compact_5tier(agent, COMPACT_TIER_5_EMERGENCY, 0);
+    assert(agent->msg_count == 3);
+    assert(strstr(agent->messages[1].content, "EMERGENCY COMPACTION BRIEF") != NULL);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2535,7 +2621,8 @@ int main(void) {
     test_repo_to_mcp_synthesis();
     test_mythos_variant_analysis();
     test_phase1_diff_colorizer_and_ask_user();
-    printf("================ All Tests Passed Successfully (42/42 - 100%%) ================\n\n");
+    test_phase2_deterministic_hooks_and_5tier_compactor();
+    printf("================ All Tests Passed Successfully (43/43 - 100%%) ================\n\n");
     return 0;
 }
 

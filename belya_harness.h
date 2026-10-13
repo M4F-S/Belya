@@ -114,6 +114,23 @@ char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern
 char *belya_ansi_diff_colorize(const char *raw_diff);
 bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, const char *args_json, void *userdata);
 
+// 2026 Competitive Parity Phase 2: Deterministic Lifecycle Hook Runner
+typedef enum {
+    BELYA_HOOK_PRE_TOOL_USE = 0,
+    BELYA_HOOK_POST_TOOL_USE,
+    BELYA_HOOK_STOP,
+    BELYA_HOOK_PRE_COMPACT
+} BelyaHookType;
+
+typedef struct {
+    bool blocked;           // True if hook returned exit code 2
+    int exit_code;          // Raw exit code
+    char *output;           // Hook output (heap-allocated, caller must free)
+} BelyaHookResult;
+
+BelyaHookResult belya_run_lifecycle_hook(BelyaHarness *h, BelyaHookType hook_type, const char *tool_name, const char *tool_args, const char *observation);
+void belya_hook_result_free(BelyaHookResult *res);
+
 extern const char *g_active_custom_script_path;
 
 #endif

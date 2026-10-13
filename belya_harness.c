@@ -2633,10 +2633,21 @@ static JsonValue *build_string_param_schema(const char *prop_name, const char *p
     return p;
 }
 
+static void harness_on_pre_compact_hook(void *ud) {
+    BelyaHarness *bh = (BelyaHarness *)ud;
+    if (bh) {
+        BelyaHookResult hres = belya_run_lifecycle_hook(bh, BELYA_HOOK_PRE_COMPACT, NULL, NULL, NULL);
+        belya_hook_result_free(&hres);
+    }
+}
+
 BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name) {
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     if (!h) return NULL;
     h->agent = agent;
+    if (agent) {
+        belya_agent_set_pre_compact_hook(agent, harness_on_pre_compact_hook, h);
+    }
     if (role_name) {
         snprintf(h->active_role, sizeof(h->active_role), "%s", role_name);
         if (strcmp(role_name, "tester") == 0) {
@@ -3215,6 +3226,146 @@ static bool harness_ask_permission(const char *name, const char *args) {
     return belya_terminal_permission_prompt(g_harness, name, args, NULL);
 }
 
+BelyaHookResult belya_run_lifecycle_hook(BelyaHarness *h, BelyaHookType hook_type, const char *tool_name, const char *tool_args, const char *observation) {
+    BelyaHookResult res;
+    memset(&res, 0, sizeof(res));
+
+    const char *event_name = NULL;
+    const char *script_base = NULL;
+    switch (hook_type) {
+        case BELYA_HOOK_PRE_TOOL_USE:
+            event_name = "PreToolUse";
+            script_base = "pre_tool_use";
+            break;
+        case BELYA_HOOK_POST_TOOL_USE:
+            event_name = "PostToolUse";
+            script_base = "post_tool_use";
+            break;
+        case BELYA_HOOK_STOP:
+            event_name = "Stop";
+            script_base = "stop";
+            break;
+        case BELYA_HOOK_PRE_COMPACT:
+            event_name = "PreCompact";
+            script_base = "pre_compact";
+            break;
+        default:
+            return res;
+    }
+
+    char script_path[512];
+    snprintf(script_path, sizeof(script_path), ".belya/hooks/%s.sh", script_base);
+    if (access(script_path, X_OK) != 0) {
+        snprintf(script_path, sizeof(script_path), ".belya/hooks/%s", script_base);
+        if (access(script_path, X_OK) != 0) {
+            return res;
+        }
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return res;
+    }
+    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return res;
+    }
+
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+
+        setenv("BELYA_HOOK_EVENT", event_name, 1);
+        if (tool_name) setenv("BELYA_TOOL_NAME", tool_name, 1);
+        if (tool_args) setenv("BELYA_TOOL_ARGS", tool_args, 1);
+        if (observation) setenv("BELYA_TOOL_OBSERVATION", observation, 1);
+        if (h && h->agent && h->agent->db_path[0]) setenv("BELYA_SESSION_ID", h->agent->db_path, 1);
+        if (h && strlen(h->cwd) > 0) setenv("BELYA_CWD", h->cwd, 1);
+
+        execl(script_path, script_path, (char *)NULL);
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+
+    DynString out = dyn_str_new();
+    char buf[512];
+    struct pollfd pfd;
+    pfd.fd = pipefd[0];
+    pfd.events = POLLIN;
+
+    int timeout_ms = 3000;
+    bool timed_out = false;
+
+    while (1) {
+        int prc = poll(&pfd, 1, timeout_ms);
+        if (prc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (prc == 0) {
+            timed_out = true;
+            kill(-pid, SIGKILL);
+            break;
+        }
+        if (pfd.revents & (POLLIN | POLLHUP)) {
+            ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+            if (n <= 0) break;
+            buf[n] = '\0';
+            dyn_str_append(&out, buf);
+            if (out.len > 16384) break;
+        }
+    }
+    close(pipefd[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    if (timed_out) {
+        res.blocked = false;
+        res.exit_code = -1;
+        dyn_str_append(&out, " [Hook timed out]");
+        res.output = out.data;
+        return res;
+    }
+
+    if (WIFEXITED(status)) {
+        res.exit_code = WEXITSTATUS(status);
+        if (res.exit_code == 2) {
+            res.blocked = true;
+        }
+    } else {
+        res.exit_code = -1;
+    }
+
+    if (out.len > 0 && out.data[out.len - 1] == '\n') {
+        out.data[--out.len] = '\0';
+    }
+    res.output = out.data;
+    return res;
+}
+
+void belya_hook_result_free(BelyaHookResult *res) {
+    if (res && res->output) {
+        free(res->output);
+        res->output = NULL;
+    }
+}
+
 static void print_help(BelyaHarness *h) {
     printf("\n\033[1;36m=== BelyaHarness & BelyaAgent Help ===\033[0m\n");
     printf("Current Model:   \033[1;33m%s\033[0m\n", h->agent->gateway->model);
@@ -3673,6 +3824,9 @@ void belya_harness_repl(BelyaHarness *h) {
 
         belya_harness_execute_turn(h, input_buf);
     }
+
+    BelyaHookResult stop_hook = belya_run_lifecycle_hook(h, BELYA_HOOK_STOP, NULL, NULL, NULL);
+    belya_hook_result_free(&stop_hook);
 }
 
 char *belya_troubleshooting_resolve(const char *error_trace, const char *troubleshooting_path) {
@@ -4038,6 +4192,19 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                         }
                     }
                 }
+                BelyaHookResult pre_hook = belya_run_lifecycle_hook(h, BELYA_HOOK_PRE_TOOL_USE, tc->name, tc->arguments_json, NULL);
+                if (pre_hook.blocked) {
+                    printf("\033[1;31m[Hook Policy Rejected]: Tool '%s' blocked by PreToolUse hook policy: %s\033[0m\n",
+                           tc->name, pre_hook.output ? pre_hook.output : "Operation blocked.");
+                    DynString rej = dyn_str_new();
+                    dyn_str_appendf(&rej, "Error: PreToolUse hook blocked execution: %s",
+                                    pre_hook.output ? pre_hook.output : "Operation blocked by security policy.");
+                    belya_agent_add_tool_result(h->agent, tc->id, tc->name, rej.data);
+                    dyn_str_free(&rej);
+                    belya_hook_result_free(&pre_hook);
+                    continue;
+                }
+                belya_hook_result_free(&pre_hook);
 
                 JsonValue *args_parsed = json_parse(tc->arguments_json);
                 char *observation = NULL;
@@ -4053,6 +4220,9 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                 char *breaker_alert = NULL;
                 bool tripped = belya_harness_record_tool_observation(h, tc->name, tc->arguments_json, observation, &breaker_alert);
                 const char *final_obs = breaker_alert ? breaker_alert : (observation ? observation : "Success");
+
+                BelyaHookResult post_hook = belya_run_lifecycle_hook(h, BELYA_HOOK_POST_TOOL_USE, tc->name, tc->arguments_json, final_obs);
+                belya_hook_result_free(&post_hook);
 
                 printf("\033[0;32m[Observation Output (%zu bytes)]\033[0m\n", final_obs ? strlen(final_obs) : 0);
                 if (h->loop_breaker_tripped) {

@@ -687,6 +687,119 @@ void belya_agent_clear_history(BelyaAgent *agent) {
     agent->msg_count = 1;
 }
 
+void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_recent) {
+    if (!agent || agent->msg_count <= 2) return;
+
+    if (tier == COMPACT_TIER_1_MICRO) {
+        // Strip trailing whitespace and blank lines from all message contents
+        for (size_t i = 1; i < agent->msg_count; i++) {
+            if (agent->messages[i].content) {
+                size_t clen = strlen(agent->messages[i].content);
+                while (clen > 0 && (agent->messages[i].content[clen-1] == ' ' || 
+                                    agent->messages[i].content[clen-1] == '\t' ||
+                                    agent->messages[i].content[clen-1] == '\r' ||
+                                    agent->messages[i].content[clen-1] == '\n')) {
+                    agent->messages[i].content[--clen] = '\0';
+                }
+            }
+        }
+        belya_agent_log_timeline(agent, "compaction_tier_1", "Micro-pruned redundant whitespace across message context");
+        return;
+    }
+
+    if (tier == COMPACT_TIER_2_TRUNCATE_TOOLS) {
+        // Truncate older tool observations (> 3 turns ago) exceeding 1200 bytes
+        size_t cutoff = agent->msg_count > 3 ? agent->msg_count - 3 : 1;
+        for (size_t i = 1; i < cutoff; i++) {
+            if (agent->messages[i].role && (strcmp(agent->messages[i].role, "tool") == 0 || agent->messages[i].tool_call_id != NULL)) {
+                if (agent->messages[i].content && strlen(agent->messages[i].content) > 1200) {
+                    char *old = agent->messages[i].content;
+                    size_t old_len = strlen(old);
+                    DynString tr = dyn_str_new();
+                    dyn_str_append_len(&tr, old, 400);
+                    dyn_str_appendf(&tr, "\n\n[... Truncated %zu bytes of older tool observation ...]\n\n", old_len - 800);
+                    dyn_str_append(&tr, old + (old_len - 400));
+                    agent->messages[i].content = tr.data;
+                    free(old);
+                }
+            }
+        }
+        belya_agent_log_timeline(agent, "compaction_tier_2", "Truncated older tool observations exceeding 1200 bytes");
+        return;
+    }
+
+    if (tier == COMPACT_TIER_3_MIDDLE_OUT) {
+        belya_agent_compact_history_middle_out(agent, keep_recent > 0 ? keep_recent : 8);
+        return;
+    }
+
+    if (tier == COMPACT_TIER_4_FTS5_EVICT) {
+        // Archive evicted messages into SQLite FTS5 agent_memories before middle-out compaction
+        size_t drop_end = (agent->msg_count > keep_recent) ? (agent->msg_count - keep_recent) : 2;
+        for (size_t i = 2; i < drop_end; i++) {
+            if (agent->messages[i].content && strlen(agent->messages[i].content) > 30) {
+                char topic[128];
+                snprintf(topic, sizeof(topic), "archived_turn_%zu_%s", i, agent->messages[i].role ? agent->messages[i].role : "turn");
+                belya_agent_persist_memory(agent, topic, agent->messages[i].content);
+            }
+        }
+        belya_agent_compact_history_middle_out(agent, keep_recent > 0 ? keep_recent : 6);
+        belya_agent_log_timeline(agent, "compaction_tier_4", "FTS5 evicted intermediate turns to persistent memory");
+        return;
+    }
+
+    if (tier == COMPACT_TIER_5_EMERGENCY) {
+        // Emergency hard-ceiling compaction: distill entire history into single executive mission brief
+        if (agent->msg_count <= 2) return;
+        
+        // Find root objective (message 1)
+        char *root_obj_copy = xstrdup((agent->msg_count > 1 && agent->messages[1].content) ? agent->messages[1].content : "Continue ongoing mission");
+        
+        // Archive all intermediate messages
+        if (agent->db) {
+            sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0);
+            sqlite3_stmt *stmt = NULL;
+            const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('emergency', ?, ?, ?, ?);";
+            if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
+                for (size_t i = 1; i < agent->msg_count - 1; i++) {
+                    sqlite3_bind_int(stmt, 1, (int)i);
+                    sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
+                    sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
+                    sqlite3_bind_null(stmt, 4);
+                    sqlite3_step(stmt);
+                    sqlite3_reset(stmt);
+                }
+                sqlite3_finalize(stmt);
+            }
+            sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+        }
+
+        // Save last message
+        BelyaMessage last_msg = agent->messages[agent->msg_count - 1];
+
+        // Free messages from 1 to msg_count - 2
+        for (size_t i = 1; i < agent->msg_count - 1; i++) {
+            free_single_message(&agent->messages[i]);
+        }
+
+        // Message 1: Pinned Root Mission with Emergency Resume Note
+        BelyaMessage resume_msg;
+        memset(&resume_msg, 0, sizeof(resume_msg));
+        resume_msg.role = xstrdup("user");
+        DynString rds = dyn_str_new();
+        dyn_str_appendf(&rds, "[ROOT OBJECTIVE & EMERGENCY COMPACTION BRIEF]\n%s\n\n[Context hard-ceiling reached; intermediate state archived losslessly in SQLite]", root_obj_copy);
+        free(root_obj_copy);
+        resume_msg.content = rds.data;
+
+        agent->messages[1] = resume_msg;
+        agent->messages[2] = last_msg;
+        agent->msg_count = 3;
+
+        belya_agent_log_timeline(agent, "compaction_tier_5", "Emergency hard-ceiling compaction performed");
+        return;
+    }
+}
+
 size_t belya_agent_total_tokens(const BelyaAgent *agent) {
     if (!agent) return 0;
     size_t total = 0;
@@ -1890,8 +2003,11 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 belya_agent_log_timeline(agent, "memory_before_compaction", topic);
             }
 
-            // Now perform middle-out compaction with root intent pinning & lossless archival
-            belya_agent_compact_history_middle_out(agent, keep);
+            if (agent->pre_compact_hook) {
+                agent->pre_compact_hook(agent->pre_compact_userdata);
+            }
+            // Now perform 5-tier compaction with root intent pinning & lossless archival
+            belya_agent_compact_5tier(agent, COMPACT_TIER_3_MIDDLE_OUT, keep);
 
             // Log the compaction
             char comp_msg[128];
@@ -1919,9 +2035,10 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         if (i == 0) {
             DynString sys_content = dyn_str_new();
             dyn_str_append(&sys_content, agent->messages[0].content);
+            dyn_str_append(&sys_content, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
             if (agent->gateway && agent->gateway->model) {
                 const char *provider = (agent->gateway->endpoint && strstr(agent->gateway->endpoint, "openrouter.ai") != NULL) ? "OpenRouter Cloud" : "Local Metal Ollama";
-                dyn_str_appendf(&sys_content, "\n\n=== Active Runtime Engine ===\nActive Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
+                dyn_str_appendf(&sys_content, "Active Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
                                 agent->gateway->model, provider, agent->gateway->model, provider);
             }
             json_obj_add(m, "content", json_create_string(sys_content.data));
@@ -2237,6 +2354,13 @@ void belya_agent_set_auto_save_interval(BelyaAgent *agent, size_t interval) {
     if (agent) {
         agent->auto_save_interval = interval;
         agent->turns_since_save = 0;
+    }
+}
+
+void belya_agent_set_pre_compact_hook(BelyaAgent *agent, BelyaPreCompactHookFn fn, void *userdata) {
+    if (agent) {
+        agent->pre_compact_hook = fn;
+        agent->pre_compact_userdata = userdata;
     }
 }
 
