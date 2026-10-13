@@ -2577,6 +2577,103 @@ static void test_phase2_deterministic_hooks_and_5tier_compactor(void) {
     printf("  -> Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary PASSED\n");
 }
 
+static void test_phase3_task_board_fts5_recall_and_cron(void) {
+    printf("[Test] Phase 3: Task Board, FTS5 Recall & Background Cron Engine...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    unlink("test_phase3.sqlite");
+    BelyaAgent *agent = belya_agent_init(gw, "test_phase3.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Task Board Backend Operations
+    int64_t t1 = belya_agent_task_create(agent, "Implement Task Board", "Full C99 SQLite relational task board", "", "Belya");
+    assert(t1 > 0);
+    int64_t t2 = belya_agent_task_create(agent, "Verify ASan Safety", "Run AddressSanitizer and verify 0 leaks", "1", "Almaz");
+    assert(t2 > t1);
+
+    bool up_ok = belya_agent_task_update(agent, t1, "completed", "All schema and tools operational");
+    assert(up_ok);
+
+    char *t1_details = belya_agent_task_get(agent, t1);
+    assert(t1_details && strstr(t1_details, "Implement Task Board") != NULL);
+    assert(strstr(t1_details, "Status:       completed") != NULL);
+    free(t1_details);
+
+    char *all_tasks = belya_agent_task_list(agent, "all");
+    assert(all_tasks && strstr(all_tasks, "Implement Task Board") != NULL);
+    assert(strstr(all_tasks, "Verify ASan Safety") != NULL);
+    free(all_tasks);
+
+    char *pending_tasks = belya_agent_task_list(agent, "pending");
+    assert(pending_tasks && strstr(pending_tasks, "Verify ASan Safety") != NULL);
+    assert(strstr(pending_tasks, "Implement Task Board") == NULL);
+    free(pending_tasks);
+
+    // 2. Cron Engine Backend Operations
+    int64_t c1 = belya_agent_cron_create(agent, "hourly_vacuum", "0 * * * *", "Run database maintenance vacuum");
+    assert(c1 > 0);
+
+    char *cron_jobs = belya_agent_cron_list(agent);
+    assert(cron_jobs && strstr(cron_jobs, "hourly_vacuum") != NULL);
+    assert(strstr(cron_jobs, "0 * * * *") != NULL);
+    free(cron_jobs);
+
+    DynString tick_logs = dyn_str_new();
+    int fired = belya_agent_cron_tick(agent, &tick_logs);
+    assert(fired >= 1);
+    assert(strstr(tick_logs.data, "hourly_vacuum") != NULL);
+    dyn_str_free(&tick_logs);
+
+    // 3. Memory Dream Sweep
+    char *dream_report = belya_agent_dream_sweep(agent);
+    assert(dream_report && strstr(dream_report, "Auto-Dream Sweep") != NULL);
+    free(dream_report);
+
+    // 4. Native Tools Verification via tool callbacks
+    BelyaToolCallback cb_tc = get_tool_cb(h, "task_create");
+    assert(cb_tc != NULL);
+    JsonValue *tc_args = json_create_object();
+    json_obj_add(tc_args, "subject", json_create_string("Test Task via Tool"));
+    json_obj_add(tc_args, "description", json_create_string("Tool harness creation test"));
+    char *tc_res = cb_tc(agent, tc_args);
+    json_free(tc_args);
+    assert(tc_res && strstr(tc_res, "created successfully") != NULL);
+    free(tc_res);
+
+    BelyaToolCallback cb_tl = get_tool_cb(h, "task_list");
+    assert(cb_tl != NULL);
+    JsonValue *tl_args = json_create_object();
+    json_obj_add(tl_args, "status", json_create_string("all"));
+    char *tl_res = cb_tl(agent, tl_args);
+    json_free(tl_args);
+    assert(tl_res && strstr(tl_res, "Test Task via Tool") != NULL);
+    free(tl_res);
+
+    BelyaToolCallback cb_cc = get_tool_cb(h, "cron_create");
+    assert(cb_cc != NULL);
+    JsonValue *cron_args = json_create_object();
+    json_obj_add(cron_args, "name", json_create_string("test_cron_tool"));
+    json_obj_add(cron_args, "schedule", json_create_string("*/5 * * * *"));
+    json_obj_add(cron_args, "prompt", json_create_string("Periodic self-check"));
+    char *cron_res = cb_cc(agent, cron_args);
+    json_free(cron_args);
+    assert(cron_res && strstr(cron_res, "registered with schedule") != NULL);
+    free(cron_res);
+
+    BelyaToolCallback cb_cl = get_tool_cb(h, "cron_list");
+    assert(cb_cl != NULL);
+    JsonValue *empty_args = json_create_object();
+    char *cl_res = cb_cl(agent, empty_args);
+    json_free(empty_args);
+    assert(cl_res && strstr(cl_res, "test_cron_tool") != NULL);
+    free(cl_res);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_phase3.sqlite");
+    printf("  -> Phase 3: Task Board, FTS5 Recall & Background Cron Engine PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2622,7 +2719,8 @@ int main(void) {
     test_mythos_variant_analysis();
     test_phase1_diff_colorizer_and_ask_user();
     test_phase2_deterministic_hooks_and_5tier_compactor();
-    printf("================ All Tests Passed Successfully (43/43 - 100%%) ================\n\n");
+    test_phase3_task_board_fts5_recall_and_cron();
+    printf("================ All Tests Passed Successfully (44/44 - 100%%) ================\n\n");
     return 0;
 }
 

@@ -146,6 +146,26 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             "  max_turns INTEGER DEFAULT 5,"
             "  instructions TEXT NOT NULL,"
             "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS agent_tasks ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  subject TEXT NOT NULL,"
+            "  description TEXT DEFAULT '',"
+            "  status TEXT DEFAULT 'pending',"
+            "  dependencies TEXT DEFAULT '',"
+            "  assigned_agent TEXT DEFAULT '',"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+            ");"
+            "CREATE TABLE IF NOT EXISTS cron_jobs ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  name TEXT NOT NULL UNIQUE,"
+            "  schedule_cron TEXT NOT NULL,"
+            "  prompt TEXT NOT NULL,"
+            "  last_run_at DATETIME,"
+            "  next_run_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+            "  is_active INTEGER DEFAULT 1,"
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
             ");";
         sqlite3_exec(agent->db, schema_sql, 0, 0, 0);
 
@@ -1638,6 +1658,231 @@ char *belya_agent_list_manifests(BelyaAgent *agent) {
 }
 
 // ==================== End Belya Agency Declarative Manifests ====================
+
+// ==================== Phase 3: Relational Task Board, Cron Engine & Dream Sweep ====================
+
+int64_t belya_agent_task_create(BelyaAgent *agent, const char *subject, const char *description, const char *dependencies, const char *assigned_agent) {
+    if (!agent || !agent->db || !subject || strlen(subject) == 0) return -1;
+    const char *sql = "INSERT INTO agent_tasks (subject, description, status, dependencies, assigned_agent, updated_at) "
+                      "VALUES (?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP);";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, subject, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, description ? description : "", -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, dependencies ? dependencies : "", -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, assigned_agent ? assigned_agent : "Belya", -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) return -1;
+    int64_t tid = (int64_t)sqlite3_last_insert_rowid(agent->db);
+    belya_agent_log_timeline(agent, "task_created", subject);
+    return tid;
+}
+
+bool belya_agent_task_update(BelyaAgent *agent, int64_t task_id, const char *status, const char *description) {
+    if (!agent || !agent->db || task_id <= 0) return false;
+    if (status) {
+        if (strcmp(status, "pending") != 0 && strcmp(status, "in_progress") != 0 &&
+            strcmp(status, "completed") != 0 && strcmp(status, "failed") != 0 &&
+            strcmp(status, "blocked") != 0) {
+            return false;
+        }
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (description && status) {
+        const char *sql = "UPDATE agent_tasks SET status = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;";
+        if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+        sqlite3_bind_text(stmt, 1, status, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, description, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 3, task_id);
+    } else if (status) {
+        const char *sql = "UPDATE agent_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;";
+        if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+        sqlite3_bind_text(stmt, 1, status, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 2, task_id);
+    } else if (description) {
+        const char *sql = "UPDATE agent_tasks SET description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;";
+        if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+        sqlite3_bind_text(stmt, 1, description, -1, SQLITE_STATIC);
+        sqlite3_bind_int64(stmt, 2, task_id);
+    } else {
+        return false;
+    }
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE) {
+        char sum[128];
+        snprintf(sum, sizeof(sum), "Task #%lld updated: status=%s", (long long)task_id, status ? status : "same");
+        belya_agent_log_timeline(agent, "task_updated", sum);
+        return true;
+    }
+    return false;
+}
+
+char *belya_agent_task_list(BelyaAgent *agent, const char *status_filter) {
+    if (!agent || !agent->db) return xstrdup("Task database not initialized.");
+    DynString ds = dyn_str_new();
+    sqlite3_stmt *stmt = NULL;
+    bool filter = (status_filter && strlen(status_filter) > 0 && strcmp(status_filter, "all") != 0);
+    const char *sql = filter ?
+        "SELECT id, subject, status, assigned_agent, dependencies FROM agent_tasks WHERE status = ? ORDER BY id ASC;" :
+        "SELECT id, subject, status, assigned_agent, dependencies FROM agent_tasks ORDER BY id ASC;";
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return xstrdup("Failed to query tasks.");
+    }
+    if (filter) {
+        sqlite3_bind_text(stmt, 1, status_filter, -1, SQLITE_STATIC);
+    }
+    dyn_str_append(&ds, "=== Active Task Board ===\n");
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        count++;
+        int64_t tid = sqlite3_column_int64(stmt, 0);
+        const char *subj = (const char *)sqlite3_column_text(stmt, 1);
+        const char *st = (const char *)sqlite3_column_text(stmt, 2);
+        const char *asgn = (const char *)sqlite3_column_text(stmt, 3);
+        const char *deps = (const char *)sqlite3_column_text(stmt, 4);
+        dyn_str_appendf(&ds, "[#%lld] [%s] %s | Assigned: %s | Deps: %s\n",
+            (long long)tid, st ? st : "pending", subj ? subj : "", asgn ? asgn : "unassigned",
+            (deps && strlen(deps) > 0) ? deps : "none");
+    }
+    sqlite3_finalize(stmt);
+    if (count == 0) {
+        dyn_str_append(&ds, "No tasks found.\n");
+    }
+    return ds.data;
+}
+
+char *belya_agent_task_get(BelyaAgent *agent, int64_t task_id) {
+    if (!agent || !agent->db || task_id <= 0) return xstrdup("Invalid task ID.");
+    const char *sql = "SELECT id, subject, description, status, dependencies, assigned_agent, created_at, updated_at "
+                      "FROM agent_tasks WHERE id = ?;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return xstrdup("Database query failed.");
+    sqlite3_bind_int64(stmt, 1, task_id);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return xstrdup("Task not found.");
+    }
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Task #%lld:\n", (long long)sqlite3_column_int64(stmt, 0));
+    dyn_str_appendf(&ds, "  Subject:      %s\n", sqlite3_column_text(stmt, 1) ? (const char *)sqlite3_column_text(stmt, 1) : "");
+    dyn_str_appendf(&ds, "  Status:       %s\n", sqlite3_column_text(stmt, 3) ? (const char *)sqlite3_column_text(stmt, 3) : "pending");
+    dyn_str_appendf(&ds, "  Assigned:     %s\n", sqlite3_column_text(stmt, 5) ? (const char *)sqlite3_column_text(stmt, 5) : "unassigned");
+    dyn_str_appendf(&ds, "  Dependencies: %s\n", sqlite3_column_text(stmt, 4) ? (const char *)sqlite3_column_text(stmt, 4) : "none");
+    dyn_str_appendf(&ds, "  Created At:   %s\n", sqlite3_column_text(stmt, 6) ? (const char *)sqlite3_column_text(stmt, 6) : "");
+    dyn_str_appendf(&ds, "  Updated At:   %s\n", sqlite3_column_text(stmt, 7) ? (const char *)sqlite3_column_text(stmt, 7) : "");
+    dyn_str_appendf(&ds, "  Description:  %s\n", sqlite3_column_text(stmt, 2) ? (const char *)sqlite3_column_text(stmt, 2) : "(no description)");
+    sqlite3_finalize(stmt);
+    return ds.data;
+}
+
+int64_t belya_agent_cron_create(BelyaAgent *agent, const char *name, const char *schedule_cron, const char *prompt) {
+    if (!agent || !agent->db || !name || !schedule_cron || !prompt) return -1;
+    const char *sql = "INSERT INTO cron_jobs (name, schedule_cron, prompt, next_run_at, is_active) "
+                      "VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1) "
+                      "ON CONFLICT(name) DO UPDATE SET schedule_cron=excluded.schedule_cron, prompt=excluded.prompt, is_active=1;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, schedule_cron, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, prompt, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) return -1;
+    belya_agent_log_timeline(agent, "cron_created", name);
+    return (int64_t)sqlite3_last_insert_rowid(agent->db);
+}
+
+char *belya_agent_cron_list(BelyaAgent *agent) {
+    if (!agent || !agent->db) return xstrdup("Cron database not active.");
+    DynString ds = dyn_str_new();
+    const char *sql = "SELECT id, name, schedule_cron, prompt, is_active, last_run_at, next_run_at FROM cron_jobs ORDER BY id ASC;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return xstrdup("Failed to query cron jobs.");
+    dyn_str_append(&ds, "=== Scheduled Cron Jobs ===\n");
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        count++;
+        int64_t cid = sqlite3_column_int64(stmt, 0);
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        const char *cron = (const char *)sqlite3_column_text(stmt, 2);
+        const char *prompt = (const char *)sqlite3_column_text(stmt, 3);
+        int active = sqlite3_column_int(stmt, 4);
+        const char *lrun = (const char *)sqlite3_column_text(stmt, 5);
+        const char *nrun = (const char *)sqlite3_column_text(stmt, 6);
+        dyn_str_appendf(&ds, "[#%lld] [%s] '%s' (%s) | prompt: '%.60s...' | last_run: %s | next_run: %s\n",
+            (long long)cid, active ? "active" : "paused", name ? name : "", cron ? cron : "",
+            prompt ? prompt : "", lrun ? lrun : "never", nrun ? nrun : "pending");
+    }
+    sqlite3_finalize(stmt);
+    if (count == 0) {
+        dyn_str_append(&ds, "No cron jobs registered.\n");
+    }
+    return ds.data;
+}
+
+int belya_agent_cron_tick(BelyaAgent *agent, DynString *out_logs) {
+    if (!agent || !agent->db) return 0;
+    const char *sql = "SELECT id, name, schedule_cron, prompt FROM cron_jobs "
+                      "WHERE is_active = 1 AND (next_run_at <= CURRENT_TIMESTAMP OR last_run_at IS NULL);";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return 0;
+    int fired = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int64_t cid = sqlite3_column_int64(stmt, 0);
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        const char *prompt = (const char *)sqlite3_column_text(stmt, 3);
+        fired++;
+        if (out_logs) {
+            dyn_str_appendf(out_logs, "[Cron Fired] Job '%s' (#%lld): %s\n", name ? name : "", (long long)cid, prompt ? prompt : "");
+        }
+        belya_agent_log_timeline(agent, "cron_fired", name ? name : "job");
+
+        sqlite3_stmt *up = NULL;
+        const char *up_sql = "UPDATE cron_jobs SET last_run_at = CURRENT_TIMESTAMP, "
+                             "next_run_at = datetime(CURRENT_TIMESTAMP, '+60 seconds') WHERE id = ?;";
+        if (sqlite3_prepare_v2(agent->db, up_sql, -1, &up, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(up, 1, cid);
+            sqlite3_step(up);
+            sqlite3_finalize(up);
+        }
+    }
+    sqlite3_finalize(stmt);
+    return fired;
+}
+
+char *belya_agent_dream_sweep(BelyaAgent *agent) {
+    if (!agent || !agent->db) return xstrdup("Memory database not active.");
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Memory Consolidation & Auto-Dream Sweep ===\n");
+
+    const char *sql = "SELECT session_id, role, content FROM session_messages "
+                      "WHERE role = 'assistant' AND LENGTH(content) > 40 "
+                      "ORDER BY id DESC LIMIT 10;";
+    sqlite3_stmt *stmt = NULL;
+    int consolidated = 0;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *sid = (const char *)sqlite3_column_text(stmt, 0);
+            const char *cnt = (const char *)sqlite3_column_text(stmt, 2);
+            if (cnt && strlen(cnt) > 0) {
+                char topic[128];
+                snprintf(topic, sizeof(topic), "dream_insight_session_%s", sid ? sid : "general");
+                belya_agent_persist_memory_scoped(agent, topic, cnt, "consolidation", "dream");
+                consolidated++;
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    sqlite3_wal_checkpoint_v2(agent->db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+
+    dyn_str_appendf(&ds, "Consolidated %d salient conversation turns into long-term biological memory.\n", consolidated);
+    dyn_str_append(&ds, "WAL checkpoint truncated; FTS5 indices updated.\n");
+    belya_agent_log_timeline(agent, "dream_sweep", "Auto-dream consolidated cross-session memories");
+    return ds.data;
+}
 
 bool belya_agent_create_checkpoint(BelyaAgent *agent, const char *label) {
     if (!agent || !agent->db) return false;

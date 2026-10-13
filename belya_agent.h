@@ -126,6 +126,18 @@ BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *qu
 void belya_agent_manifest_free(BelyaAgentManifest *manifest);
 char *belya_agent_list_manifests(BelyaAgent *agent);
 
+// Phase 3: Relational Task Board, Cron Engine & Memory Dream Sweep
+int64_t belya_agent_task_create(BelyaAgent *agent, const char *subject, const char *description, const char *dependencies, const char *assigned_agent);
+bool belya_agent_task_update(BelyaAgent *agent, int64_t task_id, const char *status, const char *description);
+char *belya_agent_task_list(BelyaAgent *agent, const char *status_filter);
+char *belya_agent_task_get(BelyaAgent *agent, int64_t task_id);
+
+int64_t belya_agent_cron_create(BelyaAgent *agent, const char *name, const char *schedule_cron, const char *prompt);
+char *belya_agent_cron_list(BelyaAgent *agent);
+int belya_agent_cron_tick(BelyaAgent *agent, DynString *out_logs);
+
+char *belya_agent_dream_sweep(BelyaAgent *agent);
+
 ModelGatewayResponse belya_agent_step(BelyaAgent *agent);
 ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char *instruction);
 void belya_agent_free(BelyaAgent *agent);

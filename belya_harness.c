@@ -1227,6 +1227,78 @@ static char *tool_recall_memory(BelyaAgent *agent, const JsonValue *args) {
     return belya_agent_search_memory(agent, query);
 }
 
+static char *tool_task_create(BelyaAgent *agent, const JsonValue *args) {
+    const char *subject = json_obj_get_str(args, "subject");
+    const char *description = json_obj_get_str(args, "description");
+    const char *dependencies = json_obj_get_str(args, "dependencies");
+    const char *assigned_agent = json_obj_get_str(args, "assigned_agent");
+    if (!subject) return xstrdup("Error: Missing 'subject' argument.");
+    int64_t tid = belya_agent_task_create(agent, subject, description, dependencies, assigned_agent);
+    if (tid < 0) return xstrdup("Error: Failed to create task.");
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Task #%lld created successfully (status: pending, assigned: %s).",
+        (long long)tid, assigned_agent ? assigned_agent : "Belya");
+    return ds.data;
+}
+
+static char *tool_task_update(BelyaAgent *agent, const JsonValue *args) {
+    const JsonValue *id_val = json_obj_get(args, "id");
+    int64_t tid = 0;
+    if (id_val && id_val->type == JSON_NUMBER) tid = (int64_t)id_val->u.number;
+    else if (id_val && id_val->type == JSON_STRING && id_val->u.string) tid = atoll(id_val->u.string);
+    if (tid <= 0) return xstrdup("Error: Missing or invalid task 'id'.");
+    const char *status = json_obj_get_str(args, "status");
+    const char *desc = json_obj_get_str(args, "description");
+    if (!status && !desc) return xstrdup("Error: Provide 'status' or 'description' to update.");
+    bool ok = belya_agent_task_update(agent, tid, status, desc);
+    if (!ok) return xstrdup("Error: Failed to update task (check id and status value: pending|in_progress|completed|failed|blocked).");
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Task #%lld updated successfully (status: %s).", (long long)tid, status ? status : "unchanged");
+    return ds.data;
+}
+
+static char *tool_task_list(BelyaAgent *agent, const JsonValue *args) {
+    const char *filter = json_obj_get_str(args, "status");
+    return belya_agent_task_list(agent, filter);
+}
+
+static char *tool_task_get(BelyaAgent *agent, const JsonValue *args) {
+    const JsonValue *id_val = json_obj_get(args, "id");
+    int64_t tid = 0;
+    if (id_val && id_val->type == JSON_NUMBER) tid = (int64_t)id_val->u.number;
+    else if (id_val && id_val->type == JSON_STRING && id_val->u.string) tid = atoll(id_val->u.string);
+    if (tid <= 0) return xstrdup("Error: Missing or invalid task 'id'.");
+    return belya_agent_task_get(agent, tid);
+}
+
+static char *tool_cron_create(BelyaAgent *agent, const JsonValue *args) {
+    const char *name = json_obj_get_str(args, "name");
+    const char *schedule = json_obj_get_str(args, "schedule");
+    const char *prompt = json_obj_get_str(args, "prompt");
+    if (!name || !schedule || !prompt) return xstrdup("Error: Missing 'name', 'schedule', or 'prompt'.");
+    int64_t cid = belya_agent_cron_create(agent, name, schedule, prompt);
+    if (cid < 0) return xstrdup("Error: Failed to register cron job.");
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Cron job '%s' (#%lld) registered with schedule '%s'.", name, (long long)cid, schedule);
+    return ds.data;
+}
+
+static char *tool_cron_list(BelyaAgent *agent, const JsonValue *args) {
+    (void)args;
+    return belya_agent_cron_list(agent);
+}
+
+static char *tool_cron_tick(BelyaAgent *agent, const JsonValue *args) {
+    (void)args;
+    DynString logs = dyn_str_new();
+    int fired = belya_agent_cron_tick(agent, &logs);
+    if (fired == 0) {
+        dyn_str_free(&logs);
+        return xstrdup("No cron jobs currently due.");
+    }
+    return logs.data;
+}
+
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     const char *task = json_obj_get_str(args, "task");
     const char *instructions = json_obj_get_str(args, "instructions");
@@ -3048,6 +3120,115 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(au_params, "required", au_req);
     REGISTER_IF_PERMITTED("ask_user", "Ask the human operator a clarification question with optional numbered choices", au_params, PERM_ALLOW, tool_ask_user);
 
+    // 24. task_create
+    JsonValue *tc_params = json_create_object();
+    json_obj_add(tc_params, "type", json_create_string("object"));
+    JsonValue *tc_props = json_create_object();
+    JsonValue *tc_subj = json_create_object();
+    json_obj_add(tc_subj, "type", json_create_string("string"));
+    json_obj_add(tc_subj, "description", json_create_string("Short subject or title of the task"));
+    json_obj_add(tc_props, "subject", tc_subj);
+    JsonValue *tc_desc = json_create_object();
+    json_obj_add(tc_desc, "type", json_create_string("string"));
+    json_obj_add(tc_desc, "description", json_create_string("Detailed description or acceptance criteria"));
+    json_obj_add(tc_props, "description", tc_desc);
+    JsonValue *tc_deps = json_create_object();
+    json_obj_add(tc_deps, "type", json_create_string("string"));
+    json_obj_add(tc_deps, "description", json_create_string("Comma-separated list of prerequisite task IDs"));
+    json_obj_add(tc_props, "dependencies", tc_deps);
+    JsonValue *tc_asgn = json_create_object();
+    json_obj_add(tc_asgn, "type", json_create_string("string"));
+    json_obj_add(tc_asgn, "description", json_create_string("Target sub-agent or twin assigned to this task"));
+    json_obj_add(tc_props, "assigned_agent", tc_asgn);
+    json_obj_add(tc_params, "properties", tc_props);
+    JsonValue *tc_req = json_create_array();
+    json_arr_add(tc_req, json_create_string("subject"));
+    json_obj_add(tc_params, "required", tc_req);
+    REGISTER_IF_PERMITTED("task_create", "Create a structured tracking task on the SQLite task board", tc_params, PERM_ALLOW, tool_task_create);
+
+    // 25. task_update
+    JsonValue *tu_params = json_create_object();
+    json_obj_add(tu_params, "type", json_create_string("object"));
+    JsonValue *tu_props = json_create_object();
+    JsonValue *tu_id = json_create_object();
+    json_obj_add(tu_id, "type", json_create_string("integer"));
+    json_obj_add(tu_id, "description", json_create_string("ID of the task to update"));
+    json_obj_add(tu_props, "id", tu_id);
+    JsonValue *tu_st = json_create_object();
+    json_obj_add(tu_st, "type", json_create_string("string"));
+    json_obj_add(tu_st, "description", json_create_string("New status: pending, in_progress, completed, failed, blocked"));
+    json_obj_add(tu_props, "status", tu_st);
+    JsonValue *tu_desc = json_create_object();
+    json_obj_add(tu_desc, "type", json_create_string("string"));
+    json_obj_add(tu_desc, "description", json_create_string("Updated description or progress note"));
+    json_obj_add(tu_props, "description", tu_desc);
+    json_obj_add(tu_params, "properties", tu_props);
+    JsonValue *tu_req = json_create_array();
+    json_arr_add(tu_req, json_create_string("id"));
+    json_obj_add(tu_params, "required", tu_req);
+    REGISTER_IF_PERMITTED("task_update", "Update task progress or status on the SQLite task board", tu_params, PERM_ALLOW, tool_task_update);
+
+    // 26. task_list
+    JsonValue *tl_params = json_create_object();
+    json_obj_add(tl_params, "type", json_create_string("object"));
+    JsonValue *tl_props = json_create_object();
+    JsonValue *tl_st = json_create_object();
+    json_obj_add(tl_st, "type", json_create_string("string"));
+    json_obj_add(tl_st, "description", json_create_string("Optional status filter: pending, in_progress, completed, failed, blocked, or all"));
+    json_obj_add(tl_props, "status", tl_st);
+    json_obj_add(tl_params, "properties", tl_props);
+    REGISTER_IF_PERMITTED("task_list", "List tasks from the SQLite task board with optional status filter", tl_params, PERM_ALLOW, tool_task_list);
+
+    // 27. task_get
+    JsonValue *tg_params = json_create_object();
+    json_obj_add(tg_params, "type", json_create_string("object"));
+    JsonValue *tg_props = json_create_object();
+    JsonValue *tg_id = json_create_object();
+    json_obj_add(tg_id, "type", json_create_string("integer"));
+    json_obj_add(tg_id, "description", json_create_string("ID of the task to retrieve"));
+    json_obj_add(tg_props, "id", tg_id);
+    json_obj_add(tg_params, "properties", tg_props);
+    JsonValue *tg_req = json_create_array();
+    json_arr_add(tg_req, json_create_string("id"));
+    json_obj_add(tg_params, "required", tg_req);
+    REGISTER_IF_PERMITTED("task_get", "Retrieve full details and dependency graph of a specific task", tg_params, PERM_ALLOW, tool_task_get);
+
+    // 28. cron_create
+    JsonValue *cc_params = json_create_object();
+    json_obj_add(cc_params, "type", json_create_string("object"));
+    JsonValue *cc_props = json_create_object();
+    JsonValue *cc_name = json_create_object();
+    json_obj_add(cc_name, "type", json_create_string("string"));
+    json_obj_add(cc_name, "description", json_create_string("Unique name for the recurring job"));
+    json_obj_add(cc_props, "name", cc_name);
+    JsonValue *cc_sched = json_create_object();
+    json_obj_add(cc_sched, "type", json_create_string("string"));
+    json_obj_add(cc_sched, "description", json_create_string("Standard cron expression or interval specifier"));
+    json_obj_add(cc_props, "schedule", cc_sched);
+    JsonValue *cc_pmt = json_create_object();
+    json_obj_add(cc_pmt, "type", json_create_string("string"));
+    json_obj_add(cc_pmt, "description", json_create_string("Prompt instruction or action to execute when triggered"));
+    json_obj_add(cc_props, "prompt", cc_pmt);
+    json_obj_add(cc_params, "properties", cc_props);
+    JsonValue *cc_req = json_create_array();
+    json_arr_add(cc_req, json_create_string("name"));
+    json_arr_add(cc_req, json_create_string("schedule"));
+    json_arr_add(cc_req, json_create_string("prompt"));
+    json_obj_add(cc_params, "required", cc_req);
+    REGISTER_IF_PERMITTED("cron_create", "Register a recurring background cron job", cc_params, PERM_ALLOW, tool_cron_create);
+
+    // 29. cron_list
+    JsonValue *cl_params = json_create_object();
+    json_obj_add(cl_params, "type", json_create_string("object"));
+    json_obj_add(cl_params, "properties", json_create_object());
+    REGISTER_IF_PERMITTED("cron_list", "List all registered background cron jobs", cl_params, PERM_ALLOW, tool_cron_list);
+
+    // 30. cron_tick
+    JsonValue *ct_params = json_create_object();
+    json_obj_add(ct_params, "type", json_create_string("object"));
+    json_obj_add(ct_params, "properties", json_create_object());
+    REGISTER_IF_PERMITTED("cron_tick", "Evaluate and trigger due background cron jobs immediately", ct_params, PERM_ALLOW, tool_cron_tick);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -3403,6 +3584,9 @@ static void print_help(BelyaHarness *h) {
     printf("  /cwd [path]      View or change working directory\n");
     printf("  /mcp <command>   Connect to an external MCP stdio server\n");
     printf("  /agency [task]   Execute task via Belya Agency multi-agent pipeline (or list subagents)\n");
+    printf("  /tasks [filter]  List active tasks from SQLite task board\n");
+    printf("  /cron            List scheduled recurring background cron jobs\n");
+    printf("  /dream           Trigger cross-session memory consolidation sweep\n");
     printf("  exit             Terminate the harness REPL\n\n");
 }
 
@@ -3433,6 +3617,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/cost",
+            "/tasks", "/cron", "/dream",
             "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
         for (int i = 0; commands[i]; i++) {
@@ -3685,6 +3870,26 @@ void belya_harness_repl(BelyaHarness *h) {
                 char *res = belya_agent_search_memory(h->agent, strlen(query) > 0 ? query : "");
                 printf("\n\033[1;36m=== Memory Search: '%s' ===\033[0m\n%s\n", query, res ? res : "No results.");
                 if (res) free(res);
+                continue;
+            }
+            if (strncmp(input_buf, "/tasks", 6) == 0) {
+                const char *filter = strlen(input_buf) > 6 ? input_buf + 6 : "";
+                while (*filter == ' ') filter++;
+                char *tl = belya_agent_task_list(h->agent, strlen(filter) > 0 ? filter : "all");
+                printf("\n%s\n", tl ? tl : "No tasks found.");
+                if (tl) free(tl);
+                continue;
+            }
+            if (strcmp(input_buf, "/cron") == 0) {
+                char *cl = belya_agent_cron_list(h->agent);
+                printf("\n%s\n", cl ? cl : "No cron jobs registered.");
+                if (cl) free(cl);
+                continue;
+            }
+            if (strcmp(input_buf, "/dream") == 0) {
+                char *dr = belya_agent_dream_sweep(h->agent);
+                printf("\n%s\n", dr ? dr : "Dream consolidation complete.");
+                if (dr) free(dr);
                 continue;
             }
             if (strncmp(input_buf, "/openrouter", 11) == 0) {
