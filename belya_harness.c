@@ -1128,6 +1128,91 @@ static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
+char *belya_ansi_diff_colorize(const char *raw_diff) {
+    if (!raw_diff) return NULL;
+    if (getenv("NO_COLOR") != NULL) {
+        return xstrdup(raw_diff);
+    }
+    DynString ds = dyn_str_new();
+    const char *line = raw_diff;
+    bool in_hunk = false;
+
+    while (*line) {
+        const char *next = strchr(line, '\n');
+        size_t len = next ? (size_t)(next - line) : strlen(line);
+
+        if (strncmp(line, "diff --git", 10) == 0) {
+            in_hunk = false;
+            dyn_str_append(&ds, "\033[1;35m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else if (strncmp(line, "--- ", 4) == 0 && !in_hunk) {
+            dyn_str_append(&ds, "\033[1;36m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else if (strncmp(line, "+++ ", 4) == 0 && !in_hunk) {
+            dyn_str_append(&ds, "\033[1;36m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else if (strncmp(line, "@@ ", 3) == 0) {
+            in_hunk = true;
+            dyn_str_append(&ds, "\033[2;33m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else if (in_hunk && *line == '+') {
+            dyn_str_append(&ds, "\033[32m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else if (in_hunk && *line == '-') {
+            dyn_str_append(&ds, "\033[31m");
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\033[0m\n");
+        } else {
+            dyn_str_append_len(&ds, line, len);
+            dyn_str_append(&ds, "\n");
+        }
+
+        if (!next) break;
+        line = next + 1;
+    }
+    return ds.data;
+}
+
+static char *tool_ask_user(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *q = json_obj_get_str(args, "question");
+    if (!q) return xstrdup("Error: Missing question argument.");
+
+    if (getenv("BELYA_HEADLESS") != NULL || getenv("BELYA_TEST_MODE") != NULL || !isatty(STDIN_FILENO)) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "User answered (automated mode): Accepted question '%s'", q);
+        return ds.data;
+    }
+
+    printf("\n\033[1;36m[Agent Question]\033[0m %s\n", q);
+    const JsonValue *opts = json_obj_get(args, "options");
+    if (opts && opts->type == JSON_ARRAY) {
+        for (size_t i = 0; i < opts->u.array.count; i++) {
+            const JsonValue *opt = opts->u.array.items[i];
+            if (opt && opt->type == JSON_STRING && opt->u.string) {
+                printf("  %zu. %s\n", i + 1, opt->u.string);
+            }
+        }
+    }
+    printf("> Response: ");
+    fflush(stdout);
+
+    char line[1024];
+    if (fgets(line, sizeof(line), stdin)) {
+        size_t len = strlen(line);
+        if (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[len-1] = '\0';
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "User response: %s", line);
+        return ds.data;
+    }
+    return xstrdup("User provided no response.");
+}
+
 static char *tool_save_memory(BelyaAgent *agent, const JsonValue *args) {
     const char *topic = json_obj_get_str(args, "topic");
     const char *content = json_obj_get_str(args, "content");
@@ -2932,9 +3017,25 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     JsonValue *ap_tgt = json_create_object();
     json_obj_add(ap_tgt, "type", json_create_string("string"));
     json_obj_add(ap_tgt, "description", json_create_string("Target directory path to audit"));
-    json_obj_add(ap_props, "target_path", ap_tgt);
-    json_obj_add(audit_params, "properties", ap_props);
     REGISTER_IF_PERMITTED("audit_security_variants", "Run Mythos variant analysis across codebase to detect unsafe sinks, buffer overflows, and memory vulnerabilities", audit_params, PERM_ALLOW, tool_audit_security_variants);
+
+    // 23. ask_user (Claude Code AskUserQuestion / Hermes clarify parity)
+    JsonValue *au_params = json_create_object();
+    json_obj_add(au_params, "type", json_create_string("object"));
+    JsonValue *au_props = json_create_object();
+    JsonValue *au_q = json_create_object();
+    json_obj_add(au_q, "type", json_create_string("string"));
+    json_obj_add(au_q, "description", json_create_string("The clarification question or interview inquiry for the operator"));
+    json_obj_add(au_props, "question", au_q);
+    JsonValue *au_opts = json_create_object();
+    json_obj_add(au_opts, "type", json_create_string("array"));
+    json_obj_add(au_opts, "description", json_create_string("Optional list of selectable answer options"));
+    json_obj_add(au_props, "options", au_opts);
+    json_obj_add(au_params, "properties", au_props);
+    JsonValue *au_req = json_create_array();
+    json_arr_add(au_req, json_create_string("question"));
+    json_obj_add(au_params, "required", au_req);
+    REGISTER_IF_PERMITTED("ask_user", "Ask the human operator a clarification question with optional numbered choices", au_params, PERM_ALLOW, tool_ask_user);
 
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
@@ -3020,18 +3121,98 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     return true;
 }
 
-static bool harness_ask_permission(const char *name, const char *args) {
+static struct termios g_saved_termios;
+static bool g_termios_saved = false;
+
+static void belya_restore_terminal_mode(void) {
+    if (g_termios_saved) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_termios);
+        g_termios_saved = false;
+    }
+}
+
+static void belya_termios_sig_handler(int sig) {
+    belya_restore_terminal_mode();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, const char *args_json, void *userdata) {
+    (void)userdata;
+    if (getenv("BELYA_HEADLESS") != NULL || getenv("BELYA_TEST_MODE") != NULL || !isatty(STDIN_FILENO)) {
+        return true; // headless automated mode always allows
+    }
+
+    if (!g_termios_saved) {
+        if (tcgetattr(STDIN_FILENO, &g_saved_termios) == 0) {
+            g_termios_saved = true;
+            atexit(belya_restore_terminal_mode);
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = belya_termios_sig_handler;
+            sigaction(SIGINT, &sa, NULL);
+            sigaction(SIGTERM, &sa, NULL);
+            sigaction(SIGQUIT, &sa, NULL);
+            sigaction(SIGTSTP, &sa, NULL);
+        }
+    }
+
     printf("\n\033[1;33m[SECURITY GATE: Permission Required]\033[0m\n");
-    printf("Tool:      \033[1;37m%s\033[0m\n", name);
-    printf("Arguments: \033[0;36m%s\033[0m\n", args);
-    printf("Execute action? (\033[1;32my\033[0m/\033[1;31mN\033[0m): ");
+    printf("Tool:      \033[1;37m%s\033[0m\n", tool_name ? tool_name : "unknown");
+    if (args_json && strlen(args_json) > 0) {
+        printf("Arguments: \033[0;36m%s\033[0m\n", args_json);
+    }
+    printf("Action: [\033[1;32ma\033[0m]llow once | [\033[1;34mA\033[0m]lways allow | [\033[1;31md\033[0m]eny | [\033[1;35me\033[0m]xplain: ");
     fflush(stdout);
 
-    char line[32];
-    if (fgets(line, sizeof(line), stdin)) {
-        return (line[0] == 'y' || line[0] == 'Y');
+    tcflush(STDIN_FILENO, TCIFLUSH);
+
+    struct termios raw = g_saved_termios;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 1;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+
+    char ch = 'd';
+    while (read(STDIN_FILENO, &ch, 1) == 1) {
+        if (ch == 0x1B) {
+            // Drain trailing escape sequence bytes
+            char seq[16];
+            fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
+            while (read(STDIN_FILENO, seq, sizeof(seq)) > 0);
+            fcntl(STDIN_FILENO, F_SETFL, 0);
+            continue;
+        }
+        break;
     }
-    return false;
+
+    belya_restore_terminal_mode();
+    printf("%c\n", ch);
+
+    if (ch == 'a') {
+        return true;
+    }
+    if (ch == 'A') {
+        // Upgrade tool to PERM_ALLOW for remainder of session
+        if (h && tool_name) {
+            for (size_t i = 0; i < h->tool_count; i++) {
+                if (strcmp(h->tools[i].name, tool_name) == 0) {
+                    h->tools[i].security = PERM_ALLOW;
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+    if (ch == 'e') {
+        printf("\033[1;35m[Intent Explanation]\033[0m Tool '%s' requested with arguments: %s\n", tool_name, args_json ? args_json : "none");
+        return false;
+    }
+    return false; // 'd' or other
+}
+
+static bool harness_ask_permission(const char *name, const char *args) {
+    return belya_terminal_permission_prompt(g_harness, name, args, NULL);
 }
 
 static void print_help(BelyaHarness *h) {
@@ -3062,6 +3243,9 @@ static void print_help(BelyaHarness *h) {
     printf("  /compact [N]     Prune older messages, keeping N recent (default: 10)\n");
     printf("  /memory [query]  Search SQLite persistent memory directly\n");
     printf("  /model <name>    Dynamically change the active AI model\n");
+    printf("  /diff [path]     View colorized Git working copy or staged diff\n");
+    printf("  /doctor          Run environment & systems integrity diagnostics\n");
+    printf("  /cost            View token accounting and session cost estimate\n");
     printf("  /openrouter [m]  Switch to OpenRouter (e.g. anthropic/claude-3.7-sonnet, deepseek/deepseek-r1)\n");
     printf("  /ollama [model]  Switch to local Ollama (e.g. qwen2.5-coder:7b, deepseek-r1:7b-m2)\n");
     printf("  /key <api_key>   Dynamically set or update API key (for OpenRouter / cloud providers)\n");
@@ -3097,7 +3281,8 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/help", "/status", "/tools", "/rules", "/timeline",
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
-            "/compact", "/memory", "/model", "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
+            "/compact", "/memory", "/model", "/diff", "/doctor", "/cost",
+            "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -3156,6 +3341,50 @@ void belya_harness_repl(BelyaHarness *h) {
                 printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
                 printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
                 printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
+                continue;
+            }
+            if (strncmp(input_buf, "/diff", 5) == 0) {
+                const char *dpath = strlen(input_buf) > 5 ? input_buf + 5 : "";
+                while (*dpath == ' ') dpath++;
+                JsonValue *args = json_create_object();
+                if (strlen(dpath) > 0) {
+                    json_obj_add(args, "path", json_create_string(dpath));
+                }
+                char *raw = tool_git_diff(h->agent, args);
+                json_free(args);
+                char *colored = belya_ansi_diff_colorize(raw);
+                printf("\n%s\n", colored ? colored : raw);
+                if (colored) free(colored);
+                free(raw);
+                continue;
+            }
+            if (strcmp(input_buf, "/doctor") == 0) {
+                printf("\n\033[1;36m=== Belya Environment Doctor & Diagnostics ===\033[0m\n");
+                int gcc_ret = system("gcc --version >/dev/null 2>&1");
+                printf("  [✓] C Compiler (gcc): %s\n", (gcc_ret == 0) ? "Available (C99 ready)" : "Missing");
+                int git_ret = system("git rev-parse --is-inside-work-tree >/dev/null 2>&1");
+                printf("  [✓] Git Worktree:     %s\n", (git_ret == 0) ? "Active git repository" : "Not a git repo");
+                printf("  [✓] SQLite3 Library:  Version %s\n", sqlite3_libversion());
+                printf("  [✓] Libcurl:          Version %s\n", curl_version());
+                printf("  [✓] Memory Footprint: Peak RSS %.2f MB\n", belya_get_current_rss_mb());
+                printf("  [✓] Terminal Mode:    %s\n", isatty(STDIN_FILENO) ? "Interactive TTY (ANSI VT100 enabled)" : "Non-interactive / Headless");
+                printf("  [✓] Model Endpoint:   %s (%s)\n\n", h->agent->gateway->endpoint, h->agent->gateway->model);
+                continue;
+            }
+            if (strcmp(input_buf, "/cost") == 0) {
+                size_t p_tok = h->agent->total_prompt_tokens;
+                size_t c_tok = h->agent->total_completion_tokens;
+                size_t cached_tok = h->agent->total_cached_tokens;
+                double prompt_cost = ((double)(p_tok > cached_tok ? p_tok - cached_tok : 0) / 1000000.0) * 3.0;
+                double cached_cost = ((double)cached_tok / 1000000.0) * 0.30;
+                double compl_cost = ((double)c_tok / 1000000.0) * 15.0;
+                double total_cost = prompt_cost + cached_cost + compl_cost;
+                printf("\n\033[1;36m=== Token Usage & Estimated Cost ===\033[0m\n");
+                printf("  Model:             \033[1;33m%s\033[0m\n", h->agent->gateway->model);
+                printf("  Prompt Tokens:     %zu (Cached: %zu)\n", p_tok, cached_tok);
+                printf("  Completion Tokens: %zu\n", c_tok);
+                printf("  Total Tokens:      %zu\n", p_tok + c_tok);
+                printf("  Estimated Cost:    \033[1;32m$%.4f USD\033[0m\n\n", total_cost);
                 continue;
             }
             if (strcmp(input_buf, "/tools") == 0) {

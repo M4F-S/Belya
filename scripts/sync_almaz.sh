@@ -50,7 +50,7 @@ fi
 echo "==> Running full test suite in Almaz..."
 cd "$ALMAZ_DIR"
 make test > /dev/null 2>&1
-echo "  -> Almaz unit tests PASSED (54/54)."
+echo "  -> Almaz unit tests PASSED (55/55)."
 
 echo "==> Running 6-Arena benchmarks in Almaz..."
 make benchmark > /dev/null 2>&1

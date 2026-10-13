@@ -2423,6 +2423,74 @@ static void test_mythos_variant_analysis(void) {
     printf("  -> Late-2026 Mythos Variant Security Sweeper PASSED\n");
 }
 
+static void test_phase1_diff_colorizer_and_ask_user(void) {
+    printf("[Test] Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal...\n");
+
+    // 1. Test Stateful ANSI Diff Colorizer
+    const char *sample_diff = 
+        "diff --git a/test.c b/test.c\n"
+        "--- a/test.c\n"
+        "+++ b/test.c\n"
+        "@@ -10,3 +10,3 @@\n"
+        " unchanged line\n"
+        "----i;\n"
+        "-old_call();\n"
+        "+new_call();\n";
+
+    char *colored = belya_ansi_diff_colorize(sample_diff);
+    assert(colored != NULL);
+    assert(strstr(colored, "\033[32m+new_call();") != NULL);
+    assert(strstr(colored, "\033[31m-old_call();") != NULL);
+    assert(strstr(colored, "\033[31m----i;") != NULL);
+    assert(strstr(colored, "\033[1;36m--- a/test.c") != NULL);
+    free(colored);
+
+    // 2. Test NO_COLOR suppression
+    setenv("NO_COLOR", "1", 1);
+    char *no_color = belya_ansi_diff_colorize(sample_diff);
+    assert(no_color != NULL);
+    assert(strstr(no_color, "\033[") == NULL);
+    free(no_color);
+    unsetenv("NO_COLOR");
+
+    // 3. Test ask_user tool in headless mode
+    setenv("BELYA_TEST_MODE", "1", 1);
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    JsonValue *au_args = json_create_object();
+    json_obj_add(au_args, "question", json_create_string("Do you prefer Approach A or Approach B?"));
+    JsonValue *opts = json_create_array();
+    json_arr_add(opts, json_create_string("Approach A: Zero-allocation"));
+    json_arr_add(opts, json_create_string("Approach B: Ring-buffer"));
+    json_obj_add(au_args, "options", opts);
+
+    BelyaToolCallback ask_cb = NULL;
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, "ask_user") == 0) {
+            ask_cb = h->tools[i].callback;
+            break;
+        }
+    }
+    assert(ask_cb != NULL);
+
+    char *au_res = ask_cb(agent, au_args);
+    assert(au_res != NULL);
+    assert(strstr(au_res, "Approach A or Approach B") != NULL);
+    free(au_res);
+    json_free(au_args);
+
+    // 4. Test belya_terminal_permission_prompt in headless mode
+    bool perm = belya_terminal_permission_prompt(h, "bash", "{\"command\":\"ls\"}", NULL);
+    assert(perm == true);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unsetenv("BELYA_TEST_MODE");
+    printf("  -> Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2466,7 +2534,8 @@ int main(void) {
     test_symbol_graph_navigation();
     test_repo_to_mcp_synthesis();
     test_mythos_variant_analysis();
-    printf("================ All Tests Passed Successfully (41/41 - 100%%) ================\n\n");
+    test_phase1_diff_colorizer_and_ask_user();
+    printf("================ All Tests Passed Successfully (42/42 - 100%%) ================\n\n");
     return 0;
 }
 

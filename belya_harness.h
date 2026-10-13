@@ -110,6 +110,10 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
 // Late-2026 Phase 3: Mythos Variant Security Analysis
 char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern_type, const char *target_path);
 
+// 2026 Competitive Parity Phase 1: Stateful ANSI Diff Colorizer & Signal-Safe Modal
+char *belya_ansi_diff_colorize(const char *raw_diff);
+bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, const char *args_json, void *userdata);
+
 extern const char *g_active_custom_script_path;
 
 #endif
