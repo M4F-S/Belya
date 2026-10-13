@@ -188,6 +188,14 @@ char *belya_harness_task_status(BelyaHarness *h, int id);
 char *belya_harness_task_send_input(BelyaHarness *h, int id, const char *input);
 char *belya_harness_task_kill(BelyaHarness *h, int id);
 
+// 2026 Competitive Parity Phase 6: Multi-Provider Web Search/Fetch, Byte-Span .ipynb Splicer & LSP-over-MCP
+char *belya_html_to_markdown(const char *html, size_t max_bytes);
+char *belya_harness_web_search(BelyaHarness *h, const char *query, const char *provider);
+char *belya_harness_web_fetch(BelyaHarness *h, const char *url, const char *extract_mode);
+char *belya_harness_edit_notebook(BelyaHarness *h, const char *path, const char *action, int cell_index, const char *cell_type, const char *source);
+char *belya_harness_lsp_definition(BelyaHarness *h, const char *file, int line, int character, const char *symbol);
+char *belya_harness_lsp_references(BelyaHarness *h, const char *file, int line, int character, const char *symbol);
+
 extern const char *g_active_custom_script_path;
 
 #endif

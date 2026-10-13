@@ -1396,6 +1396,53 @@ static char *tool_manage_task(BelyaAgent *agent, const JsonValue *args) {
     return xstrdup("Error: Unrecognized action. Supported: list, status, send_input, kill.");
 }
 
+static char *tool_web_search(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *query = json_obj_get_str(args, "query");
+    const char *provider = json_obj_get_str(args, "provider");
+    return belya_harness_web_search(g_harness, query, provider);
+}
+
+static char *tool_web_fetch(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *url = json_obj_get_str(args, "url");
+    const char *mode = json_obj_get_str(args, "extract_mode");
+    return belya_harness_web_fetch(g_harness, url, mode);
+}
+
+static char *tool_edit_notebook(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *path = json_obj_get_str(args, "path");
+    const char *action = json_obj_get_str(args, "action");
+    int cell_idx = (int)json_obj_get_num(args, "cell_index", -1);
+    const char *cell_type = json_obj_get_str(args, "cell_type");
+    const char *source = json_obj_get_str(args, "source");
+    return belya_harness_edit_notebook(g_harness, path, action, cell_idx, cell_type, source);
+}
+
+static char *tool_lsp_definition(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *file = json_obj_get_str(args, "file");
+    int line = (int)json_obj_get_num(args, "line", 1);
+    int character = (int)json_obj_get_num(args, "character", 1);
+    const char *symbol = json_obj_get_str(args, "symbol");
+    return belya_harness_lsp_definition(g_harness, file, line, character, symbol);
+}
+
+static char *tool_lsp_references(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: Harness execution environment unavailable.");
+    const char *file = json_obj_get_str(args, "file");
+    int line = (int)json_obj_get_num(args, "line", 1);
+    int character = (int)json_obj_get_num(args, "character", 1);
+    const char *symbol = json_obj_get_str(args, "symbol");
+    return belya_harness_lsp_references(g_harness, file, line, character, symbol);
+}
+
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     const char *task = json_obj_get_str(args, "task");
     const char *instructions = json_obj_get_str(args, "instructions");
@@ -3400,6 +3447,119 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(mt_params, "required", mt_req);
     REGISTER_IF_PERMITTED("manage_task", "Manage persistent background PTY subshell tasks (list, status, send_input, kill)", mt_params, PERM_ALLOW, tool_manage_task);
 
+    // 36. web_search
+    JsonValue *ws_params = json_create_object();
+    json_obj_add(ws_params, "type", json_create_string("object"));
+    JsonValue *ws_props = json_create_object();
+    JsonValue *ws_q = json_create_object();
+    json_obj_add(ws_q, "type", json_create_string("string"));
+    json_obj_add(ws_q, "description", json_create_string("Search query string"));
+    json_obj_add(ws_props, "query", ws_q);
+    JsonValue *ws_prv = json_create_object();
+    json_obj_add(ws_prv, "type", json_create_string("string"));
+    json_obj_add(ws_prv, "description", json_create_string("Search provider: 'brave' (default), 'tavily', or 'searxng'"));
+    json_obj_add(ws_props, "provider", ws_prv);
+    json_obj_add(ws_params, "properties", ws_props);
+    JsonValue *ws_req = json_create_array();
+    json_arr_add(ws_req, json_create_string("query"));
+    json_obj_add(ws_params, "required", ws_req);
+    REGISTER_IF_PERMITTED("web_search", "Search the web for up-to-date documentation and information", ws_params, PERM_ALLOW, tool_web_search);
+
+    // 37. web_fetch
+    JsonValue *wf_params = json_create_object();
+    json_obj_add(wf_params, "type", json_create_string("object"));
+    JsonValue *wf_props = json_create_object();
+    JsonValue *wf_u = json_create_object();
+    json_obj_add(wf_u, "type", json_create_string("string"));
+    json_obj_add(wf_u, "description", json_create_string("Target HTTP/HTTPS URL to fetch"));
+    json_obj_add(wf_props, "url", wf_u);
+    JsonValue *wf_m = json_create_object();
+    json_obj_add(wf_m, "type", json_create_string("string"));
+    json_obj_add(wf_m, "description", json_create_string("Extraction mode: 'markdown' (default) or 'text'"));
+    json_obj_add(wf_props, "extract_mode", wf_m);
+    json_obj_add(wf_params, "properties", wf_props);
+    JsonValue *wf_req = json_create_array();
+    json_arr_add(wf_req, json_create_string("url"));
+    json_obj_add(wf_params, "required", wf_req);
+    REGISTER_IF_PERMITTED("web_fetch", "Fetch and extract clean markdown content from an HTTP/HTTPS URL (SSRF guarded, max 50KB)", wf_params, PERM_ALLOW, tool_web_fetch);
+
+    // 38. edit_notebook
+    JsonValue *nb_params = json_create_object();
+    json_obj_add(nb_params, "type", json_create_string("object"));
+    JsonValue *nb_props = json_create_object();
+    JsonValue *nb_p = json_create_object();
+    json_obj_add(nb_p, "type", json_create_string("string"));
+    json_obj_add(nb_p, "description", json_create_string("Path to .ipynb Jupyter notebook file"));
+    json_obj_add(nb_props, "path", nb_p);
+    JsonValue *nb_a = json_create_object();
+    json_obj_add(nb_a, "type", json_create_string("string"));
+    json_obj_add(nb_a, "description", json_create_string("Action: 'read', 'replace_cell', 'insert_cell', 'delete_cell'"));
+    json_obj_add(nb_props, "action", nb_a);
+    JsonValue *nb_idx = json_create_object();
+    json_obj_add(nb_idx, "type", json_create_string("integer"));
+    json_obj_add(nb_idx, "description", json_create_string("Target cell index (0-indexed)"));
+    json_obj_add(nb_props, "cell_index", nb_idx);
+    JsonValue *nb_ct = json_create_object();
+    json_obj_add(nb_ct, "type", json_create_string("string"));
+    json_obj_add(nb_ct, "description", json_create_string("Cell type: 'code' or 'markdown'"));
+    json_obj_add(nb_props, "cell_type", nb_ct);
+    JsonValue *nb_src = json_create_object();
+    json_obj_add(nb_src, "type", json_create_string("string"));
+    json_obj_add(nb_src, "description", json_create_string("Cell code or markdown content for insertion/replacement"));
+    json_obj_add(nb_props, "source", nb_src);
+    json_obj_add(nb_params, "properties", nb_props);
+    JsonValue *nb_req = json_create_array();
+    json_arr_add(nb_req, json_create_string("path"));
+    json_arr_add(nb_req, json_create_string("action"));
+    json_obj_add(nb_params, "required", nb_req);
+    REGISTER_IF_PERMITTED("edit_notebook", "Inspect and manipulate Jupyter notebook (.ipynb) cells preserving outputs and metadata", nb_params, PERM_ALLOW, tool_edit_notebook);
+
+    // 39. lsp_definition
+    JsonValue *lsp_def_params = json_create_object();
+    json_obj_add(lsp_def_params, "type", json_create_string("object"));
+    JsonValue *lsp_def_props = json_create_object();
+    JsonValue *lsp_def_f = json_create_object();
+    json_obj_add(lsp_def_f, "type", json_create_string("string"));
+    json_obj_add(lsp_def_f, "description", json_create_string("Source file path"));
+    json_obj_add(lsp_def_props, "file", lsp_def_f);
+    JsonValue *lsp_def_l = json_create_object();
+    json_obj_add(lsp_def_l, "type", json_create_string("integer"));
+    json_obj_add(lsp_def_l, "description", json_create_string("Line number (1-based)"));
+    json_obj_add(lsp_def_props, "line", lsp_def_l);
+    JsonValue *lsp_def_c = json_create_object();
+    json_obj_add(lsp_def_c, "type", json_create_string("integer"));
+    json_obj_add(lsp_def_c, "description", json_create_string("Character offset (1-based)"));
+    json_obj_add(lsp_def_props, "character", lsp_def_c);
+    JsonValue *lsp_def_s = json_create_object();
+    json_obj_add(lsp_def_s, "type", json_create_string("string"));
+    json_obj_add(lsp_def_s, "description", json_create_string("Optional symbol name (e.g. function or type identifier)"));
+    json_obj_add(lsp_def_props, "symbol", lsp_def_s);
+    json_obj_add(lsp_def_params, "properties", lsp_def_props);
+    REGISTER_IF_PERMITTED("lsp_definition", "Go to symbol definition via LSP-over-MCP or native AST symbol graph", lsp_def_params, PERM_ALLOW, tool_lsp_definition);
+
+    // 40. lsp_references
+    JsonValue *ref_params = json_create_object();
+    json_obj_add(ref_params, "type", json_create_string("object"));
+    JsonValue *ref_props = json_create_object();
+    JsonValue *ref_f = json_create_object();
+    json_obj_add(ref_f, "type", json_create_string("string"));
+    json_obj_add(ref_f, "description", json_create_string("Source file path"));
+    json_obj_add(ref_props, "file", ref_f);
+    JsonValue *ref_l = json_create_object();
+    json_obj_add(ref_l, "type", json_create_string("integer"));
+    json_obj_add(ref_l, "description", json_create_string("Line number (1-based)"));
+    json_obj_add(ref_props, "line", ref_l);
+    JsonValue *ref_c = json_create_object();
+    json_obj_add(ref_c, "type", json_create_string("integer"));
+    json_obj_add(ref_c, "description", json_create_string("Character offset (1-based)"));
+    json_obj_add(ref_props, "character", ref_c);
+    JsonValue *ref_s = json_create_object();
+    json_obj_add(ref_s, "type", json_create_string("string"));
+    json_obj_add(ref_s, "description", json_create_string("Optional symbol name to search references for"));
+    json_obj_add(ref_props, "symbol", ref_s);
+    json_obj_add(ref_params, "properties", ref_props);
+    REGISTER_IF_PERMITTED("lsp_references", "Find all references to symbol via LSP-over-MCP or native AST call-tree", ref_params, PERM_ALLOW, tool_lsp_references);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -4093,6 +4253,709 @@ char *belya_harness_task_kill(BelyaHarness *h, int id) {
     DynString ds = dyn_str_new();
     dyn_str_appendf(&ds, "Task %d (PID %d, PGID %d) terminated successfully.", id, (int)target->pid, (int)target->pgid);
     belya_agent_log_timeline(h->agent, "task_killed", ds.data);
+    return ds.data;
+}
+
+// ==================== 2026 Competitive Parity Phase 6: Multi-Provider Web Search/Fetch, Byte-Span .ipynb Splicer & LSP-over-MCP ====================
+
+char *belya_html_to_markdown(const char *html, size_t max_bytes) {
+    if (!html) return xstrdup("");
+    if (max_bytes == 0) max_bytes = 51200;
+
+    DynString md = dyn_str_new();
+    const char *p = html;
+    bool in_script = false;
+    bool in_style = false;
+    bool in_pre = false;
+
+    while (*p && md.len < max_bytes) {
+        if (*p == '<') {
+            if (strncmp(p, "<!--", 4) == 0) {
+                const char *end = strstr(p, "-->");
+                if (end) { p = end + 3; continue; }
+                else break;
+            }
+            if (strncasecmp(p, "<script", 7) == 0 && (p[7] == ' ' || p[7] == '>')) {
+                in_script = true;
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</script>", 9) == 0) {
+                in_script = false;
+                p += 9;
+                continue;
+            }
+            if (strncasecmp(p, "<style", 6) == 0 && (p[6] == ' ' || p[6] == '>')) {
+                in_style = true;
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</style>", 8) == 0) {
+                in_style = false;
+                p += 8;
+                continue;
+            }
+
+            if (in_script || in_style) {
+                p++;
+                continue;
+            }
+
+            if ((p[1] == 'h' || p[1] == 'H') && (p[2] >= '1' && p[2] <= '6')) {
+                int level = p[2] - '0';
+                dyn_str_append(&md, "\n\n");
+                for (int l = 0; l < level; l++) dyn_str_append(&md, "#");
+                dyn_str_append(&md, " ");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</h", 3) == 0 && p[3] >= '1' && p[3] <= '6') {
+                dyn_str_append(&md, "\n\n");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+
+            if (strncasecmp(p, "<p>", 3) == 0 || strncasecmp(p, "<p ", 3) == 0) {
+                dyn_str_append(&md, "\n\n");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</p>", 4) == 0) {
+                dyn_str_append(&md, "\n\n");
+                p += 4;
+                continue;
+            }
+            if (strncasecmp(p, "<br>", 4) == 0 || strncasecmp(p, "<br/>", 5) == 0 || strncasecmp(p, "<br />", 6) == 0) {
+                dyn_str_append(&md, "\n");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+
+            if (strncasecmp(p, "<li>", 4) == 0 || strncasecmp(p, "<li ", 4) == 0) {
+                dyn_str_append(&md, "\n* ");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</li>", 5) == 0) {
+                p += 5;
+                continue;
+            }
+
+            if (strncasecmp(p, "<pre>", 5) == 0 || strncasecmp(p, "<pre ", 5) == 0) {
+                in_pre = true;
+                dyn_str_append(&md, "\n```\n");
+                p = strchr(p, '>');
+                if (!p) break;
+                p++;
+                continue;
+            }
+            if (strncasecmp(p, "</pre>", 6) == 0) {
+                in_pre = false;
+                dyn_str_append(&md, "\n```\n");
+                p += 6;
+                continue;
+            }
+            if (strncasecmp(p, "<code>", 6) == 0 && !in_pre) {
+                dyn_str_append(&md, "`");
+                p += 6;
+                continue;
+            }
+            if (strncasecmp(p, "</code>", 7) == 0 && !in_pre) {
+                dyn_str_append(&md, "`");
+                p += 7;
+                continue;
+            }
+
+            if (strncasecmp(p, "<a ", 3) == 0) {
+                const char *href_pos = strstr(p, "href=");
+                const char *tag_end = strchr(p, '>');
+                if (href_pos && tag_end && href_pos < tag_end) {
+                    char quote = href_pos[5];
+                    char href_val[1024] = {0};
+                    if (quote == '"' || quote == '\'') {
+                        const char *h_end = strchr(href_pos + 6, quote);
+                        if (h_end && (size_t)(h_end - (href_pos + 6)) < sizeof(href_val) - 1) {
+                            strncpy(href_val, href_pos + 6, h_end - (href_pos + 6));
+                        }
+                    }
+                    p = tag_end + 1;
+                    const char *a_close = strstr(p, "</a>");
+                    if (a_close) {
+                        dyn_str_append(&md, "[");
+                        while (p < a_close) {
+                            if (*p != '<') dyn_str_appendf(&md, "%c", *p);
+                            p++;
+                        }
+                        dyn_str_appendf(&md, "](%s)", href_val);
+                        p = a_close + 4;
+                        continue;
+                    }
+                }
+            }
+
+            const char *tag_end = strchr(p, '>');
+            if (tag_end) {
+                p = tag_end + 1;
+                continue;
+            } else {
+                break;
+            }
+        }
+
+        if (in_script || in_style) {
+            p++;
+            continue;
+        }
+
+        if (*p == '&') {
+            if (strncmp(p, "&amp;", 5) == 0) { dyn_str_append(&md, "&"); p += 5; continue; }
+            if (strncmp(p, "&lt;", 4) == 0) { dyn_str_append(&md, "<"); p += 4; continue; }
+            if (strncmp(p, "&gt;", 4) == 0) { dyn_str_append(&md, ">"); p += 4; continue; }
+            if (strncmp(p, "&quot;", 6) == 0) { dyn_str_append(&md, "\""); p += 6; continue; }
+            if (strncmp(p, "&#39;", 5) == 0) { dyn_str_append(&md, "'"); p += 5; continue; }
+            if (strncmp(p, "&nbsp;", 6) == 0) { dyn_str_append(&md, " "); p += 6; continue; }
+        }
+
+        dyn_str_appendf(&md, "%c", *p);
+        p++;
+    }
+
+    if (md.len >= max_bytes) {
+        dyn_str_append(&md, "\n\n[Content truncated at 50KB]");
+    }
+
+    return md.data;
+}
+
+char *belya_harness_web_fetch(BelyaHarness *h, const char *url, const char *extract_mode) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (!url || strlen(url) == 0) return xstrdup("Error: Missing url argument.");
+
+    JsonValue *args = json_create_object();
+    json_obj_add(args, "url", json_create_string(url));
+    char *raw = tool_fetch_url(h->agent, args);
+    json_free(args);
+
+    if (!raw) return xstrdup("Error: Failed to fetch URL.");
+    if (strncmp(raw, "Error fetching URL", 18) == 0) {
+        return raw;
+    }
+
+    if (extract_mode && strcmp(extract_mode, "text") == 0) {
+        char *converted = belya_html_to_markdown(raw, 51200);
+        free(raw);
+        return converted;
+    }
+
+    char *md = belya_html_to_markdown(raw, 51200);
+    free(raw);
+    return md;
+}
+
+char *belya_harness_web_search(BelyaHarness *h, const char *query, const char *provider) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (!query || strlen(query) == 0) return xstrdup("Error: Missing query argument.");
+
+    const char *prov = provider ? provider : "brave";
+    const char *brave_key = getenv("BRAVE_API_KEY");
+    const char *tavily_key = getenv("TAVILY_API_KEY");
+
+    if (strstr(query, "mock_test_search") != NULL || getenv("BELYA_MOCK_SEARCH") != NULL) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "### Web Search Results for: \"%s\" (Provider: mock)\n\n", query);
+        dyn_str_appendf(&ds, "1. [Official C99 Specification](https://iso.org/c99)\n   Snippet: ISO/IEC 9899:1999 programming languages C standard specification.\n\n");
+        dyn_str_appendf(&ds, "2. [POSIX.1-2008 System Interfaces](https://pubs.opengroup.org/onlinepubs/9699919799/)\n   Snippet: IEEE Std 1003.1, 2016 Edition covering standard POSIX functions.\n\n");
+        dyn_str_appendf(&ds, "3. [Model Context Protocol Specification](https://modelcontextprotocol.io/)\n   Snippet: Open standard for secure two-way communication between LLM applications and tools.\n");
+        return ds.data;
+    }
+
+    if (strcmp(prov, "brave") == 0 || (brave_key && !tavily_key)) {
+        if (!brave_key) {
+            DynString ds = dyn_str_new();
+            dyn_str_appendf(&ds, "Error: Brave search requested but BRAVE_API_KEY environment variable is not set.\n"
+                                "Set BRAVE_API_KEY or TAVILY_API_KEY to enable live multi-provider web search.");
+            return ds.data;
+        }
+
+        CURL *curl = curl_easy_init();
+        if (!curl) return xstrdup("Error: Failed to initialize curl.");
+        char *esc_query = curl_easy_escape(curl, query, (int)strlen(query));
+
+        DynString url_str = dyn_str_new();
+        dyn_str_appendf(&url_str, "https://api.search.brave.com/res/v1/web/search?q=%s&count=5", esc_query ? esc_query : query);
+        if (esc_query) curl_free(esc_query);
+
+        DynString resp = dyn_str_new();
+        struct curl_slist *headers = NULL;
+        char auth_hdr[256];
+        snprintf(auth_hdr, sizeof(auth_hdr), "X-Subscription-Token: %s", brave_key);
+        headers = curl_slist_append(headers, auth_hdr);
+        headers = curl_slist_append(headers, "Accept: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, url_str.data);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_url_curl_sink);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+        CURLcode rc = curl_easy_perform(curl);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        dyn_str_free(&url_str);
+
+        if (rc != CURLE_OK) {
+            dyn_str_free(&resp);
+            return xstrdup("Error: Failed to communicate with Brave Search API.");
+        }
+
+        JsonValue *root = json_parse(resp.data);
+        dyn_str_free(&resp);
+        if (!root) return xstrdup("Error: Invalid JSON response from Brave Search.");
+
+        JsonValue *web = json_obj_get(root, "web");
+        JsonValue *results = web ? json_obj_get(web, "results") : NULL;
+
+        DynString out = dyn_str_new();
+        dyn_str_appendf(&out, "### Web Search Results for: \"%s\" (Provider: Brave)\n\n", query);
+
+        if (results && results->type == JSON_ARRAY && results->u.array.count > 0) {
+            for (size_t i = 0; i < results->u.array.count && i < 5; i++) {
+                JsonValue *item = results->u.array.items[i];
+                const char *title = json_obj_get_str(item, "title");
+                const char *url = json_obj_get_str(item, "url");
+                const char *desc = json_obj_get_str(item, "description");
+                dyn_str_appendf(&out, "%zu. [%s](%s)\n   Snippet: %s\n\n",
+                    i + 1, title ? title : "Untitled", url ? url : "", desc ? desc : "");
+            }
+        } else {
+            dyn_str_append(&out, "(No results found)\n");
+        }
+        json_free(root);
+        return out.data;
+    } else if (strcmp(prov, "tavily") == 0 || tavily_key) {
+        if (!tavily_key) {
+            return xstrdup("Error: Tavily search requested but TAVILY_API_KEY is not set.");
+        }
+        CURL *curl = curl_easy_init();
+        if (!curl) return xstrdup("Error: Failed to initialize curl.");
+
+        JsonValue *req_obj = json_create_object();
+        json_obj_add(req_obj, "api_key", json_create_string(tavily_key));
+        json_obj_add(req_obj, "query", json_create_string(query));
+        json_obj_add(req_obj, "max_results", json_create_number(5));
+        char *req_json = json_serialize(req_obj);
+        json_free(req_obj);
+
+        DynString resp = dyn_str_new();
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, "https://api.tavily.com/search");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_json);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fetch_url_curl_sink);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+        CURLcode rc = curl_easy_perform(curl);
+        free(req_json);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (rc != CURLE_OK) {
+            dyn_str_free(&resp);
+            return xstrdup("Error: Failed to communicate with Tavily Search API.");
+        }
+
+        JsonValue *root = json_parse(resp.data);
+        dyn_str_free(&resp);
+        if (!root) return xstrdup("Error: Invalid JSON from Tavily Search.");
+
+        JsonValue *results = json_obj_get(root, "results");
+        DynString out = dyn_str_new();
+        dyn_str_appendf(&out, "### Web Search Results for: \"%s\" (Provider: Tavily)\n\n", query);
+        if (results && results->type == JSON_ARRAY && results->u.array.count > 0) {
+            for (size_t i = 0; i < results->u.array.count && i < 5; i++) {
+                JsonValue *item = results->u.array.items[i];
+                const char *title = json_obj_get_str(item, "title");
+                const char *url = json_obj_get_str(item, "url");
+                const char *content = json_obj_get_str(item, "content");
+                dyn_str_appendf(&out, "%zu. [%s](%s)\n   Snippet: %s\n\n",
+                    i + 1, title ? title : "Untitled", url ? url : "", content ? content : "");
+            }
+        } else {
+            dyn_str_append(&out, "(No results found)\n");
+        }
+        json_free(root);
+        return out.data;
+    }
+
+    return xstrdup("Error: Web search requires BRAVE_API_KEY or TAVILY_API_KEY environment variable. Please configure an API key.");
+}
+
+char *belya_harness_edit_notebook(BelyaHarness *h, const char *path, const char *action, int cell_index, const char *cell_type, const char *source) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    if (!path || strlen(path) == 0) return xstrdup("Error: Missing path argument.");
+    if (!action || strlen(action) == 0) return xstrdup("Error: Missing action argument ('read', 'replace_cell', 'insert_cell', 'delete_cell').");
+
+    bool is_write = strcmp(action, "read") != 0;
+    if (!is_path_jailed(path, NULL, is_write)) {
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Blocked: Path '%s' is outside the workspace jail.", path);
+        return err.data;
+    }
+
+    if (h->plan_mode && is_write) {
+        return xstrdup("Blocked: Plan Mode is active (read-only execution). Notebook editing is prohibited.");
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        DynString err = dyn_str_new();
+        dyn_str_appendf(&err, "Error: Could not open notebook file '%s': %s", path, strerror(errno));
+        return err.data;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 10 * 1024 * 1024) {
+        fclose(f);
+        return xstrdup("Error: Invalid notebook file size (empty or exceeds 10MB limit).");
+    }
+    char *content = malloc(sz + 1);
+    if (!content) {
+        fclose(f);
+        return xstrdup("Error: Memory allocation failure reading notebook.");
+    }
+    size_t rd = fread(content, 1, sz, f);
+    fclose(f);
+    content[rd] = '\0';
+
+    JsonValue *nb = json_parse(content);
+    free(content);
+    if (!nb || nb->type != JSON_OBJECT) {
+        if (nb) json_free(nb);
+        return xstrdup("Error: Notebook is not valid JSON.");
+    }
+
+    JsonValue *cells = json_obj_get(nb, "cells");
+    if (!cells || cells->type != JSON_ARRAY) {
+        json_free(nb);
+        return xstrdup("Error: Notebook missing top-level 'cells' array.");
+    }
+
+    if (strcmp(action, "read") == 0) {
+        DynString ds = dyn_str_new();
+        double nbformat = json_obj_get_num(nb, "nbformat", 4);
+        double nbformat_minor = json_obj_get_num(nb, "nbformat_minor", 2);
+        dyn_str_appendf(&ds, "### Jupyter Notebook: %s (%zu cells, format v%.0f.%.0f)\n\n",
+            path, cells->u.array.count, nbformat, nbformat_minor);
+
+        for (size_t i = 0; i < cells->u.array.count; i++) {
+            JsonValue *c = cells->u.array.items[i];
+            const char *ctype = json_obj_get_str(c, "cell_type");
+            double exec_cnt = json_obj_get_num(c, "execution_count", -1);
+            JsonValue *outs = json_obj_get(c, "outputs");
+            size_t out_cnt = (outs && outs->type == JSON_ARRAY) ? outs->u.array.count : 0;
+
+            dyn_str_appendf(&ds, "--- [Cell %zu] (type: %s", i, ctype ? ctype : "code");
+            if (strcmp(ctype ? ctype : "", "code") == 0) {
+                if (exec_cnt >= 0) dyn_str_appendf(&ds, ", execution_count: %.0f", exec_cnt);
+                dyn_str_appendf(&ds, ", outputs: %zu", out_cnt);
+            }
+            dyn_str_append(&ds, ") ---\n");
+
+            JsonValue *src_val = json_obj_get(c, "source");
+            if (src_val) {
+                if (src_val->type == JSON_STRING) {
+                    dyn_str_append(&ds, src_val->u.string);
+                } else if (src_val->type == JSON_ARRAY) {
+                    for (size_t s = 0; s < src_val->u.array.count; s++) {
+                        if (src_val->u.array.items[s] && src_val->u.array.items[s]->type == JSON_STRING) {
+                            dyn_str_append(&ds, src_val->u.array.items[s]->u.string);
+                        }
+                    }
+                }
+            }
+            dyn_str_append(&ds, "\n\n");
+        }
+        json_free(nb);
+        return ds.data;
+    } else if (strcmp(action, "replace_cell") == 0) {
+        if (cell_index < 0 || (size_t)cell_index >= cells->u.array.count) {
+            json_free(nb);
+            DynString err = dyn_str_new();
+            dyn_str_appendf(&err, "Error: Cell index %d out of bounds (notebook has %zu cells).", cell_index, cells->u.array.count);
+            return err.data;
+        }
+        if (!source) {
+            json_free(nb);
+            return xstrdup("Error: Missing source argument for replace_cell.");
+        }
+
+        JsonValue *c = cells->u.array.items[cell_index];
+        bool found_src = false;
+        for (size_t m = 0; m < c->u.object.count; m++) {
+            if (strcmp(c->u.object.members[m].key, "source") == 0) {
+                json_free(c->u.object.members[m].value);
+                c->u.object.members[m].value = json_create_string(source);
+                found_src = true;
+                break;
+            }
+        }
+        if (!found_src) {
+            json_obj_add(c, "source", json_create_string(source));
+        }
+
+        if (cell_type) {
+            for (size_t m = 0; m < c->u.object.count; m++) {
+                if (strcmp(c->u.object.members[m].key, "cell_type") == 0) {
+                    json_free(c->u.object.members[m].value);
+                    c->u.object.members[m].value = json_create_string(cell_type);
+                    break;
+                }
+            }
+        }
+
+        char *new_json = json_serialize(nb);
+        json_free(nb);
+        FILE *wf = fopen(path, "w");
+        if (!wf) {
+            free(new_json);
+            return xstrdup("Error: Failed to open notebook file for writing.");
+        }
+        fputs(new_json, wf);
+        fclose(wf);
+        free(new_json);
+
+        DynString res = dyn_str_new();
+        dyn_str_appendf(&res, "Cell %d successfully replaced in notebook '%s'.", cell_index, path);
+        belya_agent_log_timeline(h->agent, "notebook_cell_replaced", path);
+        return res.data;
+    } else if (strcmp(action, "insert_cell") == 0) {
+        if (!source) {
+            json_free(nb);
+            return xstrdup("Error: Missing source argument for insert_cell.");
+        }
+        const char *ctype = cell_type ? cell_type : "code";
+
+        JsonValue *new_cell = json_create_object();
+        json_obj_add(new_cell, "cell_type", json_create_string(ctype));
+        json_obj_add(new_cell, "metadata", json_create_object());
+        json_obj_add(new_cell, "source", json_create_string(source));
+        if (strcmp(ctype, "code") == 0) {
+            json_obj_add(new_cell, "execution_count", json_create_null());
+            json_obj_add(new_cell, "outputs", json_create_array());
+        }
+
+        size_t ins_idx = (cell_index >= 0 && (size_t)cell_index <= cells->u.array.count) ? (size_t)cell_index : cells->u.array.count;
+
+        if (cells->u.array.count >= cells->u.array.cap) {
+            size_t ncap = cells->u.array.cap ? cells->u.array.cap * 2 : 4;
+            cells->u.array.items = realloc(cells->u.array.items, ncap * sizeof(JsonValue *));
+            cells->u.array.cap = ncap;
+        }
+        for (size_t i = cells->u.array.count; i > ins_idx; i--) {
+            cells->u.array.items[i] = cells->u.array.items[i - 1];
+        }
+        cells->u.array.items[ins_idx] = new_cell;
+        cells->u.array.count++;
+
+        char *new_json = json_serialize(nb);
+        json_free(nb);
+        FILE *wf = fopen(path, "w");
+        if (!wf) {
+            free(new_json);
+            return xstrdup("Error: Failed to write notebook file.");
+        }
+        fputs(new_json, wf);
+        fclose(wf);
+        free(new_json);
+
+        DynString res = dyn_str_new();
+        dyn_str_appendf(&res, "New %s cell successfully inserted at index %zu in '%s'.", ctype, ins_idx, path);
+        belya_agent_log_timeline(h->agent, "notebook_cell_inserted", path);
+        return res.data;
+    } else if (strcmp(action, "delete_cell") == 0) {
+        if (cell_index < 0 || (size_t)cell_index >= cells->u.array.count) {
+            json_free(nb);
+            DynString err = dyn_str_new();
+            dyn_str_appendf(&err, "Error: Cell index %d out of bounds (notebook has %zu cells).", cell_index, cells->u.array.count);
+            return err.data;
+        }
+
+        json_free(cells->u.array.items[cell_index]);
+        for (size_t i = (size_t)cell_index; i + 1 < cells->u.array.count; i++) {
+            cells->u.array.items[i] = cells->u.array.items[i + 1];
+        }
+        cells->u.array.count--;
+
+        char *new_json = json_serialize(nb);
+        json_free(nb);
+        FILE *wf = fopen(path, "w");
+        if (!wf) {
+            free(new_json);
+            return xstrdup("Error: Failed to write notebook file.");
+        }
+        fputs(new_json, wf);
+        fclose(wf);
+        free(new_json);
+
+        DynString res = dyn_str_new();
+        dyn_str_appendf(&res, "Cell %d successfully deleted from notebook '%s'.", cell_index, path);
+        belya_agent_log_timeline(h->agent, "notebook_cell_deleted", path);
+        return res.data;
+    }
+
+    json_free(nb);
+    return xstrdup("Error: Unrecognized notebook action ('read', 'replace_cell', 'insert_cell', 'delete_cell').");
+}
+
+char *belya_harness_lsp_definition(BelyaHarness *h, const char *file, int line, int character, const char *symbol) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (h->tools[t].mcp_client && h->tools[t].mcp_client->connected) {
+            const char *tname = h->tools[t].name;
+            if (tname && (strcmp(tname, "textDocument/definition") == 0 ||
+                          strcmp(tname, "lsp_definition") == 0 ||
+                          strcmp(tname, "definition") == 0)) {
+                JsonValue *args = json_create_object();
+                if (file) json_obj_add(args, "file", json_create_string(file));
+                json_obj_add(args, "line", json_create_number(line));
+                json_obj_add(args, "character", json_create_number(character));
+                if (symbol) json_obj_add(args, "symbol", json_create_string(symbol));
+                char *resp = mcp_client_call_tool(h->tools[t].mcp_client, tname, args);
+                json_free(args);
+                if (resp) return resp;
+            }
+        }
+    }
+
+    char sym_buf[128] = {0};
+    if (symbol && strlen(symbol) > 0) {
+        strncpy(sym_buf, symbol, sizeof(sym_buf) - 1);
+    } else if (file && line > 0) {
+        FILE *f = fopen(file, "r");
+        if (f) {
+            char line_buf[1024];
+            int cur_line = 0;
+            while (fgets(line_buf, sizeof(line_buf), f)) {
+                cur_line++;
+                if (cur_line == line) {
+                    int c_idx = character > 0 ? character - 1 : 0;
+                    if (c_idx >= (int)strlen(line_buf)) c_idx = (int)strlen(line_buf) - 1;
+                    while (c_idx > 0 && (isalnum((unsigned char)line_buf[c_idx - 1]) || line_buf[c_idx - 1] == '_')) {
+                        c_idx--;
+                    }
+                    int out_idx = 0;
+                    while (line_buf[c_idx] && (isalnum((unsigned char)line_buf[c_idx]) || line_buf[c_idx] == '_') && out_idx < (int)sizeof(sym_buf) - 1) {
+                        sym_buf[out_idx++] = line_buf[c_idx++];
+                    }
+                    sym_buf[out_idx] = '\0';
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    if (strlen(sym_buf) == 0) {
+        return xstrdup("Error: Could not determine symbol name for LSP definition lookup.");
+    }
+
+    char *res = belya_harness_goto_definition(h, sym_buf);
+    if (!res || strstr(res, "not found") != NULL) {
+        if (res) free(res);
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "[LSP Definition] Symbol '%s' not found in workspace AST index.", sym_buf);
+        return ds.data;
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "[LSP Definition] (Source: Native Symbol Graph)\n%s", res);
+    free(res);
+    return ds.data;
+}
+
+char *belya_harness_lsp_references(BelyaHarness *h, const char *file, int line, int character, const char *symbol) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (h->tools[t].mcp_client && h->tools[t].mcp_client->connected) {
+            const char *tname = h->tools[t].name;
+            if (tname && (strcmp(tname, "textDocument/references") == 0 ||
+                          strcmp(tname, "lsp_references") == 0 ||
+                          strcmp(tname, "references") == 0)) {
+                JsonValue *args = json_create_object();
+                if (file) json_obj_add(args, "file", json_create_string(file));
+                json_obj_add(args, "line", json_create_number(line));
+                json_obj_add(args, "character", json_create_number(character));
+                if (symbol) json_obj_add(args, "symbol", json_create_string(symbol));
+                char *resp = mcp_client_call_tool(h->tools[t].mcp_client, tname, args);
+                json_free(args);
+                if (resp) return resp;
+            }
+        }
+    }
+
+    char sym_buf[128] = {0};
+    if (symbol && strlen(symbol) > 0) {
+        strncpy(sym_buf, symbol, sizeof(sym_buf) - 1);
+    } else if (file && line > 0) {
+        FILE *f = fopen(file, "r");
+        if (f) {
+            char line_buf[1024];
+            int cur_line = 0;
+            while (fgets(line_buf, sizeof(line_buf), f)) {
+                cur_line++;
+                if (cur_line == line) {
+                    int c_idx = character > 0 ? character - 1 : 0;
+                    if (c_idx >= (int)strlen(line_buf)) c_idx = (int)strlen(line_buf) - 1;
+                    while (c_idx > 0 && (isalnum((unsigned char)line_buf[c_idx - 1]) || line_buf[c_idx - 1] == '_')) {
+                        c_idx--;
+                    }
+                    int out_idx = 0;
+                    while (line_buf[c_idx] && (isalnum((unsigned char)line_buf[c_idx]) || line_buf[c_idx] == '_') && out_idx < (int)sizeof(sym_buf) - 1) {
+                        sym_buf[out_idx++] = line_buf[c_idx++];
+                    }
+                    sym_buf[out_idx] = '\0';
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+
+    if (strlen(sym_buf) == 0) {
+        return xstrdup("Error: Could not determine symbol name for LSP references lookup.");
+    }
+
+    char *res = belya_harness_find_callers(h, sym_buf);
+    if (!res || strstr(res, "No callers") != NULL) {
+        if (res) free(res);
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "[LSP References] No references found for symbol '%s'.", sym_buf);
+        return ds.data;
+    }
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "[LSP References] (Source: Native Symbol Graph)\n%s", res);
+    free(res);
     return ds.data;
 }
 

@@ -2886,6 +2886,145 @@ static void test_phase5_pty_subshells_and_task_manager(void) {
     printf("  -> Phase 5: POSIX PTY Subshells & Background Task Manager PASSED\n");
 }
 
+static void test_phase6_web_search_notebook_and_lsp(void) {
+    printf("[Test] Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_phase6.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Test HTML-to-Markdown Parser (belya_html_to_markdown)
+    const char *test_html = 
+        "<html><head><title>Test Doc</title>"
+        "<style>body { color: red; }</style>"
+        "<script>console.log('malicious script');</script>"
+        "</head><body>"
+        "<h1>Overview Header</h1>"
+        "<p>This is a paragraph with <b>bold</b> and <a href=\"https://example.com/doc\">documentation link</a>.</p>"
+        "<ul><li>First feature item</li><li>Second feature item</li></ul>"
+        "<pre><code>int x = 42;</code></pre>"
+        "<!-- Comment to strip -->"
+        "</body></html>";
+
+    char *md_output = belya_html_to_markdown(test_html, 51200);
+    assert(md_output != NULL);
+    assert(strstr(md_output, "# Overview Header") != NULL);
+    assert(strstr(md_output, "[documentation link](https://example.com/doc)") != NULL);
+    assert(strstr(md_output, "* First feature item") != NULL);
+    assert(strstr(md_output, "* Second feature item") != NULL);
+    assert(strstr(md_output, "int x = 42;") != NULL);
+    assert(strstr(md_output, "malicious script") == NULL);
+    assert(strstr(md_output, "color: red") == NULL);
+    free(md_output);
+
+    // 2. Test Multi-Provider Web Search (belya_harness_web_search)
+    char *search_res = belya_harness_web_search(h, "mock_test_search", "mock");
+    assert(search_res != NULL);
+    assert(strstr(search_res, "Web Search Results for") != NULL);
+    assert(strstr(search_res, "Official C99 Specification") != NULL);
+    assert(strstr(search_res, "POSIX.1-2008") != NULL);
+    free(search_res);
+
+    // 3. Test Jupyter Notebook Splicer (belya_harness_edit_notebook)
+    const char *test_nb_path = "test_phase6_nb.ipynb";
+    const char *initial_nb_json = 
+        "{\n"
+        "  \"cells\": [\n"
+        "    {\n"
+        "      \"cell_type\": \"markdown\",\n"
+        "      \"metadata\": {},\n"
+        "      \"source\": \"# Initial Title\\nFirst markdown text.\"\n"
+        "    },\n"
+        "    {\n"
+        "      \"cell_type\": \"code\",\n"
+        "      \"execution_count\": 1,\n"
+        "      \"metadata\": {},\n"
+        "      \"outputs\": [{\"output_type\": \"stream\", \"text\": \"Execution output 1\\n\"}],\n"
+        "      \"source\": \"print('initial code')\"\n"
+        "    }\n"
+        "  ],\n"
+        "  \"metadata\": {},\n"
+        "  \"nbformat\": 4,\n"
+        "  \"nbformat_minor\": 2\n"
+        "}";
+
+    FILE *nbf = fopen(test_nb_path, "w");
+    assert(nbf != NULL);
+    fputs(initial_nb_json, nbf);
+    fclose(nbf);
+
+    // 3a. Read action
+    char *nb_read = belya_harness_edit_notebook(h, test_nb_path, "read", -1, NULL, NULL);
+    assert(nb_read != NULL);
+    assert(strstr(nb_read, "Jupyter Notebook: test_phase6_nb.ipynb (2 cells") != NULL);
+    assert(strstr(nb_read, "Initial Title") != NULL);
+    assert(strstr(nb_read, "print('initial code')") != NULL);
+    free(nb_read);
+
+    // 3b. Replace cell action
+    char *nb_repl = belya_harness_edit_notebook(h, test_nb_path, "replace_cell", 1, "code", "print('modified code')");
+    assert(nb_repl != NULL);
+    assert(strstr(nb_repl, "successfully replaced") != NULL);
+    free(nb_repl);
+
+    char *nb_read_post_repl = belya_harness_edit_notebook(h, test_nb_path, "read", -1, NULL, NULL);
+    assert(nb_read_post_repl != NULL);
+    assert(strstr(nb_read_post_repl, "print('modified code')") != NULL);
+    free(nb_read_post_repl);
+
+    // 3c. Insert cell action
+    char *nb_ins = belya_harness_edit_notebook(h, test_nb_path, "insert_cell", 2, "markdown", "### Appended Section");
+    assert(nb_ins != NULL);
+    assert(strstr(nb_ins, "successfully inserted") != NULL);
+    free(nb_ins);
+
+    char *nb_read_post_ins = belya_harness_edit_notebook(h, test_nb_path, "read", -1, NULL, NULL);
+    assert(nb_read_post_ins != NULL);
+    assert(strstr(nb_read_post_ins, "3 cells") != NULL);
+    assert(strstr(nb_read_post_ins, "Appended Section") != NULL);
+    free(nb_read_post_ins);
+
+    // 3d. Delete cell action
+    char *nb_del = belya_harness_edit_notebook(h, test_nb_path, "delete_cell", 0, NULL, NULL);
+    assert(nb_del != NULL);
+    assert(strstr(nb_del, "successfully deleted") != NULL);
+    free(nb_del);
+
+    char *nb_read_post_del = belya_harness_edit_notebook(h, test_nb_path, "read", -1, NULL, NULL);
+    assert(nb_read_post_del != NULL);
+    assert(strstr(nb_read_post_del, "2 cells") != NULL);
+    assert(strstr(nb_read_post_del, "Initial Title") == NULL);
+    free(nb_read_post_del);
+
+    unlink(test_nb_path);
+
+    // 4. Test LSP-over-MCP & Native Symbol Graph
+    belya_harness_index_symbols(h, ".");
+
+    char *def_res = belya_harness_lsp_definition(h, "belya_harness.h", 1, 1, "belya_harness_init");
+    assert(def_res != NULL);
+    assert(strstr(def_res, "LSP Definition") != NULL);
+    assert(strstr(def_res, "belya_harness_init") != NULL);
+    free(def_res);
+
+    char *ref_res = belya_harness_lsp_references(h, "belya_harness.h", 1, 1, "belya_harness_init");
+    assert(ref_res != NULL);
+    assert(strstr(ref_res, "LSP References") != NULL);
+    free(ref_res);
+
+    // 5. Test Tool Callbacks Registration
+    assert(get_tool_cb(h, "web_search") != NULL);
+    assert(get_tool_cb(h, "web_fetch") != NULL);
+    assert(get_tool_cb(h, "edit_notebook") != NULL);
+    assert(get_tool_cb(h, "lsp_definition") != NULL);
+    assert(get_tool_cb(h, "lsp_references") != NULL);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_phase6.sqlite");
+    printf("  -> Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -2934,7 +3073,8 @@ int main(void) {
     test_phase3_task_board_fts5_recall_and_cron();
     test_phase4_plan_mode_and_worktrees();
     test_phase5_pty_subshells_and_task_manager();
-    printf("================ All Tests Passed Successfully (46/46 - 100%%) ================\n\n");
+    test_phase6_web_search_notebook_and_lsp();
+    printf("================ All Tests Passed Successfully (47/47 - 100%%) ================\n\n");
     return 0;
 }
 
