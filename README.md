@@ -55,7 +55,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
   - [15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash](#15-jev-typesafe-ai-decision-coprocessor--deepseek-v41-flash)
   - [16. OpenCode Go Subscription Backend & Model Economics](#16-opencode-go-subscription-backend--model-economics)
-- [Automated Test Suite (41/41 Comprehensive Tests)](#automated-test-suite-4141-comprehensive-tests)
+- [Automated Test Suite (48/48 Comprehensive Tests)](#automated-test-suite-4848-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
@@ -70,7 +70,7 @@ Belya and Belya Harness feature a clean **Brain & Sandbox** separation. You can 
 ```mermaid
 graph TD
     subgraph "Mode A: Full Autonomous Agent System (Belya Agent + Belya Harness)"
-        User["Operator (Terminal CLI / Telegram Bot)"] --> H["Belya Harness Runtime & Security Sandbox"]
+        User["Operator (Terminal CLI / Telegram Bot / Discord / Slack)"] --> H["Belya Harness Runtime & Security Sandbox"]
         H --> A["Belya Agent Reasoning Core (ReAct / Autonomous Mission Loop)"]
         A --> GW["Model Gateway (OpenCode Go / OpenRouter / DeepSeek / Ollama)"]
         A --> DB[("SQLite FTS5 + Gomaa Memory, AST Symbol Graph & Checkpoints")]
@@ -81,7 +81,7 @@ graph TD
     subgraph "Mode B: Standalone Security Harness (Belya Harness Alone)"
         Ext["External App / Python / Node / Custom Agent"] --> H2["Belya Harness Sandboxed Execution Engine"]
         H2 --> SEC["Tiered Security Policy (ALLOW / ASK_USER / DENY)"]
-        H2 --> T1["22 Native Tools (bash, edit_file, AST graph, MCP synth, security audit, git)"]
+        H2 --> T1["41 Native Tools (bash, edit_file, AST graph, MCP synth, worktrees, PTY, web search, docker)"]
         H2 --> T2["Dynamic Custom Tools (.belya/tools/)"]
         H2 --> T3["MCP Client & Paper2Agent Synthesizer (.belya/mcp/)"]
     end
@@ -102,13 +102,13 @@ Belya and Almaz are **twin sovereign C99 siblings** that share a common low-leve
                   ┌──────────────────────────┐   ┌──────────────────────────┐
                   │   GitHub: M4F-S/Belya    │   │   GitHub: M4F-S/Almaz    │
                   │   (Deterministic Core)   │   │  (Metamorphic Organism)  │
-                  │       Tag: v7.2.0        │   │        Tag: v0.8.0       │
+                  │       Tag: v2.1.0        │   │        Tag: v2.1.0       │
                   └─────────────┬────────────┘   └─────────────┬────────────┘
                                 │                             │
                                 ▼                             ▼
                   ┌──────────────────────────┐   ┌──────────────────────────┐
                   │     Belya (The Core)     │   │     Almaz (The Organism) │
-                  │     Path: /opt/charness  │   │     Path: /opt/almaz     │
+                  │     Path: /opt/belya     │   │     Path: /opt/almaz     │
                   │   Systemd: belya.service │   │   Systemd: almaz.service │
                   │     RAM: ~4.1 MB Idle    │   │  Supervisor: watchdog.c  │
                   │   Telegram: Primary Bot  │   │   Telegram: @AlmaztheBot │
@@ -119,16 +119,16 @@ Belya and Almaz are **twin sovereign C99 siblings** that share a common low-leve
                                 ▼                             ▼
                       [Deterministic C99 SE]        [Autopoietic Self-Healing]
                       [Security Sandboxing ]        [FadeMem + CORAL + VIGIL ]
-                      [41/41 Tests ASan-OK ]        [54 Tests + 65 Holdouts  ]
+                      [48/48 Tests ASan-OK ]        [61 Tests + 65 Holdouts  ]
 ```
 
 ### 🧬 Sibling Lineage & Architectural Division
 - **Belya (The Deterministic Sibling & Software Engineering Core)**:
-  Maintained in [`M4F-S/Belya`](https://github.com/M4F-S/Belya), deployed 24/7 on the production VPS at `/opt/charness` (symlinked `/opt/belya`) as `belya.service`. Built for absolute determinism, rock-solid stability, zero memory leaks, and sub-millisecond local execution. Belya is the production engineering workhorse that reliably creates codebases, runs unit test batteries, performs git operations, manages filesystems, and interfaces directly with developers via terminal CLI and Telegram.
+  Maintained in [`M4F-S/Belya`](https://github.com/M4F-S/Belya), deployed 24/7 on the production VPS at `/opt/belya` as `belya.service`. Built for absolute determinism, rock-solid stability, zero memory leaks, and sub-millisecond local execution. Belya is the production engineering workhorse that reliably creates codebases, runs unit test batteries, performs git operations, manages filesystems, and interfaces directly with developers via terminal CLI, Telegram, Discord, and Slack.
 - **Almaz (The Metamorphic Sibling & Cognitive Organism)**:
   Maintained in [`M4F-S/Almaz`](https://github.com/M4F-S/Almaz), deployed 24/7 on the production VPS at `/opt/almaz` as `almaz.service` supervised by `almaz-watchdog`. Almaz takes Belya's deterministic foundation and elevates it into an autopoietic organism: a biological computing loop featuring biological memory decay (FadeMem), dual-stream tactical/strategic memory routing (CORAL), semantic fact compression (SimpleMem), a persistent self-model (SARSI), emotional appraisal dynamics (VIGIL), situational memory gating (KnowSelf), and Darwinian AST code mutation guarded by 65 hidden holdout assertions.
 - **Cross-Sibling Co-Evolution**:
-  Neither sibling operates in isolation. Hardening improvements discovered in Almaz (such as H2 SSE usage accounting, offset-based `memcpy` streaming, and Darwin compatibility) are ported into Belya. Conversely, Belya's security advances (such as H4 orphaned tool message stripping, H5 SQLite WAL batching, and socket-level SSRF filters) are ported into Almaz. Through `tools/evolution_supervisor.py`, both siblings participate in symmetric, like-for-like arena benchmarking.
+  Neither sibling operates in isolation. Hardening improvements discovered in Almaz (such as H2 SSE usage accounting, offset-based `memcpy` streaming, and Darwin compatibility) are ported into Belya. Conversely, Belya's security advances (such as H4 orphaned tool message stripping, H5 SQLite WAL batching, socket-level SSRF filters, kernel Plan Mode sandboxing, and omnichannel gateway polling) are ported into Almaz. Through `tools/evolution_supervisor.py`, both siblings participate in symmetric, like-for-like arena benchmarking.
 
 ---
 
@@ -221,13 +221,13 @@ Belya and Belya Harness are evaluated across a rigorous **6-arena, 35-task bench
 
 ### 3. Frontier Agent Architectural Comparison
 
-| Architectural Feature | **Belya v7.2.0 (C99)** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
+| Architectural Feature | **Belya v2.1.0 (C99)** | **Devin** | **OpenHands** | **SWE-agent** | **Aider** |
 |:---|:---:|:---:|:---:|:---:|:---:|
 | **Core Runtime** | **Pure C99 POSIX** | Proprietary | Python / Docker | Python | Python CLI |
 | **RAM Footprint (RSS)** | **< 4.1 MB Idle / 9.7 MB Peak** | ~800 MB (Cloud) | ~1,500 MB | ~450 MB | ~250 MB |
 | **Cold Start Latency** | **`1.27 ms`** | ~1,500 ms | ~3,200 ms | ~1,800 ms | ~800 ms |
 | **Runtime Dependencies** | **Zero (Native POSIX)** | Cloud Container | Docker + Python | Python Env | Python Env |
-| **Native Tool Count** | **22 Tools + Dynamic MCP** | 12–15 Tools | 14 Tools | 8 Tools | 5 Tools |
+| **Native Tool Count** | **41 Tools + Dynamic MCP** | 12–15 Tools | 14 Tools | 8 Tools | 5 Tools |
 | **Compiler Watchdog** | **Pre-Flight Guard (Auto-Revert)** | Post-Run Test | Post-Run Test | Post-Run Test | Linter Check |
 | **Code Navigation** | **SQLite AST Symbol Graph (`14ms`)** | LSP / Grep | Grep / Bash | Grep | Tree-sitter Map |
 | **Subagent Isolation** | **ROMA Context Firewall + Git Guard** | Cloud Sandbox | Single Context | Single Context | No Subagents |
@@ -427,47 +427,55 @@ belya [1 msgs | 67 toks]> Create a lock-free SPSC ring buffer in pure C99 and be
 
 ---
 
-### Mode 2: 24/7 VPS Telegram Bot Daemon
+### Mode 2: 24/7 VPS Omnichannel Daemon (Telegram, Discord & Slack)
 
-Run Belya Agent as a persistent background daemon on your VPS to manage servers, audit infrastructure, and develop software remotely from Telegram.
+Run Belya Agent as a persistent background daemon on your VPS to manage servers, audit infrastructure, and develop software remotely across your preferred messaging channels with zero-trust token isolation and SQLite session continuity.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as You (Telegram Mobile)
-    participant Bot as Belya Agent Daemon (VPS)
+    actor User as You (Telegram / Discord / Slack)
+    participant Gateway as Omnichannel Gateway (belya_channel.c)
+    participant Bot as Belya Agent Core (VPS)
     participant Harness as Belya Harness Security Sandbox
-    participant Tools as VPS Native Tools (bash, gcc, git)
+    participant Tools as VPS Native Tools (bash, gcc, git, docker)
 
-    User->>Bot: "Run strict benchmark and push release tag"
-    Bot->>Bot: Verify Telegram Chat ID (Zero-Trust Gate)
+    User->>Gateway: "Run strict benchmark and push release tag"
+    Gateway->>Gateway: Authenticate Channel & Identity (Zero-Trust Gate)
+    Gateway->>Bot: Forward message with scoped session ID
     Bot->>Harness: Execute tool pipeline sequentially
     Harness->>Tools: Run pre-flight compiler check & benchmarks
     Tools-->>Harness: Result output
     Harness-->>Bot: Structured Execution Envelope
-    Bot-->>User: "✅ Benchmark passed (966k ns) & tag v5.0.0 pushed."
+    Bot-->>Gateway: Formatted Response
+    Gateway-->>User: "✅ Benchmark passed (966k ns) & tag v2.1.0 pushed."
 ```
 
-#### 1. Obtain Bot Credentials
-1. Message [@BotFather](https://t.me/botfather) on Telegram: send `/newbot` to obtain your `TELEGRAM_BOT_TOKEN`.
-2. Message [@userinfobot](https://t.me/userinfobot) to get your personal numeric `TELEGRAM_CHAT_ID`.
-
-#### 2. Configure Environment (`.env`)
+#### 1. Configure Omnichannel Environment (`.env`)
 ```bash
 cp .env.example .env
 nano .env
 ```
-Fill in your configuration:
+Fill in your configuration (configure any combination of Telegram, Discord, and Slack; unconfigured channels are automatically skipped with zero overhead):
 ```env
 MODEL_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
-MODEL_NAME=deepseek/deepseek-v4-flash
+MODEL_NAME=deepseek/deepseek-v4.1-flash
 MODEL_API_KEY=sk-or-v1-your-key-here
 
+# Channel A: Telegram Bot
 TELEGRAM_BOT_TOKEN=123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ
 TELEGRAM_CHAT_ID=7934918808
+
+# Channel B: Discord Bot (Optional)
+DISCORD_BOT_TOKEN=MTE5...your-discord-token
+DISCORD_CHANNEL_ID=123456789012345678
+
+# Channel C: Slack Bot (Optional)
+SLACK_BOT_TOKEN=xoxb-...your-slack-bot-token
+SLACK_CHANNEL_ID=C0123456789
 ```
 
-#### 3. Run as a Systemd Service (Auto-restart on boot)
+#### 2. Run as a Systemd Service (Auto-restart on boot)
 ```bash
 sudo cp belya.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -479,6 +487,16 @@ Check status or stream live logs anytime:
 sudo systemctl status belya
 sudo journalctl -u belya -f
 ```
+
+#### 3. Execution Sandboxing (Local, Remote SSH & Hardened Docker Container)
+Belya supports 3 execution targets via `exec_backend` and the `--docker` CLI flag:
+- **Local Host Execution:** Directly on the host OS with POSIX PTY subshells and Plan Mode kernel restrictions.
+- **Docker Container Sandbox (`--docker <container_name>`):** Executes commands safely isolated inside a dedicated container (e.g. `belya-sandbox` with pre-installed GCC, SQLite3, and Git) via `docker exec -i <container> /bin/sh -s`:
+  ```bash
+  # Run Belya bounded inside a dedicated Docker container:
+  ./belya --docker belya-sandbox
+  ```
+- **Remote SSH Host:** Stdin-piped execution across remote environments without opening interactive tty leaks.
 
 ---
 
@@ -721,7 +739,7 @@ In addition to OpenRouter and local Ollama/vLLM backends, Belya supports high-th
 
 ---
 
-## Automated Test Suite (41/41 Comprehensive Tests)
+## Automated Test Suite (48/48 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -735,7 +753,7 @@ make test
 [Test] MiniJSON Parser & Serializer...
   -> MiniJSON PASSED
 [Test] BPE-calibrated Token Estimator...
-  -> Token Estimator PASSED (Total: 853 tokens)
+  -> Token Estimator PASSED (Total: 1103 tokens)
 [Test] Agent Memory (FTS5) & Rules Auto-Discovery...
   -> Agent Memory & Rules PASSED
 [Test] Session Checkpointing & Resumption...
@@ -781,7 +799,7 @@ make test
 [Test] Subagent Recursion Guard & Sandbox Tool Isolation...
   -> Subagent Recursion Guard PASSED
 [Test] Self-Telemetry, RSS Calculation & Proprioception...
-  -> Self-Telemetry & Proprioception PASSED (RSS: 11.86 MB)
+  -> Self-Telemetry & Proprioception PASSED (RSS: 11.67 MB)
 [Test] Metacognitive Circuit Breaker & Verification Guard...
   -> Metacognitive Circuit Breaker & Verification Guard PASSED
 [Test] Track A.1: Workspace Path Jailing (is_path_jailed)...
@@ -789,7 +807,7 @@ make test
 [Test] Track A.2: C99 Markdown Frontmatter Parser (minifrontmatter)...
   -> C99 Markdown Frontmatter Parser PASSED
 [Test] Track A.3: File-First Skills System (skills/*/SKILL.md)...
-  -> File-First Skills System PASSED (Loaded 4 disk skills)
+  -> File-First Skills System PASSED (Loaded 9 disk skills)
 [Test] Track A.4: Composable Rule Packs (rules/*/*.md)...
   -> Composable Rule Packs PASSED (Loaded 3 rule packs)
 [Test] Track A.5: Systematic TROUBLESHOOTING.md Pattern Resolver...
@@ -807,24 +825,24 @@ make test
 [Test] Late-2026 ROMA Recursive Context Firewall...
   -> Late-2026 ROMA Recursive Context Firewall PASSED
 [Test] Late-2026 AST Symbol Graph Navigation & Call-Tree...
-  -> Late-2026 AST Symbol Graph Navigation PASSED (7228 symbols indexed)
+  -> Late-2026 AST Symbol Graph Navigation PASSED (9858 symbols indexed)
 [Test] Late-2026 Paper2Agent Repo-to-MCP Dynamic Synthesis...
   -> Late-2026 Paper2Agent Repo-to-MCP Synthesis PASSED
 [Test] Late-2026 Mythos Variant Security Sweeper...
   -> Late-2026 Mythos Variant Security Sweeper PASSED
-[Test] Phase 1: Stateful ANSI Diff Colorizer & Signal-Safe ask_user...
-  -> Phase 1: Diff Colorizer & Interactive ask_user PASSED
-[Test] Phase 2: Deterministic Lifecycle Hooks & 5-Tier Compactor...
-  -> Phase 2: Deterministic Lifecycle Hooks & 5-Tier Compactor PASSED
-[Test] Phase 3: SQLite WAL Task Board, FTS5 Recall & Cron Engine...
-  -> Phase 3: Task Board, FTS5 Recall & Cron Engine PASSED
-[Test] Phase 4: Plan Mode Security Sandbox & Isolated Worktrees...
-  -> Phase 4: Plan Mode & Isolated Worktrees PASSED
+[Test] Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal...
+  -> Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal PASSED
+[Test] Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary...
+  -> Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary PASSED
+[Test] Phase 3: Task Board, FTS5 Recall & Background Cron Engine...
+  -> Phase 3: Task Board, FTS5 Recall & Background Cron Engine PASSED
+[Test] Phase 4: Plan Mode Sandbox, Isolated Git Worktrees & SKILL.md Parity...
+  -> Phase 4: Plan Mode Sandbox, Isolated Git Worktrees & SKILL.md Parity PASSED
 [Test] Phase 5: POSIX PTY Subshells & Background Task Manager...
-  -> Phase 5: POSIX PTY Subshells & Task Manager PASSED
-[Test] Phase 6: Multi-Provider Web Search, Notebook Splicer & LSP-over-MCP...
-  -> Phase 6: Web Search, Notebook Splicer & LSP-over-MCP PASSED
-[Test] Phase 7: Polymorphic Omnichannel Gateway & Stdin-Piped Remote Backends...
+  -> Phase 5: POSIX PTY Subshells & Background Task Manager PASSED
+[Test] Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP...
+  -> Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP PASSED
+[Test] Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends...
   -> Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends PASSED
 ================ All Tests Passed Successfully (48/48 - 100%) ================
 ```
