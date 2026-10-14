@@ -18,8 +18,69 @@
 #include <arpa/inet.h>
 #include <curl/curl.h>
 
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <linux/landlock.h>
+#include <sys/prctl.h>
+#ifndef landlock_create_ruleset
+static inline int landlock_create_ruleset(const struct landlock_ruleset_attr *const attr, const size_t size, const __u32 flags) {
+    return (int)syscall(__NR_landlock_create_ruleset, attr, size, flags);
+}
+static inline int landlock_add_rule(const int ruleset_fd, const enum landlock_rule_type rule_type, const void *const rule_attr, const __u32 flags) {
+    return (int)syscall(__NR_landlock_add_rule, ruleset_fd, rule_type, rule_attr, flags);
+}
+static inline int landlock_restrict_self(const int ruleset_fd, const __u32 flags) {
+    return (int)syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
+}
+#endif
+#endif
+
 static BelyaHarness *g_harness = NULL;
 const char *g_active_custom_script_path = NULL;
+
+static void apply_plan_mode_kernel_sandbox(void) {
+#ifdef __linux__
+#if defined(LANDLOCK_ACCESS_FS_EXECUTE) && defined(PR_SET_NO_NEW_PRIVS)
+    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    struct landlock_ruleset_attr ruleset_attr = {
+        .handled_access_fs =
+            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE |
+            LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
+            LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE |
+            LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
+            LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK |
+            LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+            LANDLOCK_ACCESS_FS_MAKE_SYM
+    };
+    int ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
+    if (ruleset_fd >= 0) {
+        int root_fd = open("/", O_PATH | O_CLOEXEC);
+        if (root_fd >= 0) {
+            struct landlock_path_beneath_attr root_ro = {
+                .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_EXECUTE,
+                .parent_fd = root_fd,
+            };
+            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &root_ro, 0);
+            close(root_fd);
+        }
+        char ro_tmp[128];
+        snprintf(ro_tmp, sizeof(ro_tmp), "/tmp/belya_ro_%d", (int)getpid());
+        mkdir(ro_tmp, 0700);
+        int tmp_fd = open(ro_tmp, O_PATH | O_CLOEXEC);
+        if (tmp_fd >= 0) {
+            struct landlock_path_beneath_attr tmp_rw = {
+                .allowed_access = ruleset_attr.handled_access_fs,
+                .parent_fd = tmp_fd,
+            };
+            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &tmp_rw, 0);
+            close(tmp_fd);
+        }
+        landlock_restrict_self(ruleset_fd, 0);
+        close(ruleset_fd);
+    }
+#endif
+#endif
+}
 
 static void safe_pipe_write(int fd, const char *data, size_t len) {
     while (len > 0) {
@@ -313,6 +374,14 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+        if (g_harness && g_harness->plan_mode) {
+            apply_plan_mode_kernel_sandbox();
+#ifdef __APPLE__
+            execl("/usr/bin/sandbox-exec", "sandbox-exec", "-p",
+                  "(version 1)(allow default)(deny file-write*)(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\"))",
+                  "/bin/sh", "-c", full_cmd_ds.data, (char *)NULL);
+#endif
+        }
         execl("/bin/sh", "sh", "-c", full_cmd_ds.data, (char *)NULL);
         _exit(127);
     }
@@ -1578,6 +1647,9 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
 
     belya_harness_free(sub_harness);
     g_harness = saved_harness;
+    if (saved_harness && strlen(saved_harness->cwd) > 0) {
+        if (chdir(saved_harness->cwd) != 0) { /* best-effort restore */ }
+    }
     model_gateway_free(sub_gw);
 
     DynString envelope = dyn_str_new();
@@ -1790,6 +1862,9 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
     dyn_str_free(&final_ans);
     belya_harness_free(sub_harness);
     g_harness = saved_harness;
+    if (saved_harness && strlen(saved_harness->cwd) > 0) {
+        if (chdir(saved_harness->cwd) != 0) { /* best-effort restore */ }
+    }
     model_gateway_free(sub_gw);
     if (manifest) belya_agent_manifest_free(manifest);
 
@@ -2919,6 +2994,7 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     }
     h->agent = agent;
     if (agent) {
+        agent->user_data = h;
         belya_agent_set_pre_compact_hook(agent, harness_on_pre_compact_hook, h);
     }
     if (role_name) {
@@ -3742,15 +3818,16 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
         if (tcgetattr(STDIN_FILENO, &g_saved_termios) == 0) {
             g_termios_saved = true;
             atexit(belya_restore_terminal_mode);
-            struct sigaction sa;
-            memset(&sa, 0, sizeof(sa));
-            sa.sa_handler = belya_termios_sig_handler;
-            sigaction(SIGINT, &sa, NULL);
-            sigaction(SIGTERM, &sa, NULL);
-            sigaction(SIGQUIT, &sa, NULL);
-            sigaction(SIGTSTP, &sa, NULL);
         }
     }
+
+    struct sigaction sa, old_int, old_term, old_quit, old_tstp;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = belya_termios_sig_handler;
+    sigaction(SIGINT, &sa, &old_int);
+    sigaction(SIGTERM, &sa, &old_term);
+    sigaction(SIGQUIT, &sa, &old_quit);
+    sigaction(SIGTSTP, &sa, &old_tstp);
 
     printf("\n\033[1;33m[SECURITY GATE: Permission Required]\033[0m\n");
     printf("Tool:      \033[1;37m%s\033[0m\n", tool_name ? tool_name : "unknown");
@@ -3782,6 +3859,10 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
     }
 
     belya_restore_terminal_mode();
+    sigaction(SIGINT, &old_int, NULL);
+    sigaction(SIGTERM, &old_term, NULL);
+    sigaction(SIGQUIT, &old_quit, NULL);
+    sigaction(SIGTSTP, &old_tstp, NULL);
     printf("%c\n", ch);
 
     if (ch == 'a') {

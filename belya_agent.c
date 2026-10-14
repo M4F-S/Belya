@@ -2279,28 +2279,62 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         JsonValue *m = json_create_object();
         json_obj_add(m, "role", json_create_string(agent->messages[i].role));
         if (i == 0) {
-            DynString sys_content = dyn_str_new();
-            dyn_str_append(&sys_content, agent->messages[0].content);
-            dyn_str_append(&sys_content, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+            bool use_anthropic_cache_blocks = false;
+            if (agent->gateway && agent->gateway->prompt_caching && agent->gateway->endpoint) {
+                if (strstr(agent->gateway->endpoint, "openrouter.ai") != NULL ||
+                    strstr(agent->gateway->endpoint, "anthropic.com") != NULL ||
+                    strstr(agent->gateway->endpoint, "anthropic") != NULL) {
+                    use_anthropic_cache_blocks = true;
+                }
+            }
+
+            DynString dynamic_part = dyn_str_new();
+            dyn_str_append(&dynamic_part, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
             if (agent->gateway && agent->gateway->model) {
                 const char *provider = (agent->gateway->endpoint && strstr(agent->gateway->endpoint, "openrouter.ai") != NULL) ? "OpenRouter Cloud" : "Local Metal Ollama";
-                dyn_str_appendf(&sys_content, "Active Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
+                dyn_str_appendf(&dynamic_part, "Active Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
                                 agent->gateway->model, provider, agent->gateway->model, provider);
             }
-            json_obj_add(m, "content", json_create_string(sys_content.data));
-            dyn_str_free(&sys_content);
+
+            if (use_anthropic_cache_blocks) {
+                JsonValue *content_arr = json_create_array();
+
+                // Block 1: Static prefix with cache_control
+                JsonValue *b1 = json_create_object();
+                json_obj_add(b1, "type", json_create_string("text"));
+                json_obj_add(b1, "text", json_create_string(agent->messages[0].content ? agent->messages[0].content : ""));
+                JsonValue *cc1 = json_create_object();
+                json_obj_add(cc1, "type", json_create_string("ephemeral"));
+                json_obj_add(b1, "cache_control", cc1);
+                json_arr_add(content_arr, b1);
+
+                // Block 2: Dynamic suffix without cache_control
+                JsonValue *b2 = json_create_object();
+                json_obj_add(b2, "type", json_create_string("text"));
+                json_obj_add(b2, "text", json_create_string(dynamic_part.data));
+                json_arr_add(content_arr, b2);
+
+                json_obj_add(m, "content", content_arr);
+            } else {
+                DynString sys_content = dyn_str_new();
+                dyn_str_append(&sys_content, agent->messages[0].content ? agent->messages[0].content : "");
+                dyn_str_append(&sys_content, dynamic_part.data);
+                json_obj_add(m, "content", json_create_string(sys_content.data));
+                dyn_str_free(&sys_content);
+
+                // Prompt Caching breakpoint on system instruction (Zone 1 Pinned Prefix)
+                if (agent->gateway && agent->gateway->prompt_caching) {
+                    JsonValue *cc = json_create_object();
+                    json_obj_add(cc, "type", json_create_string("ephemeral"));
+                    json_obj_add(m, "cache_control", cc);
+                }
+            }
+            dyn_str_free(&dynamic_part);
         } else {
             json_obj_add(m, "content", json_create_string(agent->messages[i].content));
         }
         if (agent->messages[i].tool_call_id) {
             json_obj_add(m, "tool_call_id", json_create_string(agent->messages[i].tool_call_id));
-        }
-
-        // Prompt Caching breakpoint on system instruction (Zone 1 Pinned Prefix)
-        if (i == 0 && agent->gateway && agent->gateway->prompt_caching) {
-            JsonValue *cc = json_create_object();
-            json_obj_add(cc, "type", json_create_string("ephemeral"));
-            json_obj_add(m, "cache_control", cc);
         }
 
         if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {

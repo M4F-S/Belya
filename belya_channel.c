@@ -4,6 +4,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#if LIBCURL_VERSION_NUM >= 0x075600
+#define BELYA_HAS_CURL_WEBSOCKET 1
+#else
+#define BELYA_HAS_CURL_WEBSOCKET 0
+#endif
+
 static size_t channel_curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total = size * nmemb;
     DynString *ds = (DynString *)userdata;

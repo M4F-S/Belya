@@ -42,6 +42,7 @@ typedef struct BelyaAgent {
     char db_path[256];
     void (*pre_compact_hook)(void *userdata);
     void *pre_compact_userdata;
+    void *user_data;
 } BelyaAgent;
 
 BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *system_instructions);
