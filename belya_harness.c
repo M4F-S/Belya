@@ -5692,12 +5692,20 @@ void belya_harness_repl(BelyaHarness *h) {
             if (strncmp(input_buf, "/ollama", 7) == 0) {
                 const char *new_m = strlen(input_buf) > 7 ? input_buf + 7 : "";
                 while (*new_m == ' ') new_m++;
-                if (strlen(new_m) == 0) new_m = "qwen2.5-coder:7b";
+                char clean_m[128];
+                size_t c_idx = 0;
+                for (size_t i = 0; new_m[i] && c_idx < sizeof(clean_m) - 1; i++) {
+                    if (new_m[i] != ' ' && new_m[i] != '\t' && new_m[i] != '\r' && new_m[i] != '\n') {
+                        clean_m[c_idx++] = new_m[i];
+                    }
+                }
+                clean_m[c_idx] = '\0';
+                if (clean_m[0] == '\0') strcpy(clean_m, "qwen2.5-coder:7b");
 
                 free(h->agent->gateway->endpoint);
                 h->agent->gateway->endpoint = xstrdup("http://localhost:11434/v1/chat/completions");
                 free(h->agent->gateway->model);
-                h->agent->gateway->model = xstrdup(new_m);
+                h->agent->gateway->model = xstrdup(clean_m);
                 free(h->agent->gateway->api_key);
                 h->agent->gateway->api_key = xstrdup("ollama");
                 printf("\033[1;32mSwitched to Local Ollama: Model: %s | Endpoint: %s\033[0m\n\n", h->agent->gateway->model, h->agent->gateway->endpoint);

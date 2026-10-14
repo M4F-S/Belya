@@ -515,11 +515,18 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         strncmp(res.content, "Error: Maximum retry", 20) == 0
     );
 
-    if (failed && self->fallback_endpoint && self->fallback_api_key && strlen(self->fallback_api_key) > 0) {
-        fprintf(stderr, "\033[1;33m[ModelGateway Failover]: Primary endpoint '%s' failed. Switching to fallback '%s' (%s)...\033[0m\n",
+    bool same_ep = (self->endpoint && self->fallback_endpoint && strcmp(self->endpoint, self->fallback_endpoint) == 0 &&
+                    self->model && self->fallback_model && strcmp(self->model, self->fallback_model) == 0);
+
+    if (!same_ep && failed && self->fallback_endpoint && self->fallback_api_key && strlen(self->fallback_api_key) > 0) {
+        char *primary_err = res.content ? xstrdup(res.content) : xstrdup("Unknown error");
+        fprintf(stderr, "\033[1;33m[ModelGateway Failover]: Primary endpoint '%s' (%s) failed [%s]. Switching to fallback '%s' (%s)...\033[0m\n",
                 self->endpoint ? self->endpoint : "unknown",
+                self->model ? self->model : "",
+                primary_err,
                 self->fallback_endpoint,
                 self->fallback_model ? self->fallback_model : "");
+        free(primary_err);
         model_gateway_response_free(&res);
         res = openai_chat_complete_inner(self, messages_json, tools_schema, true);
     }
