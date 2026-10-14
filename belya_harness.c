@@ -179,6 +179,13 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         }
     }
 
+    // 2026 Competitive Parity Phase 7: Stdin-Piped Modular Remote Execution Backend (Docker / SSH)
+    if (g_harness && g_harness->exec_backend != BELYA_BACKEND_LOCAL) {
+        int exit_code = 0;
+        char *remote_res = belya_harness_exec_remote(g_harness, cmd, &exit_code);
+        return remote_res;
+    }
+
     // Handle cd built-in directly to maintain working directory persistence across tool invocations.
     // Also supports compound commands starting with cd (e.g. "cd /dir && make test" or "cd /dir; git status").
     while (cmd && (strncmp(cmd, "cd ", 3) == 0 || strcmp(cmd, "cd") == 0)) {
@@ -1441,6 +1448,52 @@ static char *tool_lsp_references(BelyaAgent *agent, const JsonValue *args) {
     int character = (int)json_obj_get_num(args, "character", 1);
     const char *symbol = json_obj_get_str(args, "symbol");
     return belya_harness_lsp_references(g_harness, file, line, character, symbol);
+}
+
+static char *tool_exec_backend(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    if (!g_harness) return xstrdup("Error: No active harness.");
+
+    const char *action = json_obj_get_str(args, "action");
+    if (!action) action = "get";
+
+    if (strcmp(action, "set") == 0) {
+        const char *backend_str = json_obj_get_str(args, "backend");
+        const char *target = json_obj_get_str(args, "target");
+
+        if (!backend_str || strcmp(backend_str, "local") == 0) {
+            belya_harness_set_exec_backend(g_harness, BELYA_BACKEND_LOCAL, NULL);
+            return xstrdup("Execution backend set to: local");
+        } else if (strcmp(backend_str, "docker") == 0) {
+            if (!target || strlen(target) == 0) {
+                return xstrdup("Error: Missing 'target' container ID or name for Docker backend.");
+            }
+            belya_harness_set_exec_backend(g_harness, BELYA_BACKEND_DOCKER, target);
+            DynString ds = dyn_str_new();
+            dyn_str_appendf(&ds, "Execution backend set to: docker (container: %s)", target);
+            return ds.data;
+        } else if (strcmp(backend_str, "ssh") == 0) {
+            if (!target || strlen(target) == 0) {
+                return xstrdup("Error: Missing 'target' host for SSH backend.");
+            }
+            belya_harness_set_exec_backend(g_harness, BELYA_BACKEND_SSH, target);
+            DynString ds = dyn_str_new();
+            dyn_str_appendf(&ds, "Execution backend set to: ssh (host: %s)", target);
+            return ds.data;
+        } else {
+            return xstrdup("Error: Invalid backend. Supported: 'local', 'docker', 'ssh'.");
+        }
+    } else {
+        DynString ds = dyn_str_new();
+        if (g_harness->exec_backend == BELYA_BACKEND_DOCKER) {
+            dyn_str_appendf(&ds, "Execution backend: docker (container: %s)", g_harness->docker_container);
+        } else if (g_harness->exec_backend == BELYA_BACKEND_SSH) {
+            dyn_str_appendf(&ds, "Execution backend: ssh (host: %s)", g_harness->ssh_host);
+        } else {
+            dyn_str_append(&ds, "Execution backend: local");
+        }
+        return ds.data;
+    }
 }
 
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
@@ -3560,6 +3613,25 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(ref_params, "properties", ref_props);
     REGISTER_IF_PERMITTED("lsp_references", "Find all references to symbol via LSP-over-MCP or native AST call-tree", ref_params, PERM_ALLOW, tool_lsp_references);
 
+    // 41. exec_backend (Phase 7 Modular Remote Execution Backend)
+    JsonValue *eb_params = json_create_object();
+    json_obj_add(eb_params, "type", json_create_string("object"));
+    JsonValue *eb_props = json_create_object();
+    JsonValue *eb_act = json_create_object();
+    json_obj_add(eb_act, "type", json_create_string("string"));
+    json_obj_add(eb_act, "description", json_create_string("Action: 'get' or 'set' (default: get)"));
+    json_obj_add(eb_props, "action", eb_act);
+    JsonValue *eb_be = json_create_object();
+    json_obj_add(eb_be, "type", json_create_string("string"));
+    json_obj_add(eb_be, "description", json_create_string("Backend type: 'local', 'docker', 'ssh'"));
+    json_obj_add(eb_props, "backend", eb_be);
+    JsonValue *eb_tgt = json_create_object();
+    json_obj_add(eb_tgt, "type", json_create_string("string"));
+    json_obj_add(eb_tgt, "description", json_create_string("Target container ID/name (docker) or host (ssh)"));
+    json_obj_add(eb_props, "target", eb_tgt);
+    json_obj_add(eb_params, "properties", eb_props);
+    REGISTER_IF_PERMITTED("exec_backend", "Query or switch execution backend (local, Docker container, or SSH host)", eb_params, PERM_ALLOW, tool_exec_backend);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -4957,6 +5029,156 @@ char *belya_harness_lsp_references(BelyaHarness *h, const char *file, int line, 
     dyn_str_appendf(&ds, "[LSP References] (Source: Native Symbol Graph)\n%s", res);
     free(res);
     return ds.data;
+}
+
+// 2026 Competitive Parity Phase 7: Stdin-Piped Modular Remote Execution Backends
+char *belya_remote_exec_piped(BelyaExecBackend backend, const char *target, const char *workdir, const char *cmd, int *exit_code) {
+    if (exit_code) *exit_code = 0;
+    if (!cmd) return xstrdup("Error: No command specified.");
+
+    if (backend == BELYA_BACKEND_DOCKER && (!target || strlen(target) == 0)) {
+        if (exit_code) *exit_code = 1;
+        return xstrdup("Error: Missing Docker container target.");
+    }
+    if (backend == BELYA_BACKEND_SSH && (!target || strlen(target) == 0)) {
+        if (exit_code) *exit_code = 1;
+        return xstrdup("Error: Missing SSH host target.");
+    }
+
+    int in_pipe[2];
+    int out_pipe[2];
+    if (pipe(in_pipe) == -1) {
+        if (exit_code) *exit_code = -1;
+        return xstrdup("Error: Failed to create stdin pipe.");
+    }
+    if (pipe(out_pipe) == -1) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        if (exit_code) *exit_code = -1;
+        return xstrdup("Error: Failed to create stdout pipe.");
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        if (exit_code) *exit_code = -1;
+        return xstrdup("Error: Subprocess fork failed.");
+    }
+
+    if (pid == 0) {
+        close(in_pipe[1]);
+        if (dup2(in_pipe[0], STDIN_FILENO) == -1) _exit(127);
+        close(in_pipe[0]);
+
+        close(out_pipe[0]);
+        if (dup2(out_pipe[1], STDOUT_FILENO) == -1) _exit(127);
+        if (dup2(out_pipe[1], STDERR_FILENO) == -1) _exit(127);
+        close(out_pipe[1]);
+
+        if (backend == BELYA_BACKEND_DOCKER) {
+            const char *w = (workdir && strlen(workdir) > 0) ? workdir : "/";
+            char *argv[] = {"docker", "exec", "-i", "-w", (char *)w, (char *)target, "/bin/sh", NULL};
+            execvp("docker", argv);
+        } else if (backend == BELYA_BACKEND_SSH) {
+            char *argv[] = {"ssh", "-T", "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/belya_ssh_%r@%h:%p", "-o", "ControlPersist=600", (char *)target, "/bin/sh", NULL};
+            execvp("ssh", argv);
+        } else {
+            char *argv[] = {"/bin/sh", NULL};
+            execvp("/bin/sh", argv);
+        }
+        _exit(127);
+    }
+
+    // Parent
+    close(in_pipe[0]);
+    close(out_pipe[1]);
+
+    size_t cmd_len = strlen(cmd);
+    size_t written = 0;
+    while (written < cmd_len) {
+        ssize_t n = write(in_pipe[1], cmd + written, cmd_len - written);
+        if (n <= 0) break;
+        written += (size_t)n;
+    }
+    ssize_t wn = write(in_pipe[1], "\n", 1);
+    (void)wn;
+    close(in_pipe[1]); // Close stdin to signal EOF to child shell
+
+    int flags = fcntl(out_pipe[0], F_GETFL, 0);
+    fcntl(out_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+    DynString out = dyn_str_new();
+    struct timeval start, now;
+    gettimeofday(&start, NULL);
+    const char *to_env = getenv("BASH_TIMEOUT");
+    double max_timeout = (to_env && atof(to_env) > 0) ? atof(to_env) : 30.0;
+
+    while (1) {
+        char buf[512];
+        ssize_t bytes = read(out_pipe[0], buf, sizeof(buf) - 1);
+        if (bytes > 0) {
+            buf[bytes] = '\0';
+            dyn_str_append(&out, buf);
+            if (out.len > 100000) {
+                dyn_str_append(&out, "\n[Output Truncated by Belya Remote Backend (100KB buffer limit)]");
+                kill(pid, SIGKILL);
+                waitpid(pid, NULL, 0);
+                break;
+            }
+        }
+
+        int status = 0;
+        pid_t res = waitpid(pid, &status, WNOHANG);
+        if (res == pid) {
+            while ((bytes = read(out_pipe[0], buf, sizeof(buf) - 1)) > 0) {
+                buf[bytes] = '\0';
+                dyn_str_append(&out, buf);
+                if (out.len > 100000) break;
+            }
+            if (exit_code) {
+                if (WIFEXITED(status)) *exit_code = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status)) *exit_code = 128 + WTERMSIG(status);
+            }
+            break;
+        }
+
+        gettimeofday(&now, NULL);
+        double elapsed = (double)(now.tv_sec - start.tv_sec) + (double)(now.tv_usec - start.tv_usec) / 1000000.0;
+        if (elapsed > max_timeout) {
+            kill(pid, SIGTERM);
+            usleep(100000);
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            if (exit_code) *exit_code = 124;
+            dyn_str_append(&out, "\n[Error: Command timed out]");
+            break;
+        }
+
+        struct timespec ts = {0, 10000000L}; // 10ms
+        nanosleep(&ts, NULL);
+    }
+
+    close(out_pipe[0]);
+    return out.data;
+}
+
+void belya_harness_set_exec_backend(BelyaHarness *h, BelyaExecBackend backend, const char *target) {
+    if (!h) return;
+    h->exec_backend = backend;
+    if (backend == BELYA_BACKEND_DOCKER && target) {
+        snprintf(h->docker_container, sizeof(h->docker_container), "%s", target);
+    } else if (backend == BELYA_BACKEND_SSH && target) {
+        snprintf(h->ssh_host, sizeof(h->ssh_host), "%s", target);
+    }
+}
+
+char *belya_harness_exec_remote(BelyaHarness *h, const char *cmd, int *exit_code) {
+    if (!h) return xstrdup("Error: Invalid harness.");
+    const char *target = (h->exec_backend == BELYA_BACKEND_DOCKER) ? h->docker_container : h->ssh_host;
+    return belya_remote_exec_piped(h->exec_backend, target, h->cwd, cmd, exit_code);
 }
 
 static void print_help(BelyaHarness *h) {

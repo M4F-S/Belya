@@ -17,11 +17,11 @@ echo "======================================================================"
 echo "[Gate 1/7] Strict C99 & Homoglyph Audit (-std=c99 -Werror -Wpedantic)..."
 gcc -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Werror -Wpedantic -O2 -c \
     linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c \
-    belya_agent.c belya_harness.c telegram_adapter.c main.c
+    belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c main.c
 rm -f *.o
 
 # Verify pure ASCII across all source/header files (guarding against homoglyphs)
-if LC_ALL=C grep -P -n "[\x80-\xFF]" belya_common.h belya_harness.h belya_agent.h common.h 2>/dev/null; then
+if LC_ALL=C grep -P -n "[\x80-\xFF]" belya_common.h belya_harness.h belya_agent.h belya_channel.h common.h 2>/dev/null; then
     echo "[-] Gate 1 FAILED: Non-ASCII characters detected in core headers!"
     exit 1
 fi
@@ -32,7 +32,7 @@ echo "[Gate 2/7] AddressSanitizer & UndefinedBehaviorSanitizer Audit..."
 gcc -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -O1 \
     -fsanitize=address,undefined -fno-omit-frame-pointer -o belya_asan_test \
     linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c \
-    belya_agent.c belya_harness.c telegram_adapter.c test_suite.c -lcurl -lsqlite3
+    belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c test_suite.c -lcurl -lsqlite3
 
 if [ "$(uname)" = "Darwin" ]; then
     export ASAN_OPTIONS="strict_string_checks=1:abort_on_error=1"

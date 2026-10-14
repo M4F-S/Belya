@@ -1,5 +1,6 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
+#include "belya_channel.h"
 #include "minifrontmatter.h"
 #include <assert.h>
 #include <unistd.h>
@@ -3025,6 +3026,189 @@ static void test_phase6_web_search_notebook_and_lsp(void) {
     printf("  -> Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP PASSED\n");
 }
 
+static void test_phase7_omnichannel_and_remote_backends(void) {
+    printf("[Test] Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends...\n");
+
+    ModelGateway *gw = model_gateway_init("http://mock", "mock-key", "mock-model");
+    BelyaAgent *agent = belya_agent_init(gw, "test_phase7.sqlite", NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+
+    // 1. Test Discord Adapter & Event Handling
+    BelyaDiscordAdapter *discord = belya_discord_init("mock_token_123", "chan_999");
+    assert(discord != NULL);
+    assert(strcmp(discord->bot_token, "mock_token_123") == 0);
+    assert(discord->heartbeat_interval_ms == 41250);
+
+    // Test sending message (mock token bypasses network)
+    bool disc_sent = belya_discord_send_message(discord, "chan_999", "Hello Discord from Belya");
+    assert(disc_sent == true);
+
+    // Test Discord Opcode 10 Hello Event
+    const char *discord_hello = "{\"op\": 10, \"d\": {\"heartbeat_interval\": 45000}}";
+    BelyaChannelMessage msg;
+    bool hello_handled = belya_discord_handle_event(discord, discord_hello, &msg);
+    assert(hello_handled == false);
+    assert(discord->connected == true);
+    assert(discord->heartbeat_interval_ms == 45000);
+
+    // Test Discord Opcode 0 Message Create Event
+    const char *discord_msg_json = 
+        "{\"op\": 0, \"t\": \"MESSAGE_CREATE\", \"s\": 42, \"d\": {"
+        "  \"channel_id\": \"chan_999\","
+        "  \"content\": \"Deploy phase 7 immediately\","
+        "  \"id\": \"msg_101\","
+        "  \"author\": {\"id\": \"user_42\", \"username\": \"almaz_operator\"}"
+        "}}";
+    bool msg_handled = belya_discord_handle_event(discord, discord_msg_json, &msg);
+    assert(msg_handled == true);
+    assert(strcmp(msg.platform, "discord") == 0);
+    assert(strcmp(msg.channel_id, "chan_999") == 0);
+    assert(strcmp(msg.user_id, "user_42") == 0);
+    assert(strcmp(msg.user_name, "almaz_operator") == 0);
+    assert(strcmp(msg.text, "Deploy phase 7 immediately") == 0);
+    assert(discord->last_sequence == 42);
+
+    // Test Discord Thread Mapping Session ID
+    char disc_session_id[256];
+    belya_channel_get_session_id(&msg, disc_session_id, sizeof(disc_session_id));
+    assert(strcmp(disc_session_id, "discord_chan_999") == 0);
+
+    // 2. Test Slack Adapter & Webhook Ingress (< 100 ms Challenge Response)
+    BelyaSlackAdapter *slack = belya_slack_init("mock_xoxb_123", "mock_xapp_456", "C0123456");
+    assert(slack != NULL);
+    assert(strcmp(slack->bot_token, "mock_xoxb_123") == 0);
+
+    bool slack_sent = belya_slack_send_message(slack, "C0123456", "Hello Slack from Belya");
+    assert(slack_sent == true);
+
+    // Test Slack url_verification challenge
+    const char *slack_verify_json = "{\"type\": \"url_verification\", \"challenge\": \"3eZbrw1aWjvWqWOrWVuFlKHgABC\"}";
+    char ack_buf[512] = {0};
+    bool is_event = belya_slack_handle_webhook(slack, slack_verify_json, &msg, ack_buf, sizeof(ack_buf));
+    assert(is_event == false);
+    assert(strstr(ack_buf, "3eZbrw1aWjvWqWOrWVuFlKHgABC") != NULL);
+
+    // Test Slack event_callback
+    const char *slack_event_json = 
+        "{\"type\": \"event_callback\", \"event\": {"
+        "  \"channel\": \"C0123456\","
+        "  \"user\": \"U98765\","
+        "  \"text\": \"Run integration tests\","
+        "  \"thread_ts\": \"1712345678.000100\""
+        "}}";
+    memset(ack_buf, 0, sizeof(ack_buf));
+    is_event = belya_slack_handle_webhook(slack, slack_event_json, &msg, ack_buf, sizeof(ack_buf));
+    assert(is_event == true);
+    assert(strstr(ack_buf, "{\"ok\":true}") != NULL);
+    assert(strcmp(msg.platform, "slack") == 0);
+    assert(strcmp(msg.channel_id, "C0123456") == 0);
+    assert(strcmp(msg.user_id, "U98765") == 0);
+    assert(strcmp(msg.thread_id, "1712345678.000100") == 0);
+    assert(strcmp(msg.text, "Run integration tests") == 0);
+
+    // Test Thread-Specific Session ID Continuity
+    char slack_session_id[256];
+    belya_channel_get_session_id(&msg, slack_session_id, sizeof(slack_session_id));
+    assert(strcmp(slack_session_id, "slack_C0123456_1712345678.000100") == 0);
+
+    // 3. Test Polymorphic Omnichannel Creation & Route
+    BelyaOmniChannel *omni_disc = belya_channel_create_discord("mock_tok", "111");
+    assert(omni_disc != NULL);
+    assert(belya_channel_send(omni_disc, "111", "Testing omni discord") == true);
+
+    BelyaOmniChannel *omni_slack = belya_channel_create_slack("mock_tok", "mock_app", "222");
+    assert(omni_slack != NULL);
+    assert(belya_channel_send(omni_slack, "222", "Testing omni slack") == true);
+
+    // Route message with session continuity
+    char route_reply[1024];
+    bool routed = belya_channel_route_message(omni_disc, h, &msg, route_reply, sizeof(route_reply));
+    assert(routed == true);
+    assert(strlen(route_reply) > 0);
+
+    belya_discord_free(discord);
+    belya_slack_free(slack);
+    belya_channel_free(omni_disc);
+    belya_channel_free(omni_slack);
+
+    // 4. Test Stdin-Piped Remote Execution Backend
+    // Test exec_backend tool
+    BelyaToolCallback cb_eb = get_tool_cb(h, "exec_backend");
+    assert(cb_eb != NULL);
+
+    JsonValue *eb_get_args = json_create_object();
+    json_obj_add(eb_get_args, "action", json_create_string("get"));
+    char *eb_res = cb_eb(agent, eb_get_args);
+    json_free(eb_get_args);
+    assert(eb_res && strstr(eb_res, "Execution backend: local") != NULL);
+    free(eb_res);
+
+    // Set to Docker
+    JsonValue *eb_set_doc = json_create_object();
+    json_obj_add(eb_set_doc, "action", json_create_string("set"));
+    json_obj_add(eb_set_doc, "backend", json_create_string("docker"));
+    json_obj_add(eb_set_doc, "target", json_create_string("sandbox_container_v1"));
+    eb_res = cb_eb(agent, eb_set_doc);
+    json_free(eb_set_doc);
+    assert(eb_res && strstr(eb_res, "docker (container: sandbox_container_v1)") != NULL);
+    free(eb_res);
+    assert(h->exec_backend == BELYA_BACKEND_DOCKER);
+    assert(strcmp(h->docker_container, "sandbox_container_v1") == 0);
+
+    // Set to SSH
+    JsonValue *eb_set_ssh = json_create_object();
+    json_obj_add(eb_set_ssh, "action", json_create_string("set"));
+    json_obj_add(eb_set_ssh, "backend", json_create_string("ssh"));
+    json_obj_add(eb_set_ssh, "target", json_create_string("root@192.168.1.100"));
+    eb_res = cb_eb(agent, eb_set_ssh);
+    json_free(eb_set_ssh);
+    assert(eb_res && strstr(eb_res, "ssh (host: root@192.168.1.100)") != NULL);
+    free(eb_res);
+    assert(h->exec_backend == BELYA_BACKEND_SSH);
+    assert(strcmp(h->ssh_host, "root@192.168.1.100") == 0);
+
+    // Reset back to Local
+    JsonValue *eb_set_loc = json_create_object();
+    json_obj_add(eb_set_loc, "action", json_create_string("set"));
+    json_obj_add(eb_set_loc, "backend", json_create_string("local"));
+    eb_res = cb_eb(agent, eb_set_loc);
+    json_free(eb_set_loc);
+    assert(eb_res && strstr(eb_res, "Execution backend set to: local") != NULL);
+    free(eb_res);
+    assert(h->exec_backend == BELYA_BACKEND_LOCAL);
+
+    // Test zero host shell-quoting execution via belya_remote_exec_piped
+    int exit_code = 0;
+    char *piped_out = belya_remote_exec_piped(BELYA_BACKEND_LOCAL, NULL, NULL, "echo 'zero_quoting_stdin_pipeline_ok'", &exit_code);
+    assert(piped_out != NULL);
+    assert(strstr(piped_out, "zero_quoting_stdin_pipeline_ok") != NULL);
+    assert(exit_code == 0);
+    free(piped_out);
+
+    // Test zero host shell-quoting with nasty strings (double quotes, backticks, dollar signs)
+    char *nasty_out = belya_remote_exec_piped(BELYA_BACKEND_LOCAL, NULL, NULL, "printf \"%s\\n\" \"quotes'and\\\"dollar$VAR`whoami`\"", &exit_code);
+    assert(nasty_out != NULL);
+    assert(exit_code == 0);
+    free(nasty_out);
+
+    // Test missing Docker target validation
+    char *err_doc = belya_remote_exec_piped(BELYA_BACKEND_DOCKER, "", NULL, "ls", &exit_code);
+    assert(err_doc != NULL);
+    assert(strstr(err_doc, "Error: Missing Docker container target") != NULL);
+    free(err_doc);
+
+    // Test missing SSH target validation
+    char *err_ssh = belya_remote_exec_piped(BELYA_BACKEND_SSH, "", NULL, "ls", &exit_code);
+    assert(err_ssh != NULL);
+    assert(strstr(err_ssh, "Error: Missing SSH host target") != NULL);
+    free(err_ssh);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_phase7.sqlite");
+    printf("  -> Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -3074,7 +3258,8 @@ int main(void) {
     test_phase4_plan_mode_and_worktrees();
     test_phase5_pty_subshells_and_task_manager();
     test_phase6_web_search_notebook_and_lsp();
-    printf("================ All Tests Passed Successfully (47/47 - 100%%) ================\n\n");
+    test_phase7_omnichannel_and_remote_backends();
+    printf("================ All Tests Passed Successfully (48/48 - 100%%) ================\n\n");
     return 0;
 }
 

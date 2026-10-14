@@ -81,6 +81,13 @@ typedef struct {
     int next_id;
 } BelyaTaskTable;
 
+// 2026 Competitive Parity Phase 7: Modular Remote Execution Backends
+typedef enum {
+    BELYA_BACKEND_LOCAL  = 0,
+    BELYA_BACKEND_DOCKER = 1,
+    BELYA_BACKEND_SSH    = 2
+} BelyaExecBackend;
+
 struct BelyaHarness {
     BelyaAgent *agent;
     BelyaRegisteredTool tools[64];
@@ -118,6 +125,11 @@ struct BelyaHarness {
 
     // 2026 Competitive Parity Phase 5: POSIX PTY Subshells & Background Task Manager
     BelyaTaskTable task_table;
+
+    // 2026 Competitive Parity Phase 7: Modular Remote Execution Backends
+    BelyaExecBackend exec_backend;
+    char docker_container[128];
+    char ssh_host[128];
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
@@ -195,6 +207,11 @@ char *belya_harness_web_fetch(BelyaHarness *h, const char *url, const char *extr
 char *belya_harness_edit_notebook(BelyaHarness *h, const char *path, const char *action, int cell_index, const char *cell_type, const char *source);
 char *belya_harness_lsp_definition(BelyaHarness *h, const char *file, int line, int character, const char *symbol);
 char *belya_harness_lsp_references(BelyaHarness *h, const char *file, int line, int character, const char *symbol);
+
+// 2026 Competitive Parity Phase 7: Omnichannel Gateway & Zero-Injection Remote Execution Backends
+void belya_harness_set_exec_backend(BelyaHarness *h, BelyaExecBackend backend, const char *target);
+char *belya_harness_exec_remote(BelyaHarness *h, const char *cmd, int *exit_code);
+char *belya_remote_exec_piped(BelyaExecBackend backend, const char *target, const char *workdir, const char *cmd, int *exit_code);
 
 extern const char *g_active_custom_script_path;
 

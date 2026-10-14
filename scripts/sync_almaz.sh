@@ -33,6 +33,8 @@ if [ "$MODE" != "--verify-only" ]; then
     cp "$BELYA_DIR/mcp_client.h" "$ALMAZ_DIR/mcp_client.h"
     cp "$BELYA_DIR/jev_client.c" "$ALMAZ_DIR/jev_client.c"
     cp "$BELYA_DIR/jev_client.h" "$ALMAZ_DIR/jev_client.h"
+    cp "$BELYA_DIR/belya_channel.c" "$ALMAZ_DIR/belya_channel.c"
+    cp "$BELYA_DIR/belya_channel.h" "$ALMAZ_DIR/belya_channel.h"
 
     # 3. Copy skills directory
     mkdir -p "$ALMAZ_DIR/skills"
