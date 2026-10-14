@@ -35,5 +35,9 @@ $(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
 clean:
 	rm -f $(OBJS) $(TARGET) $(TEST_TARGET) $(BENCHMARK_TARGET) test_*.sqlite* test_sample.txt bench_mem.sqlite* .belya_history 
 
-.PHONY: all test benchmark clean
+gdrive:
+	@./scripts/sync_to_gdrive.sh
+
+.PHONY: all test benchmark clean gdrive
+
 
