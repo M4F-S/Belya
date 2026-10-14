@@ -14,12 +14,21 @@
 #define _XOPEN_SOURCE 700
 #endif
 
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
+
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <errno.h>
@@ -44,6 +53,7 @@
 #if defined(__linux__) && defined(__NR_landlock_create_ruleset)
 #include <linux/landlock.h>
 #include <sys/syscall.h>
+#include <sys/prctl.h>
 #define BELYA_HAS_LANDLOCK 1
 #else
 #define BELYA_HAS_LANDLOCK 0
@@ -51,15 +61,17 @@
 
 /* Core Architectural Boundaries & Capacity Invariants */
 #define BELYA_MAX_BACKGROUND_TASKS 16
-#define BELYA_TASK_RING_CAPACITY   65536   /* 64 KB per task = 1 MB max memory */
+#define BELYA_TASK_RING_CAPACITY   65536 /* 64 KB per task = 1 MB max memory */
 #define BELYA_MAX_NOTEBOOK_BYTES   (16 * 1024 * 1024) /* 16 MB max .ipynb limit */
 #define BELYA_DYNAMIC_BOUNDARY_MARKER "\n--- SYSTEM_PROMPT_DYNAMIC_BOUNDARY ---\n"
 
-/* Unused attribute helper */
+/* Unused & printf format attribute helpers for strict -Wpedantic -Wformat=2 */
 #if defined(__GNUC__) || defined(__clang__)
 #define BELYA_UNUSED __attribute__((unused))
+#define BELYA_PRINTF_FMT(fmt_idx, arg_idx) __attribute__((format(printf, fmt_idx, arg_idx)))
 #else
 #define BELYA_UNUSED
+#define BELYA_PRINTF_FMT(fmt_idx, arg_idx)
 #endif
 
 #endif /* BELYA_COMMON_H */

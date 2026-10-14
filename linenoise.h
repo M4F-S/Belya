@@ -1,6 +1,7 @@
 #ifndef LINENOISE_H
 #define LINENOISE_H
 
+#include "belya_common.h"
 #include <stddef.h>
 
 typedef struct linenoiseCompletions {

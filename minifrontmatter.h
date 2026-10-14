@@ -1,6 +1,7 @@
 #ifndef MINIFRONTMATTER_H
 #define MINIFRONTMATTER_H
 
+#include "belya_common.h"
 #include <stddef.h>
 #include <stdbool.h>
 

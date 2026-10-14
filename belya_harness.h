@@ -68,7 +68,7 @@ typedef struct {
     time_t start_time;
     time_t end_time;
     char command[512];
-    char ring_buffer[BELYA_TASK_RING_BUFFER_SIZE];
+    char *ring_buffer;
     size_t ring_head;
     size_t ring_tail;
     size_t ring_count;

@@ -79,7 +79,7 @@ static inline void dyn_str_append_len(DynString *ds, const char *str, size_t sle
     ds->data[ds->len] = '\0';
 }
 
-static inline void dyn_str_appendf(DynString *ds, const char *fmt, ...) {
+static inline BELYA_PRINTF_FMT(2, 3) void dyn_str_appendf(DynString *ds, const char *fmt, ...) {
     if (!fmt) return;
     va_list ap;
     va_start(ap, fmt);

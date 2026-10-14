@@ -1,6 +1,12 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
-LIBS = -lcurl -lsqlite3
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    DEAD_STRIP = -Wl,-dead_strip
+else
+    DEAD_STRIP = -Wl,--gc-sections
+endif
+CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
+LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
 SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c main.c
 OBJS = $(SRCS:.c=.o)
@@ -39,5 +45,3 @@ gdrive:
 	@./scripts/sync_to_gdrive.sh
 
 .PHONY: all test benchmark clean gdrive
-
-

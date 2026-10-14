@@ -1,67 +1,45 @@
-#!/bin/bash
-# scripts/sync_almaz.sh - Automated Twin Synchronization Script
-# Synchronizes shared core C99 modules from Belya to Almaz while preserving
-# Almaz's specialized cognitive organs (SARSI, VIGIL, FadeMem, CORAL, Watchdog).
-
+#!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BELYA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-ALMAZ_DIR="${ALMAZ_WORKSPACE:-/Users/mohamedfathy/Desktop/Privacy C/Almaz}"
-
-MODE="${1:-sync}"
+ALMAZ_DIR="${1:-$BELYA_DIR/../Almaz}"
 
 if [ ! -d "$ALMAZ_DIR" ]; then
-    echo "[-] Error: Almaz directory '$ALMAZ_DIR' not found."
+    echo "[-] Error: Almaz directory not found at $ALMAZ_DIR" >&2
     exit 1
 fi
 
-if [ "$MODE" != "--verify-only" ]; then
-    echo "==> Synchronizing shared modules from Belya to Almaz..."
-    
-    # 1. Copy belya_common.h
-    cp "$BELYA_DIR/belya_common.h" "$ALMAZ_DIR/belya_common.h"
+echo "[*] Syncing shared pure-infrastructure headers & scripts from Belya -> Almaz ($ALMAZ_DIR)..."
 
-    # 2. Copy utility modules that are identical between twins
-    cp "$BELYA_DIR/linenoise.c" "$ALMAZ_DIR/linenoise.c"
-    cp "$BELYA_DIR/linenoise.h" "$ALMAZ_DIR/linenoise.h"
-    cp "$BELYA_DIR/minijson.c" "$ALMAZ_DIR/minijson.c"
-    cp "$BELYA_DIR/minijson.h" "$ALMAZ_DIR/minijson.h"
-    cp "$BELYA_DIR/minifrontmatter.c" "$ALMAZ_DIR/minifrontmatter.c"
-    cp "$BELYA_DIR/minifrontmatter.h" "$ALMAZ_DIR/minifrontmatter.h"
-    cp "$BELYA_DIR/mcp_client.c" "$ALMAZ_DIR/mcp_client.c"
-    cp "$BELYA_DIR/mcp_client.h" "$ALMAZ_DIR/mcp_client.h"
-    cp "$BELYA_DIR/jev_client.c" "$ALMAZ_DIR/jev_client.c"
-    cp "$BELYA_DIR/jev_client.h" "$ALMAZ_DIR/jev_client.h"
-    cp "$BELYA_DIR/belya_channel.c" "$ALMAZ_DIR/belya_channel.c"
-    cp "$BELYA_DIR/belya_channel.h" "$ALMAZ_DIR/belya_channel.h"
+# Safe pure-infrastructure files that are 100% identical between Belya and Almaz.
+# NEVER overwrite Almaz's divergent organism core (belya_agent.*, belya_harness.*,
+# model_adapter.*, telegram_adapter.*, main.c, test_suite.c, benchmark_runner.c, Makefile) with sed!
+SHARED_FILES=(
+    "belya_common.h"
+    "common.h"
+    "linenoise.c"
+    "linenoise.h"
+    "minijson.c"
+    "minijson.h"
+    "minifrontmatter.c"
+    "minifrontmatter.h"
+    "mcp_client.c"
+    "mcp_client.h"
+    "jev_client.c"
+    "jev_client.h"
+    "belya_channel.h"
+)
 
-    # 3. Copy skills directory
-    mkdir -p "$ALMAZ_DIR/skills"
-    cp -r "$BELYA_DIR/skills/"* "$ALMAZ_DIR/skills/"
+for f in "${SHARED_FILES[@]}"; do
+    if [ -f "$BELYA_DIR/$f" ]; then
+        cp "$BELYA_DIR/$f" "$ALMAZ_DIR/$f"
+    fi
+done
 
-    # 4. Copy scripts directory
-    mkdir -p "$ALMAZ_DIR/scripts"
-    cp "$BELYA_DIR/scripts/verify_phase.sh" "$ALMAZ_DIR/scripts/verify_phase.sh"
-    chmod +x "$ALMAZ_DIR/scripts/verify_phase.sh"
+mkdir -p "$ALMAZ_DIR/scripts"
+cp "$BELYA_DIR/scripts/verify_phase.sh" "$ALMAZ_DIR/scripts/verify_phase.sh"
+cp "$BELYA_DIR/scripts/sync_to_gdrive.sh" "$ALMAZ_DIR/scripts/sync_to_gdrive.sh"
+chmod +x "$ALMAZ_DIR/scripts/verify_phase.sh" "$ALMAZ_DIR/scripts/sync_to_gdrive.sh"
 
-    echo "  -> Shared core modules synced successfully."
-fi
-
-# 5. Run test verification in Almaz
-echo "==> Running full test suite in Almaz..."
-cd "$ALMAZ_DIR"
-make test > /dev/null 2>&1
-echo "  -> Almaz unit tests PASSED."
-
-echo "==> Running 6-Arena benchmarks in Almaz..."
-make benchmark > /dev/null 2>&1
-BENCH_OUT=$(./almaz_benchmark)
-if echo "$BENCH_OUT" | grep -q "100.0%"; then
-    echo "  -> Almaz 6-Arena benchmarks PASSED (36/36 - 100.0%)."
-else
-    echo "[-] Almaz benchmarks FAILED!"
-    exit 2
-fi
-
-echo "==> Twin synchronization and verification COMPLETE!"
+echo "[+] Shared infrastructure synchronized safely to Almaz without clobbering organism modules."

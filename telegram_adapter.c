@@ -451,15 +451,15 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
         json_obj_add(poll_p, "offset", json_create_number(bot->last_update_id + 1));
         json_obj_add(poll_p, "timeout", json_create_number(5));
 
-        JsonValue *resp = telegram_http_post(bot, "getUpdates", poll_p);
+        JsonValue *poll_resp = telegram_http_post(bot, "getUpdates", poll_p);
         json_free(poll_p);
 
-        if (!resp) {
+        if (!poll_resp) {
             sleep(2); // Network sleep
             continue;
         }
 
-        JsonValue *updates = json_obj_get(resp, "result");
+        JsonValue *updates = json_obj_get(poll_resp, "result");
         if (updates && updates->type == JSON_ARRAY) {
             for (size_t i = 0; i < updates->u.array.count; i++) {
                 JsonValue *up = updates->u.array.items[i];
@@ -870,7 +870,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
             }
 
         }
-        json_free(resp);
+        json_free(poll_resp);
     }
 
     printf("\033[1;33m[Telegram Bot] Service shutting down gracefully.\033[0m\n");
