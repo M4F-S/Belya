@@ -70,4 +70,9 @@ void belya_channel_free(BelyaOmniChannel *chan);
 void belya_channel_get_session_id(const BelyaChannelMessage *msg, char *out_session_id, size_t out_sz);
 bool belya_channel_route_message(BelyaOmniChannel *chan, BelyaHarness *harness, const BelyaChannelMessage *msg, char *out_reply, size_t reply_sz);
 
+/* Live Omnichannel Gateway Polling (Discord REST v10 & Slack conversations.history) */
+bool belya_discord_poll_once(BelyaDiscordAdapter *bot, BelyaHarness *harness);
+bool belya_slack_poll_once(BelyaSlackAdapter *bot, BelyaHarness *harness);
+void belya_omnichannel_poll_env(BelyaHarness *harness);
+
 #endif

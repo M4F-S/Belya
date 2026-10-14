@@ -393,3 +393,233 @@ bool belya_channel_route_message(BelyaOmniChannel *chan, BelyaHarness *harness, 
 
     return true;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Live Omnichannel Gateway Polling (Discord REST v10 & Slack History)        */
+/* -------------------------------------------------------------------------- */
+
+bool belya_discord_poll_once(BelyaDiscordAdapter *bot, BelyaHarness *harness) {
+    if (!bot || !bot->bot_token || !bot->allowed_channel_id || strlen(bot->allowed_channel_id) == 0 || !harness) {
+        return false;
+    }
+    if (strncmp(bot->bot_token, "mock_", 5) == 0 || strncmp(bot->bot_token, "test_", 5) == 0) {
+        return false;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return false;
+
+    char url[512];
+    if (strlen(bot->session_id) > 0) {
+        snprintf(url, sizeof(url), "https://discord.com/api/v10/channels/%s/messages?after=%s&limit=5",
+                 bot->allowed_channel_id, bot->session_id);
+    } else {
+        snprintf(url, sizeof(url), "https://discord.com/api/v10/channels/%s/messages?limit=1",
+                 bot->allowed_channel_id);
+    }
+
+    char auth_header[512];
+    snprintf(auth_header, sizeof(auth_header), "Authorization: Bot %s", bot->bot_token);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth_header);
+
+    DynString response = dyn_str_new();
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, channel_curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || http_code < 200 || http_code >= 300 || !response.data) {
+        dyn_str_free(&response);
+        return false;
+    }
+
+    bool first_seed = (strlen(bot->session_id) == 0);
+    JsonValue *arr = json_parse(response.data);
+    dyn_str_free(&response);
+    if (!arr || arr->type != JSON_ARRAY) {
+        if (arr) json_free(arr);
+        return false;
+    }
+
+    bool handled_any = false;
+    for (ssize_t i = (ssize_t)arr->u.array.count - 1; i >= 0; i--) {
+        JsonValue *m = arr->u.array.items[i];
+        const char *mid = json_obj_get_str(m, "id");
+        if (mid && strlen(mid) > 0) {
+            snprintf(bot->session_id, sizeof(bot->session_id), "%s", mid);
+        }
+        if (first_seed) continue;
+
+        JsonValue *author = json_obj_get(m, "author");
+        if (author && json_obj_get_bool(author, "bot", false)) continue;
+
+        const char *content = json_obj_get_str(m, "content");
+        if (!content || strlen(content) == 0) continue;
+
+        BelyaChannelMessage cmsg;
+        memset(&cmsg, 0, sizeof(cmsg));
+        snprintf(cmsg.platform, sizeof(cmsg.platform), "discord");
+        snprintf(cmsg.channel_id, sizeof(cmsg.channel_id), "%s", bot->allowed_channel_id);
+        snprintf(cmsg.text, sizeof(cmsg.text), "%s", content);
+        cmsg.timestamp = time(NULL);
+        if (author) {
+            const char *uid = json_obj_get_str(author, "id");
+            const char *uname = json_obj_get_str(author, "username");
+            if (uid) snprintf(cmsg.user_id, sizeof(cmsg.user_id), "%s", uid);
+            if (uname) snprintf(cmsg.user_name, sizeof(cmsg.user_name), "%s", uname);
+        }
+
+        BelyaOmniChannel tmp_chan = {
+            .type = BELYA_CHAN_DISCORD,
+            .name = "discord",
+            .adapter = bot,
+            .send_fn = omni_discord_send
+        };
+        char reply[8192];
+        belya_channel_route_message(&tmp_chan, harness, &cmsg, reply, sizeof(reply));
+        handled_any = true;
+    }
+
+    json_free(arr);
+    return handled_any;
+}
+
+bool belya_slack_poll_once(BelyaSlackAdapter *bot, BelyaHarness *harness) {
+    if (!bot || !bot->bot_token || !bot->allowed_channel_id || strlen(bot->allowed_channel_id) == 0 || !harness) {
+        return false;
+    }
+    if (strncmp(bot->bot_token, "mock_", 5) == 0 || strncmp(bot->bot_token, "test_", 5) == 0) {
+        return false;
+    }
+
+    static char s_last_slack_ts[64] = "";
+    CURL *curl = curl_easy_init();
+    if (!curl) return false;
+
+    char url[512];
+    if (strlen(s_last_slack_ts) > 0) {
+        snprintf(url, sizeof(url), "https://slack.com/api/conversations.history?channel=%s&oldest=%s&limit=5",
+                 bot->allowed_channel_id, s_last_slack_ts);
+    } else {
+        snprintf(url, sizeof(url), "https://slack.com/api/conversations.history?channel=%s&limit=1",
+                 bot->allowed_channel_id);
+    }
+
+    char auth_header[512];
+    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", bot->bot_token);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth_header);
+
+    DynString response = dyn_str_new();
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, channel_curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || !response.data) {
+        dyn_str_free(&response);
+        return false;
+    }
+
+    bool first_seed = (strlen(s_last_slack_ts) == 0);
+    JsonValue *root = json_parse(response.data);
+    dyn_str_free(&response);
+    if (!root || !json_obj_get_bool(root, "ok", false)) {
+        if (root) json_free(root);
+        return false;
+    }
+
+    JsonValue *msgs = json_obj_get(root, "messages");
+    bool handled_any = false;
+    if (msgs && msgs->type == JSON_ARRAY) {
+        for (ssize_t i = (ssize_t)msgs->u.array.count - 1; i >= 0; i--) {
+            JsonValue *m = msgs->u.array.items[i];
+            const char *ts = json_obj_get_str(m, "ts");
+            if (ts && strlen(ts) > 0) {
+                if (strcmp(ts, s_last_slack_ts) == 0) continue;
+                snprintf(s_last_slack_ts, sizeof(s_last_slack_ts), "%s", ts);
+            }
+            if (first_seed) continue;
+
+            if (json_obj_get_str(m, "bot_id") != NULL || json_obj_get_str(m, "subtype") != NULL) {
+                continue;
+            }
+            const char *text = json_obj_get_str(m, "text");
+            const char *uid = json_obj_get_str(m, "user");
+            if (!text || strlen(text) == 0) continue;
+
+            BelyaChannelMessage cmsg;
+            memset(&cmsg, 0, sizeof(cmsg));
+            snprintf(cmsg.platform, sizeof(cmsg.platform), "slack");
+            snprintf(cmsg.channel_id, sizeof(cmsg.channel_id), "%s", bot->allowed_channel_id);
+            snprintf(cmsg.user_id, sizeof(cmsg.user_id), "%s", uid ? uid : "slack_user");
+            snprintf(cmsg.user_name, sizeof(cmsg.user_name), "%s", uid ? uid : "slack_user");
+            snprintf(cmsg.text, sizeof(cmsg.text), "%s", text);
+            cmsg.timestamp = time(NULL);
+
+            BelyaOmniChannel tmp_chan = {
+                .type = BELYA_CHAN_SLACK,
+                .name = "slack",
+                .adapter = bot,
+                .send_fn = omni_slack_send
+            };
+            char reply[8192];
+            belya_channel_route_message(&tmp_chan, harness, &cmsg, reply, sizeof(reply));
+            handled_any = true;
+        }
+    }
+
+    json_free(root);
+    return handled_any;
+}
+
+void belya_omnichannel_poll_env(BelyaHarness *harness) {
+    if (!harness) return;
+
+    static BelyaDiscordAdapter *s_discord = NULL;
+    static BelyaSlackAdapter *s_slack = NULL;
+    static bool s_initialized = false;
+
+    if (!s_initialized) {
+        s_initialized = true;
+        const char *dc_tok = getenv("DISCORD_BOT_TOKEN");
+        const char *dc_cid = getenv("DISCORD_CHANNEL_ID");
+        if (dc_tok && strlen(dc_tok) > 0 && dc_cid && strlen(dc_cid) > 0) {
+            s_discord = belya_discord_init(dc_tok, dc_cid);
+            if (s_discord) {
+                printf("\033[1;36m[Omnichannel Gateway]\033[0m Discord adapter online (Channel: %s)\n", dc_cid);
+            }
+        }
+        const char *sl_tok = getenv("SLACK_BOT_TOKEN");
+        const char *sl_app = getenv("SLACK_APP_TOKEN");
+        const char *sl_cid = getenv("SLACK_CHANNEL_ID");
+        if (sl_tok && strlen(sl_tok) > 0 && sl_cid && strlen(sl_cid) > 0) {
+            s_slack = belya_slack_init(sl_tok, sl_app, sl_cid);
+            if (s_slack) {
+                printf("\033[1;36m[Omnichannel Gateway]\033[0m Slack adapter online (Channel: %s)\n", sl_cid);
+            }
+        }
+    }
+
+    if (s_discord) {
+        belya_discord_poll_once(s_discord, harness);
+    }
+    if (s_slack) {
+        belya_slack_poll_once(s_slack, harness);
+    }
+}

@@ -1,5 +1,6 @@
 #include "common.h"
 #include "telegram_adapter.h"
+#include "belya_channel.h"
 #include <curl/curl.h>
 #include <signal.h>
 #include <time.h>
@@ -447,6 +448,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
     printf("Listening for Telegram updates via long polling...\n\n");
 
     while (bot->running && !g_telegram_interrupted) {
+        belya_omnichannel_poll_env(harness);
         JsonValue *poll_p = json_create_object();
         json_obj_add(poll_p, "offset", json_create_number(bot->last_update_id + 1));
         json_obj_add(poll_p, "timeout", json_create_number(5));

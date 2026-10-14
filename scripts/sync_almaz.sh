@@ -29,6 +29,7 @@ SHARED_FILES=(
     "jev_client.c"
     "jev_client.h"
     "belya_channel.h"
+    "belya_channel.c"
 )
 
 for f in "${SHARED_FILES[@]}"; do

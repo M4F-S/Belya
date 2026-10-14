@@ -3026,6 +3026,15 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     if (getcwd(h->cwd, sizeof(h->cwd)) == NULL) {
         snprintf(h->cwd, sizeof(h->cwd), ".");
     }
+    /* Auto-configure remote execution backend (Docker / SSH) from environment if set */
+    const char *eb_env = getenv("EXEC_BACKEND");
+    const char *dc_env = getenv("DOCKER_CONTAINER");
+    const char *ssh_env = getenv("SSH_HOST");
+    if (eb_env && strcasecmp(eb_env, "docker") == 0) {
+        belya_harness_set_exec_backend(h, BELYA_BACKEND_DOCKER, (dc_env && strlen(dc_env) > 0) ? dc_env : "belya-sandbox");
+    } else if (eb_env && strcasecmp(eb_env, "ssh") == 0 && ssh_env && strlen(ssh_env) > 0) {
+        belya_harness_set_exec_backend(h, BELYA_BACKEND_SSH, ssh_env);
+    }
     /* Capture the workspace root exactly once, at first harness init.
        The jail must NOT follow later chdir() calls from tool_bash. */
     if (!g_workspace_root_set) {
