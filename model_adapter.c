@@ -841,3 +841,283 @@ void model_gateway_response_free(ModelGatewayResponse *resp) {
     if (resp->tool_calls) free(resp->tool_calls);
     memset(resp, 0, sizeof(ModelGatewayResponse));
 }
+
+static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *key, const char *mod, const char *user_agent) {
+    GatewayEndpointProbe p;
+    memset(&p, 0, sizeof(GatewayEndpointProbe));
+    if (!ep || strlen(ep) == 0) {
+        p.details = xstrdup("Endpoint not configured");
+        return p;
+    }
+
+    p.endpoint = xstrdup(ep);
+    p.model = mod ? xstrdup(mod) : xstrdup("default");
+
+    char target_url[1024];
+    bool is_openrouter = (strstr(ep, "openrouter.ai") != NULL);
+    bool is_ollama = (strstr(ep, "11434") != NULL || strstr(ep, "localhost") != NULL || strstr(ep, "127.0.0.1") != NULL);
+    bool is_anthropic = (strstr(ep, "anthropic.com") != NULL);
+
+    if (is_openrouter) {
+        p.provider = xstrdup("OpenRouter");
+        snprintf(target_url, sizeof(target_url), "https://openrouter.ai/api/v1/auth/key");
+    } else if (is_ollama) {
+        p.provider = xstrdup("Local Ollama");
+        const char *slash = strstr(ep, "://");
+        const char *host_start = slash ? slash + 3 : ep;
+        const char *path_start = strchr(host_start, '/');
+        if (path_start) {
+            size_t host_len = (size_t)(path_start - ep);
+            if (host_len < sizeof(target_url) - 16) {
+                memcpy(target_url, ep, host_len);
+                target_url[host_len] = '\0';
+                strcat(target_url, "/api/tags");
+            } else {
+                snprintf(target_url, sizeof(target_url), "%s", ep);
+            }
+        } else {
+            snprintf(target_url, sizeof(target_url), "%s/api/tags", ep);
+        }
+    } else if (is_anthropic) {
+        p.provider = xstrdup("Anthropic");
+        snprintf(target_url, sizeof(target_url), "https://api.anthropic.com/v1/models");
+    } else {
+        p.provider = xstrdup("OpenAI-Compatible");
+        char *cc = strstr(ep, "/chat/completions");
+        if (cc) {
+            size_t base_len = (size_t)(cc - ep);
+            if (base_len < sizeof(target_url) - 16) {
+                memcpy(target_url, ep, base_len);
+                target_url[base_len] = '\0';
+                strcat(target_url, "/models");
+            } else {
+                snprintf(target_url, sizeof(target_url), "%s", ep);
+            }
+        } else {
+            snprintf(target_url, sizeof(target_url), "%s", ep);
+        }
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        p.details = xstrdup("Failed to initialize libcurl");
+        return p;
+    }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json");
+
+    if (key && strlen(key) > 0 && strcmp(key, "none") != 0 && strcmp(key, "ollama") != 0) {
+        if (is_anthropic) {
+            char hdr[512];
+            snprintf(hdr, sizeof(hdr), "x-api-key: %s", key);
+            headers = curl_slist_append(headers, hdr);
+            headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+        } else {
+            char hdr[512];
+            snprintf(hdr, sizeof(hdr), "Authorization: Bearer %s", key);
+            headers = curl_slist_append(headers, hdr);
+        }
+    }
+
+    if (is_openrouter) {
+        headers = curl_slist_append(headers, "HTTP-Referer: https://github.com/M4F-S/Belya");
+        headers = curl_slist_append(headers, "X-Title: Belya Agent Preflight");
+    }
+
+    DynString resp_body = dyn_str_new();
+
+    curl_easy_setopt(curl, CURLOPT_URL, target_url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_sink_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp_body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent ? user_agent : "BelyaAgent/4.0 Preflight-Probe");
+
+    CURLcode code = curl_easy_perform(curl);
+    double total_time = 0.0;
+    curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME, &total_time);
+    p.latency_ms = total_time * 1000.0;
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    p.http_code = http_code;
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    DynString ds = dyn_str_new();
+
+    if (code == CURLE_COULDNT_CONNECT) {
+        p.reachable = false;
+        p.auth_valid = false;
+        if (is_ollama) {
+            dyn_str_append(&ds, "Ollama daemon offline (Connection refused). Start with 'ollama serve'.");
+        } else {
+            dyn_str_append(&ds, "Server unreachable (Connection refused).");
+        }
+    } else if (code == CURLE_OPERATION_TIMEDOUT) {
+        p.reachable = false;
+        p.auth_valid = false;
+        dyn_str_append(&ds, "Connection timed out (>5000ms).");
+    } else if (code != CURLE_OK) {
+        p.reachable = false;
+        p.auth_valid = false;
+        dyn_str_appendf(&ds, "Curl transport error: %s", curl_easy_strerror(code));
+    } else {
+        p.reachable = true;
+        if (http_code == 200) {
+            p.auth_valid = true;
+            if (is_openrouter) {
+                JsonValue *root = json_parse(resp_body.data);
+                if (root) {
+                    JsonValue *data = json_obj_get(root, "data");
+                    if (data) {
+                        double usage = json_obj_get_num(data, "usage", -1.0);
+                        bool is_free = json_obj_get_bool(data, "is_free_tier", false);
+                        dyn_str_appendf(&ds, "Auth Verified. Account usage: $%.2f%s",
+                                        usage >= 0 ? usage : 0.0, is_free ? " (Free Tier)" : "");
+                    } else {
+                        dyn_str_append(&ds, "Auth Verified (HTTP 200 OK).");
+                    }
+                    json_free(root);
+                } else {
+                    dyn_str_append(&ds, "Auth Verified (HTTP 200 OK).");
+                }
+            } else if (is_ollama) {
+                JsonValue *root = json_parse(resp_body.data);
+                bool model_found = false;
+                if (root) {
+                    JsonValue *models = json_obj_get(root, "models");
+                    if (models && models->type == JSON_ARRAY) {
+                        for (size_t mi = 0; mi < models->u.array.count; mi++) {
+                            JsonValue *m_item = models->u.array.items[mi];
+                            const char *m_name = json_obj_get_str(m_item, "name");
+                            const char *m_model = json_obj_get_str(m_item, "model");
+                            if ((m_name && mod && (strcmp(m_name, mod) == 0 || strstr(m_name, mod) != NULL)) ||
+                                (m_model && mod && (strcmp(m_model, mod) == 0 || strstr(m_model, mod) != NULL))) {
+                                model_found = true;
+                                break;
+                            }
+                        }
+                    }
+                    json_free(root);
+                }
+                if (model_found) {
+                    dyn_str_appendf(&ds, "Online & Verified. Model '%s' confirmed loaded.", mod ? mod : "");
+                } else {
+                    dyn_str_appendf(&ds, "Online, but model '%s' not listed in 'ollama list' (run 'ollama pull %s').",
+                                    mod ? mod : "", mod ? mod : "");
+                }
+            } else {
+                dyn_str_append(&ds, "Endpoint verified & authorized (HTTP 200 OK).");
+            }
+        } else if (http_code == 401 || http_code == 403) {
+            p.auth_valid = false;
+            char *err_msg = NULL;
+            JsonValue *root = json_parse(resp_body.data);
+            if (root) {
+                JsonValue *err_obj = json_obj_get(root, "error");
+                if (err_obj) {
+                    const char *m = json_obj_get_str(err_obj, "message");
+                    if (m) err_msg = xstrdup(m);
+                }
+                json_free(root);
+            }
+            dyn_str_appendf(&ds, "AUTHENTICATION FAILED (HTTP %ld): %s. Check API key!",
+                            http_code, err_msg ? err_msg : "Invalid or expired key");
+            if (err_msg) free(err_msg);
+        } else if (http_code == 404) {
+            p.auth_valid = true;
+            dyn_str_append(&ds, "Endpoint online (HTTP 404 on probe path; completions endpoint active).");
+        } else {
+            dyn_str_appendf(&ds, "Gateway responded with HTTP %ld.", http_code);
+        }
+    }
+
+    dyn_str_free(&resp_body);
+    p.details = ds.data;
+    return p;
+}
+
+ModelGatewayProbeResult model_gateway_preflight_probe(const ModelGateway *gw) {
+    ModelGatewayProbeResult res;
+    memset(&res, 0, sizeof(ModelGatewayProbeResult));
+    if (!gw) return res;
+
+    res.primary = probe_single_endpoint(gw->endpoint, gw->api_key, gw->model, gw->user_agent);
+
+    if (gw->fallback_endpoint && strlen(gw->fallback_endpoint) > 0) {
+        res.has_fallback = true;
+        res.fallback = probe_single_endpoint(gw->fallback_endpoint, gw->fallback_api_key, gw->fallback_model, gw->user_agent);
+    }
+
+    res.all_ok = (res.primary.reachable && res.primary.auth_valid);
+    if (!res.all_ok && res.has_fallback && res.fallback.reachable && res.fallback.auth_valid) {
+        res.all_ok = true;
+    }
+
+    return res;
+}
+
+void model_gateway_probe_result_free(ModelGatewayProbeResult *res) {
+    if (!res) return;
+    if (res->primary.endpoint) free(res->primary.endpoint);
+    if (res->primary.model) free(res->primary.model);
+    if (res->primary.provider) free(res->primary.provider);
+    if (res->primary.details) free(res->primary.details);
+
+    if (res->fallback.endpoint) free(res->fallback.endpoint);
+    if (res->fallback.model) free(res->fallback.model);
+    if (res->fallback.provider) free(res->fallback.provider);
+    if (res->fallback.details) free(res->fallback.details);
+
+    memset(res, 0, sizeof(ModelGatewayProbeResult));
+}
+
+void model_gateway_print_probe_report(const ModelGatewayProbeResult *res) {
+    if (!res) return;
+    printf("\n\033[1;36m======================= Gateway Pre-Flight Health Probe =======================\033[0m\n");
+
+    const char *p_color = (res->primary.reachable && res->primary.auth_valid) ? "\033[1;32m" :
+                          (res->primary.reachable ? "\033[1;31m" : "\033[1;33m");
+    const char *p_tag = (res->primary.reachable && res->primary.auth_valid) ? "[HEALTHY]" :
+                        (res->primary.reachable ? "[AUTH ERROR]" : "[OFFLINE]");
+
+    printf("  \033[1;37mPrimary\033[0m  [%s]: %s (%s)\n",
+           res->primary.provider ? res->primary.provider : "Unknown",
+           res->primary.endpoint ? res->primary.endpoint : "None",
+           res->primary.model ? res->primary.model : "default");
+    printf("           -> %s%s\033[0m %s (%.0f ms)\n",
+           p_color, p_tag,
+           res->primary.details ? res->primary.details : "",
+           res->primary.latency_ms);
+
+    if (res->has_fallback) {
+        const char *f_color = (res->fallback.reachable && res->fallback.auth_valid) ? "\033[1;32m" :
+                              (res->fallback.reachable ? "\033[1;31m" : "\033[1;33m");
+        const char *f_tag = (res->fallback.reachable && res->fallback.auth_valid) ? "[HEALTHY]" :
+                            (res->fallback.reachable ? "[AUTH ERROR]" : "[OFFLINE]");
+
+        printf("  \033[1;37mFallback\033[0m [%s]: %s (%s)\n",
+               res->fallback.provider ? res->fallback.provider : "Unknown",
+               res->fallback.endpoint ? res->fallback.endpoint : "None",
+               res->fallback.model ? res->fallback.model : "default");
+        printf("           -> %s%s\033[0m %s (%.0f ms)\n",
+               f_color, f_tag,
+               res->fallback.details ? res->fallback.details : "",
+               res->fallback.latency_ms);
+    } else {
+        printf("  \033[1;37mFallback\033[0m: None configured (Single-point of failure)\n");
+    }
+
+    if (!res->all_ok) {
+        printf("\033[1;31m  [CRITICAL ALERT] No functional upstream model available! Check your network and .env API keys.\033[0m\n");
+    } else if (!res->primary.reachable && res->has_fallback && res->fallback.reachable) {
+        printf("\033[1;33m  [NOTICE] Primary provider offline; transparent failover to %s is active.\033[0m\n",
+               res->fallback.provider ? res->fallback.provider : "fallback");
+    }
+    printf("\033[1;36m==============================================================================\033[0m\n\n");
+}
+

@@ -3212,6 +3212,47 @@ static void test_phase7_omnichannel_and_remote_backends(void) {
     printf("  -> Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends PASSED\n");
 }
 
+static void test_gateway_preflight_probe(void) {
+    printf("[Test] Model Gateway Pre-Flight Health & Auth Probe...\n");
+
+    // 1. Test offline primary + invalid key fallback
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:9999/v1/chat/completions", "none", "test-offline-model");
+    assert(gw != NULL);
+    model_gateway_set_fallback(gw, "https://openrouter.ai/api/v1/chat/completions", "invalid-key-test-12345", "deepseek/deepseek-v4-flash");
+
+    ModelGatewayProbeResult probe = model_gateway_preflight_probe(gw);
+    assert(probe.primary.endpoint != NULL);
+    assert(probe.primary.reachable == false);
+    assert(probe.primary.auth_valid == false);
+
+    assert(probe.has_fallback == true);
+    assert(probe.fallback.endpoint != NULL);
+    assert(probe.fallback.auth_valid == false);
+    assert(probe.all_ok == false);
+
+    // Verify report formatting does not crash
+    model_gateway_print_probe_report(&probe);
+    model_gateway_probe_result_free(&probe);
+    model_gateway_free(gw);
+
+    // 2. Test probing active API key if available in environment
+    const char *active_key = getenv("OPENROUTER_API_KEY");
+    if (!active_key || strlen(active_key) == 0) active_key = getenv("MODEL_API_KEY");
+    if (active_key && strncmp(active_key, "sk-or-v1-", 9) == 0) {
+        ModelGateway *gw2 = model_gateway_init("https://openrouter.ai/api/v1/chat/completions", active_key, "deepseek/deepseek-v4-flash");
+        assert(gw2 != NULL);
+        ModelGatewayProbeResult probe2 = model_gateway_preflight_probe(gw2);
+        assert(probe2.primary.reachable == true);
+        assert(probe2.primary.auth_valid == true);
+        assert(probe2.primary.http_code == 200);
+        assert(probe2.all_ok == true);
+        model_gateway_probe_result_free(&probe2);
+        model_gateway_free(gw2);
+    }
+
+    printf("  -> Gateway Pre-Flight Health & Auth Probe PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -3262,7 +3303,9 @@ int main(void) {
     test_phase5_pty_subshells_and_task_manager();
     test_phase6_web_search_notebook_and_lsp();
     test_phase7_omnichannel_and_remote_backends();
-    printf("================ All Tests Passed Successfully (48/48 - 100%%) ================\n\n");
+    test_gateway_preflight_probe();
+    printf("================ All Tests Passed Successfully (49/49 - 100%%) ================\n\n");
     return 0;
 }
+
 

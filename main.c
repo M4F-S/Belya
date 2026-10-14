@@ -38,6 +38,7 @@ int main(int argc, char **argv) {
     bool agency_mode = false;
     const char *resume_session_id = NULL;
     const char *headless_prompt = NULL;
+    bool no_probe = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -50,12 +51,15 @@ int main(int argc, char **argv) {
             printf("  -a, --agency [prompt]      Execute task via Belya Agency multi-agent pipeline\n");
             printf("  -r, --resume <session_id>  Resume saved conversation session\n");
             printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
+            printf("  --no-probe                 Skip gateway pre-flight health & authentication probe\n");
             printf("  --headless <prompt>        Alias for --prompt\n");
             printf("  --eval <prompt>            Alias for --prompt\n\n");
             return 0;
         } else if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0 ||
                    strcmp(argv[i], "--omnichannel") == 0 || strcmp(argv[i], "-o") == 0) {
             telegram_mode = true;
+        } else if (strcmp(argv[i], "--no-probe") == 0) {
+            no_probe = true;
         } else if ((strcmp(argv[i], "--docker") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
             setenv("EXEC_BACKEND", "docker", 1);
             setenv("DOCKER_CONTAINER", argv[++i], 1);
@@ -101,7 +105,16 @@ int main(int argc, char **argv) {
         gateway->streaming = true;
     }
 
+    // Pre-flight health and authentication probe
+    const char *probe_env = getenv("GATEWAY_PREFLIGHT_PROBE");
+    if (!no_probe && (!probe_env || (strcmp(probe_env, "0") != 0 && strcmp(probe_env, "false") != 0))) {
+        ModelGatewayProbeResult probe = model_gateway_preflight_probe(gateway);
+        model_gateway_print_probe_report(&probe);
+        model_gateway_probe_result_free(&probe);
+    }
+
     // 2. Initialize Belya Agent with persistent SQLite memory & Strategic Execution Directives
+
     const char *default_system_prompt =
         "Role & Objective:\n"
         "Act as Belya, an expert autonomous AI software engineer and security execution harness implemented in pure C99. You run natively on the host system (macOS / Linux) with full POSIX, bash, and filesystem access. Your goal is to complete the task with absolute accuracy, zero assumptions, and strict verification.\n\n"

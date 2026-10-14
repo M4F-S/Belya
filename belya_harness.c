@@ -5330,6 +5330,7 @@ static void print_help(BelyaHarness *h) {
     printf("  /model <name>    Dynamically change the active AI model\n");
     printf("  /diff [path]     View colorized Git working copy or staged diff\n");
     printf("  /doctor          Run environment & systems integrity diagnostics\n");
+    printf("  /probe           Perform pre-flight health & authentication probe on gateways\n");
     printf("  /cost            View token accounting and session cost estimate\n");
     printf("  /openrouter [m]  Switch to OpenRouter (e.g. anthropic/claude-3.7-sonnet, deepseek/deepseek-r1)\n");
     printf("  /ollama [model]  Switch to local Ollama (e.g. qwen2.5-coder:7b, deepseek-r1:7b-m2)\n");
@@ -5371,7 +5372,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/help", "/status", "/tools", "/rules", "/timeline",
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
             "/rollback", "/export", "/cache", "/reflect", "/clear",
-            "/compact", "/memory", "/model", "/diff", "/doctor", "/cost",
+            "/compact", "/memory", "/model", "/diff", "/doctor", "/probe", "/cost",
             "/tasks", "/cron", "/dream", "/plan", "/bg",
             "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
         };
@@ -5459,9 +5460,20 @@ void belya_harness_repl(BelyaHarness *h) {
                 printf("  [✓] Libcurl:          Version %s\n", curl_version());
                 printf("  [✓] Memory Footprint: Peak RSS %.2f MB\n", belya_get_current_rss_mb());
                 printf("  [✓] Terminal Mode:    %s\n", isatty(STDIN_FILENO) ? "Interactive TTY (ANSI VT100 enabled)" : "Non-interactive / Headless");
-                printf("  [✓] Model Endpoint:   %s (%s)\n\n", h->agent->gateway->endpoint, h->agent->gateway->model);
+                printf("  [✓] Model Endpoint:   %s (%s)\n", h->agent->gateway->endpoint, h->agent->gateway->model);
+                ModelGatewayProbeResult pr = model_gateway_preflight_probe(h->agent->gateway);
+                model_gateway_print_probe_report(&pr);
+                model_gateway_probe_result_free(&pr);
                 continue;
             }
+            if (strcmp(input_buf, "/probe") == 0 || strcmp(input_buf, "/health") == 0) {
+                printf("\033[1;36m[ModelGateway]: Probing active endpoints...\033[0m\n");
+                ModelGatewayProbeResult pr = model_gateway_preflight_probe(h->agent->gateway);
+                model_gateway_print_probe_report(&pr);
+                model_gateway_probe_result_free(&pr);
+                continue;
+            }
+
             if (strcmp(input_buf, "/cost") == 0) {
                 size_t p_tok = h->agent->total_prompt_tokens;
                 size_t c_tok = h->agent->total_completion_tokens;

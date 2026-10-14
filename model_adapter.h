@@ -50,4 +50,28 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
                                          const char *const *known_tool_names, size_t known_count,
                                          ModelParsedToolCall **out_calls);
 
+typedef struct {
+    char *endpoint;
+    char *model;
+    char *provider;
+    bool reachable;
+    bool auth_valid;
+    long http_code;
+    double latency_ms;
+    char *details;
+} GatewayEndpointProbe;
+
+typedef struct {
+    GatewayEndpointProbe primary;
+    GatewayEndpointProbe fallback;
+    bool has_fallback;
+    bool all_ok;
+} ModelGatewayProbeResult;
+
+/* Non-destructive HTTP pre-flight health & authentication probe */
+ModelGatewayProbeResult model_gateway_preflight_probe(const ModelGateway *gw);
+void model_gateway_probe_result_free(ModelGatewayProbeResult *res);
+void model_gateway_print_probe_report(const ModelGatewayProbeResult *res);
+
 #endif
+
