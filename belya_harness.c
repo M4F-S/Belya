@@ -4064,7 +4064,8 @@ char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
     char wt_path[4096];
     snprintf(wt_path, sizeof(wt_path), ".belya/worktrees/%s", wt_id);
 
-    system("mkdir -p .belya/worktrees");
+    int sys_mk = system("mkdir -p .belya/worktrees");
+    (void)sys_mk;
 
     char cmd[8192];
     snprintf(cmd, sizeof(cmd), "git worktree add -b \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
@@ -4116,9 +4117,10 @@ char *belya_harness_leave_worktree(BelyaHarness *h, bool keep) {
     h->in_worktree = false;
 
     if (!keep) {
-        char cmd[4096];
-        snprintf(cmd, sizeof(cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1", prev_wt_path);
-        system(cmd);
+        char rm_cmd[8192];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1", prev_wt_path);
+        int sys_rm = system(rm_cmd);
+        (void)sys_rm;
     }
 
     DynString ds = dyn_str_new();
