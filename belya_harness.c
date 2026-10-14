@@ -38,6 +38,11 @@ static inline int landlock_restrict_self(const int ruleset_fd, const __u32 flags
 static BelyaHarness *g_harness = NULL;
 const char *g_active_custom_script_path = NULL;
 
+#ifdef __APPLE__
+extern int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
+extern void sandbox_free_error(char *errorbuf);
+#endif
+
 static void apply_plan_mode_kernel_sandbox(void) {
 #ifdef __linux__
 #if defined(LANDLOCK_ACCESS_FS_EXECUTE) && defined(PR_SET_NO_NEW_PRIVS)
@@ -63,10 +68,7 @@ static void apply_plan_mode_kernel_sandbox(void) {
             landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &root_ro, 0);
             close(root_fd);
         }
-        char ro_tmp[128];
-        snprintf(ro_tmp, sizeof(ro_tmp), "/tmp/belya_ro_%d", (int)getpid());
-        mkdir(ro_tmp, 0700);
-        int tmp_fd = open(ro_tmp, O_PATH | O_CLOEXEC);
+        int tmp_fd = open("/tmp", O_PATH | O_CLOEXEC);
         if (tmp_fd >= 0) {
             struct landlock_path_beneath_attr tmp_rw = {
                 .allowed_access = ruleset_attr.handled_access_fs,
@@ -75,10 +77,27 @@ static void apply_plan_mode_kernel_sandbox(void) {
             landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &tmp_rw, 0);
             close(tmp_fd);
         }
+        int null_fd = open("/dev/null", O_PATH | O_CLOEXEC);
+        if (null_fd >= 0) {
+            struct landlock_path_beneath_attr null_rw = {
+                .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
+                .parent_fd = null_fd,
+            };
+            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &null_rw, 0);
+            close(null_fd);
+        }
         landlock_restrict_self(ruleset_fd, 0);
         close(ruleset_fd);
     }
 #endif
+#elif defined(__APPLE__)
+    char *errbuf = NULL;
+    const char *profile =
+        "(version 1)(allow default)(deny file-write*)"
+        "(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\"))";
+    if (sandbox_init(profile, 0, &errbuf) != 0 && errbuf) {
+        sandbox_free_error(errbuf);
+    }
 #endif
 }
 
@@ -376,11 +395,6 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         close(pipefd[1]);
         if (g_harness && g_harness->plan_mode) {
             apply_plan_mode_kernel_sandbox();
-#ifdef __APPLE__
-            execl("/usr/bin/sandbox-exec", "sandbox-exec", "-p",
-                  "(version 1)(allow default)(deny file-write*)(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\"))",
-                  "/bin/sh", "-c", full_cmd_ds.data, (char *)NULL);
-#endif
         }
         execl("/bin/sh", "sh", "-c", full_cmd_ds.data, (char *)NULL);
         _exit(127);

@@ -2288,8 +2288,21 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 }
             }
 
+            const char *raw_sys = agent->messages[0].content ? agent->messages[0].content : "";
+            const char *existing_boundary = strstr(raw_sys, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+
+            DynString static_part = dyn_str_new();
             DynString dynamic_part = dyn_str_new();
-            dyn_str_append(&dynamic_part, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+            if (existing_boundary) {
+                dyn_str_append_len(&static_part, raw_sys, (size_t)(existing_boundary - raw_sys));
+                dyn_str_append(&dynamic_part, existing_boundary);
+                if (dynamic_part.len > 0 && dynamic_part.data[dynamic_part.len - 1] != '\n') {
+                    dyn_str_append(&dynamic_part, "\n");
+                }
+            } else {
+                dyn_str_append(&static_part, raw_sys);
+                dyn_str_append(&dynamic_part, SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+            }
             if (agent->gateway && agent->gateway->model) {
                 const char *provider = (agent->gateway->endpoint && strstr(agent->gateway->endpoint, "openrouter.ai") != NULL) ? "OpenRouter Cloud" : "Local Metal Ollama";
                 dyn_str_appendf(&dynamic_part, "Active Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
@@ -2302,7 +2315,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 // Block 1: Static prefix with cache_control
                 JsonValue *b1 = json_create_object();
                 json_obj_add(b1, "type", json_create_string("text"));
-                json_obj_add(b1, "text", json_create_string(agent->messages[0].content ? agent->messages[0].content : ""));
+                json_obj_add(b1, "text", json_create_string(static_part.data));
                 JsonValue *cc1 = json_create_object();
                 json_obj_add(cc1, "type", json_create_string("ephemeral"));
                 json_obj_add(b1, "cache_control", cc1);
@@ -2317,7 +2330,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 json_obj_add(m, "content", content_arr);
             } else {
                 DynString sys_content = dyn_str_new();
-                dyn_str_append(&sys_content, agent->messages[0].content ? agent->messages[0].content : "");
+                dyn_str_append(&sys_content, static_part.data);
                 dyn_str_append(&sys_content, dynamic_part.data);
                 json_obj_add(m, "content", json_create_string(sys_content.data));
                 dyn_str_free(&sys_content);
@@ -2329,6 +2342,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                     json_obj_add(m, "cache_control", cc);
                 }
             }
+            dyn_str_free(&static_part);
             dyn_str_free(&dynamic_part);
         } else {
             json_obj_add(m, "content", json_create_string(agent->messages[i].content));

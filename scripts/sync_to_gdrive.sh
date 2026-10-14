@@ -23,8 +23,13 @@ if [ -z "$RCLONE_BIN" ] || [ ! -x "$RCLONE_BIN" ]; then
     exit 1
 fi
 
-BELYA_DIR="/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent"
-ALMAZ_DIR="/Users/mohamedfathy/Desktop/Privacy C/Almaz"
+if [ -d "/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent" ]; then
+    BELYA_DIR="/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent"
+    ALMAZ_DIR="/Users/mohamedfathy/Desktop/Privacy C/Almaz"
+else
+    BELYA_DIR="${BELYA_DIR:-/opt/belya}"
+    ALMAZ_DIR="${ALMAZ_DIR:-/opt/almaz}"
+fi
 REMOTE_TARGET="gdrive:AI_Coding_Agents_Belya_Almaz"
 STAGING_DIR="/tmp/gdrive_sync_staging_$$"
 
@@ -303,9 +308,14 @@ All command executions (\`tool_bash\`, \`spawn_task\`, \`remote_exec\`) operate 
 Knowledge entries in SQLite (\`agent_memory\`) are strictly partitioned into Wings and Rooms (\`wing/room: topic\`), indexed in FTS5 (\`agent_memory_fts\`), and ranked with BM25 and salience boosts to eliminate context dilution.
 EOF
 
-# 5. Execute rclone sync to Google Drive
+# 5. Execute rclone sync to Google Drive & explicitly purge any stale .env/build artifacts
 echo "[5/5] Synchronizing to Google Drive ($REMOTE_TARGET)..."
+"$RCLONE_BIN" deletefile "$REMOTE_TARGET/Belya/.env" 2>/dev/null || true
+"$RCLONE_BIN" deletefile "$REMOTE_TARGET/Almaz/.env" 2>/dev/null || true
+"$RCLONE_BIN" purge "$REMOTE_TARGET/Belya/dist" 2>/dev/null || true
+"$RCLONE_BIN" purge "$REMOTE_TARGET/Almaz/belya_test_asan.dSYM" 2>/dev/null || true
 "$RCLONE_BIN" sync "$STAGING_DIR" "$REMOTE_TARGET" \
+    --delete-excluded \
     --fast-list \
     --transfers=8 \
     --checkers=16 \

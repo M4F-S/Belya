@@ -35,6 +35,8 @@ $(TEST_TARGET): $(TEST_SRCS)
 benchmark: $(BENCHMARK_TARGET) $(TARGET)
 	./$(BENCHMARK_TARGET)
 
+arena: benchmark
+
 $(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(BENCHMARK_SRCS) $(LIBS)
 
@@ -44,4 +46,4 @@ clean:
 gdrive:
 	@./scripts/sync_to_gdrive.sh
 
-.PHONY: all test benchmark clean gdrive
+.PHONY: all test benchmark arena clean gdrive
