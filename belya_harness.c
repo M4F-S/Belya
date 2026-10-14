@@ -3985,7 +3985,7 @@ char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
 
     system("mkdir -p .belya/worktrees");
 
-    char cmd[4096];
+    char cmd[8192];
     snprintf(cmd, sizeof(cmd), "git worktree add -b \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
     int rc = system(cmd);
     if (rc != 0) {

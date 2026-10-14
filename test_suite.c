@@ -2496,7 +2496,8 @@ static void test_phase2_deterministic_hooks_and_5tier_compactor(void) {
     printf("[Test] Phase 2: Deterministic Hooks, 5-Tier Compactor & Dynamic Cache Boundary...\n");
 
     // 1. Test Lifecycle Hook Runner (Exit 2 = Blocked policy, Exit 0 = Allowed)
-    system("mkdir -p .belya/hooks");
+    int ret_mk = system("mkdir -p .belya/hooks");
+    (void)ret_mk;
     FILE *fhook = fopen(".belya/hooks/pre_tool_use.sh", "w");
     assert(fhook != NULL);
     fprintf(fhook, "#!/bin/sh\n"
@@ -2786,7 +2787,8 @@ static void test_phase4_plan_mode_and_worktrees(void) {
     assert(strcmp(restored_cwd, orig_cwd) == 0);
 
     // 4. Test .belya/skills/ Discovery
-    system("mkdir -p .belya/skills/test_p4_skill");
+    int ret_p4 = system("mkdir -p .belya/skills/test_p4_skill");
+    (void)ret_p4;
     FILE *skf = fopen(".belya/skills/test_p4_skill/SKILL.md", "w");
     assert(skf != NULL);
     fprintf(skf, "---\nname: test_p4_skill\ndescription: Phase 4 Plan Mode Verification Skill\ntriggers: p4, plan_test\n---\nStep 1: Check invariants\nStep 2: Assert.\n");
@@ -2825,7 +2827,8 @@ static void test_phase5_pty_subshells_and_task_manager(void) {
     assert(t1 > 0);
 
     // Wait a brief moment for output capture and exit
-    usleep(150000);
+    struct timespec ts_wait = {0, 150000000L}; // 150ms
+    nanosleep(&ts_wait, NULL);
 
     char *t1_status = belya_harness_task_status(h, t1);
     assert(t1_status != NULL);

@@ -360,7 +360,7 @@ bool belya_channel_route_message(BelyaOmniChannel *chan, BelyaHarness *harness, 
     belya_agent_load_session(harness->agent, session_id);
 
     // Format formatted prompt with user identity
-    char formatted_prompt[4300];
+    char formatted_prompt[8192];
     snprintf(formatted_prompt, sizeof(formatted_prompt), "[User: %s (id: %s)] %s",
              strlen(msg->user_name) > 0 ? msg->user_name : "anonymous",
              strlen(msg->user_id) > 0 ? msg->user_id : "unknown",
