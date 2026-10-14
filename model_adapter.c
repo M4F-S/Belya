@@ -205,6 +205,13 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         json_obj_add(stream_opts, "include_usage", json_create_bool(true));
         json_obj_add(payload, "stream_options", stream_opts);
     }
+    if (ep && (strstr(ep, "localhost:11434") != NULL || strstr(ep, "127.0.0.1:11434") != NULL)) {
+        const char *ctx_env = getenv("MODEL_NUM_CTX");
+        int num_ctx = (ctx_env && atoi(ctx_env) > 0) ? atoi(ctx_env) : 8192;
+        JsonValue *opts = json_create_object();
+        json_obj_add(opts, "num_ctx", json_create_number((double)num_ctx));
+        json_obj_add(payload, "options", opts);
+    }
 
     char *json_body = json_serialize(payload);
 
