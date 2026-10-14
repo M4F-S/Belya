@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [v2.1.0] — 2026-10-14
+### 🚀 Competitive Parity & Late-2026 Sovereign Architecture Release
+- **Phase 0: POSIX.1-2008 Prelude & Twin Sync Infrastructure:**
+  - Enforced POSIX.1-2008 standards (`_POSIX_C_SOURCE 200809L`) across all translation units.
+  - Added automated twin synchronization script (`scripts/sync_almaz.sh`) preserving Almaz cognitive organs.
+  - Implemented 7-Gate CI/CD verification runner (`scripts/verify_phase.sh`) enforcing zero warnings, zero ASan/UBSan leaks, holdout tests, binary size (<350KB), cold start (<5ms), and active RSS (<12MB).
+- **Phase 1: Stateful ANSI Diff Colorizer & Interactive Terminal UX:**
+  - Added stateful ANSI diff colorizer (`belya_ansi_diff_colorize`) with syntax-highlighted additions, deletions, and hunk headers.
+  - Implemented signal-safe raw terminal permission modal (`belya_terminal_permission_prompt`).
+  - Added interactive operator clarification tool (`ask_user`) supporting numbered single/multi-choice prompts.
+  - Added interactive CLI slash commands: `/diff`, `/doctor`, `/cost`.
+- **Phase 2: Deterministic Lifecycle Hooks & 5-Tier Compactor:**
+  - Implemented event-driven lifecycle hooks: `pre_tool_use`, `post_tool_use`, `stop`, `pre_compact`.
+  - Added 5-Tier Context Compactor (sliding window, tool observation head/tail folding, system deduplication, middle-out summarization, FTS5 spill).
+  - Preserved 3-zone prefix caching economics through dynamic cache boundary markers.
+- **Phase 3: SQLite WAL Task Board & Cron Engine:**
+  - Created SQLite-backed task board (`task_create`, `task_update`, `task_list`, `task_get`) with dependency graph tracking and FTS5 search.
+  - Built background cron scheduling engine (`cron_create`, `cron_list`, `cron_tick`, `/cron`).
+- **Phase 4: Plan Mode Security Sandbox & Isolated Git Worktrees:**
+  - Implemented read-only Plan Mode (`enter_plan_mode`, `exit_plan_mode`, `/plan`) guarding against unverified code mutations.
+  - Added ephemeral Git worktree sandboxing (`enter_worktree`, `leave_worktree`) for speculative parallel exploration.
+  - Enforced file-first procedural skills catalog via standard `SKILL.md` format.
+- **Phase 5: POSIX PTY Subshells & Background Process Supervision:**
+  - Implemented true POSIX pseudo-terminal virtualization (`openpty`/`forkpty`).
+  - Added process group management (`setpgid`) and circular ring buffer for real-time streaming output capture.
+  - Added background task management tool (`manage_task`, `background: true`).
+- **Phase 6: Multi-Provider Web Search, Notebook Splicer & LSP-over-MCP:**
+  - Built streaming web retrieval engine (`web_search`, `web_fetch`) with SSRF guards and clean markdown extraction.
+  - Created byte-span Jupyter notebook cell splicer (`edit_notebook`) preserving execution counts and metadata.
+  - Integrated zero-bloat LSP-over-MCP (`lsp_definition`, `lsp_references`) with native AST symbol graph fallback.
+- **Phase 7: Polymorphic Omnichannel Gateway & Stdin-Piped Remote Backends:**
+  - Implemented Omnichannel Gateway (`belya_channel.h`, `belya_channel.c`) supporting Discord Gateway v10, Slack Socket Mode/Webhooks with sub-100ms URL challenge response, and Telegram.
+  - Implemented stdin-piped remote execution backends (`belya_remote_exec_piped`, `exec_backend` tool) for Docker containers and SSH hosts with zero host shell quoting vulnerabilities.
+- **Total Tool Count Expanded:** **41 Native Built-In Tools** (up from 22).
+- **Test Metrics:** **48/48 Unit Tests Passed (100%)**, **35/35 Arenas Passed (100%)**, **11/11 Exercism Pass@1 (100%)**.
+
 ### 🔒 Security & Robustness (leftovers round 2026-10-02)
 - **M1 Telegram callback sender-verify:** approval/deny callbacks now check `from.id` against `allowed_chat_id` (comma-list aware); unauthorized callbacks are answered and ignored.
 - **M1 HTML escaping:** tool name + args HTML-escaped in permission prompt and decision edit (no markup injection, no mid-tag truncation).

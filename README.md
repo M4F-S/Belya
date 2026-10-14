@@ -1,25 +1,25 @@
 # Belya — Zero-Dependency Autonomous AI Software Engineer & Security Execution Harness (Pure C99)
 
-[![Release](https://img.shields.io/badge/Release-v7.2.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.2.0)
+[![Release](https://img.shields.io/badge/Release-v2.1.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v2.1.0-phase7)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-C99-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-41%2F41_Passed_(100%25)-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-48%2F48_Passed_(100%25)-brightgreen.svg)]()
 [![Compiler](https://img.shields.io/badge/Compiler-0_Warnings_Clean-brightgreen.svg)]()
 [![Memory_Safety](https://img.shields.io/badge/Memory_Safety-100%25_ASan_UBSan_Clean-success.svg)]()
 [![Benchmarks](https://img.shields.io/badge/6--Arena_Benchmarks-35%2F35_Passed_(100%25)-success.svg)]()
 [![Exercism](https://img.shields.io/badge/Exercism_C_Battery-11%2F11_Pass@1_(100%25)-success.svg)]()
-[![Tools](https://img.shields.io/badge/Native_Tools-22_Tools-informational.svg)]()
-[![Memory](https://img.shields.io/badge/Memory_Footprint-<9.7MB_Peak_RSS-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-~275KB-informational.svg)]()
+[![Tools](https://img.shields.io/badge/Native_Tools-41_Tools-informational.svg)]()
+[![Memory](https://img.shields.io/badge/Memory_Footprint-<12MB_Peak_RSS-purple.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-~325KB-informational.svg)]()
 
-A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, dual-tier automatic model gateway provider failover, **Late-2026 SOTA agentic architecture (ROMA context firewall, AST symbol graph, Paper2Agent MCP synthesis, Mythos security sweeper, middle-out compactor, FNV-1a attractor loop breaker)**, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
+A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, dual-tier automatic model gateway provider failover, **Late-2026 SOTA agentic architecture (ROMA context firewall, AST symbol graph, Paper2Agent MCP synthesis, Mythos security sweeper, middle-out compactor, FNV-1a attractor loop breaker)**, **Competitive Parity Master Plan (Phases 0–7: Diff Colorizer, Modal Prompts, Lifecycle Hooks, 5-Tier Compactor, SQLite Task Board, Cron Engine, Plan Mode, Isolated Git Worktrees, PTY Subshells, Web Search/Fetch, Notebook Splicer, LSP-over-MCP, Omnichannel Gateway, Stdin-Piped Remote Backends)**, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
 
 ---
 
 ## Table of Contents
 - [Architectural Overview](#architectural-overview)
 - [Belya & Almaz: The Sovereign Twin Sibling Architecture](#belya--almaz-the-sovereign-twin-sibling-architecture)
-- [Key Capabilities & v7.2.0 Architectural Innovations](#key-capabilities--v720-architectural-innovations)
+- [Key Capabilities & v2.1.0 Architectural Innovations](#key-capabilities--v210-architectural-innovations)
 - [Multi-Arena Benchmarks & Frontier Agent Evaluation](#multi-arena-benchmarks--frontier-agent-evaluation)
   - [1. Comprehensive 6-Arena Scorecard (35/35 - 100% Passed)](#1-comprehensive-6-arena-scorecard-3535---100-passed)
   - [2. Arena-by-Arena Capabilities](#2-arena-by-arena-capabilities)
@@ -36,7 +36,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [Mode 3: Headless Batch & CI/CD Pipeline Mode](#mode-3-headless-batch--cicd-pipeline-mode)
   - [Mode 4: Standalone Security Execution Sandbox](#mode-4-standalone-security-execution-sandbox)
   - [Mode 5: Belya Agency Multi-Agent Orchestration Mode](#mode-5-belya-agency-multi-agent-orchestration-mode)
-- [Native Tool Suite (22 Built-In Tools)](#native-tool-suite-22-built-in-tools)
+- [Native Tool Suite (41 Built-In Tools)](#native-tool-suite-41-built-in-tools)
 - [Command & Slash Controls Reference](#command--slash-controls-reference)
 - [Core Architectural Subsystems](#core-architectural-subsystems)
   - [1. Tool-Call Scavenger Engine](#1-tool-call-scavenger-engine)
@@ -549,11 +549,11 @@ belya> /agency Implement token bucket rate limiter and verify with unit tests
 
 ---
 
-## Native Tool Suite (22 Built-In Tools)
+## Native Tool Suite (41 Built-In Tools)
 
 | Tool Name | Parameters | Description |
 |:---|:---|:---|
-| **`bash`** | `command` (str) | Executes shell commands with persistent CWD tracking & timeout protection |
+| **`bash`** | `command` (str), `background` (bool) | Executes shell commands with persistent CWD tracking, PTY subshell virtualization, & timeout protection |
 | **`read_file`** | `path` (str), `offset` (num), `limit` (num) | Reads file contents with line-number slicing |
 | **`write_file`** | `path` (str), `content` (str) | Writes text directly to disk with pre-flight compiler syntax check |
 | **`edit_file`** | `path`, `old_text`, `new_text`, `verify_compile` (bool) | Exact search-and-replace edit with optional compile-verify guard and auto-revert |
@@ -575,6 +575,25 @@ belya> /agency Implement token bucket rate limiter and verify with unit tests
 | **`spawn_subagent`**| `task` (str), `instructions` (str), `max_turns` (num) | Spawns isolated worker subagent and returns structured execution envelope |
 | **`define_tool`** | `name`, `description`, `parameters`, `script_body` | Dynamically creates, scripts, persists, and registers new executable tools with full parameter contracts |
 | **`dispatch_agent`**| `role` (str), `task` (str), `context` (str) | Dispatches specialized subagent (`architect`, `builder`, `reviewer`, `tester`) bounded by declarative manifest with automatic Git Rollback Guard protection |
+| **`ask_user`** | `question` (str), `options` (arr), `is_multi_select` (bool) | Prompts operator with raw signal-safe interactive terminal modal or rich Telegram inline keyboard |
+| **`task_create`** | `title` (str), `description` (str), `priority` (str), `depends_on` (arr) | Registers a structured task on the SQLite task board with dependency graph tracking |
+| **`task_update`** | `task_id` (str), `status` (str), `notes` (str) | Updates lifecycle state (`pending`, `in_progress`, `completed`, `failed`) and notes on the task board |
+| **`task_list`** | `status` (str), `limit` (num) | Lists tasks from SQLite board with optional status filtering and dependency resolution |
+| **`task_get`** | `task_id` (str) | Retrieves complete task details, execution notes, and dependency graph |
+| **`cron_create`** | `name` (str), `schedule_expr` (str), `action_prompt` (str) | Registers a recurring background cron job in SQLite |
+| **`cron_list`** | *(none)* | Lists all active background cron jobs, intervals, next fire time, and trigger history |
+| **`cron_tick`** | *(none)* | Immediately evaluates and fires all due background cron jobs |
+| **`enter_plan_mode`** | *(none)* | Enters read-only Plan Mode security sandbox, locking all mutating filesystem and shell operations |
+| **`exit_plan_mode`** | *(none)* | Exits Plan Mode sandbox, restoring full read-write execution privileges |
+| **`enter_worktree`** | `name` (str), `base_branch` (str) | Spawns and switches into an isolated Git worktree for zero-risk speculative refactoring |
+| **`leave_worktree`** | `discard_changes` (bool) | Leaves isolated Git worktree sandbox and restores original working directory and branch |
+| **`manage_task`** | `action` (str), `task_id` (str), `input` (str) | Manages background PTY subshell processes (`list`, `status`, `send_input`, `kill`) |
+| **`web_search`** | `query` (str), `provider` (str), `max_results` (num) | Multi-provider streaming web retrieval (Tavily, Brave, SerpApi, SearXNG) |
+| **`web_fetch`** | `url` (str), `extract_markdown` (bool) | Fetches URL with SSRF protection, size clamps (50KB), and extracts clean markdown |
+| **`edit_notebook`** | `path` (str), `action` (str), `cell_index` (num), `content` (str) | Byte-span Jupyter notebook (`.ipynb`) cell editor preserving cell execution counts and metadata |
+| **`lsp_definition`** | `path` (str), `symbol` (str), `line` (num), `col` (num) | Navigates to symbol definition via LSP-over-MCP with native AST fallback |
+| **`lsp_references`** | `path` (str), `symbol` (str) | Finds all references to a symbol via LSP-over-MCP with native AST fallback |
+| **`exec_backend`** | `action` (str), `backend_type` (str), `target` (str) | Inspects or switches execution backend (local, Docker container, or SSH host) via stdin-piped execution |
 
 ---
 
@@ -602,6 +621,11 @@ belya> /agency Implement token bucket rate limiter and verify with unit tests
 | `/cwd [path]` | CLI & Telegram | View or change current working directory |
 | `/mcp <cmd>` | CLI & Telegram | Connect to an external stdio MCP server |
 | `/agency <prompt>` | CLI & Telegram | Execute task using Belya Agency multi-agent pipeline (Triage → Architect → Builder → Tester) |
+| `/diff` | CLI | Render stateful syntax-highlighted ANSI diff of working tree changes |
+| `/doctor` | CLI | Run deep diagnostics on toolchain, SQLite WAL, sanitizers, and memory health |
+| `/cost` | CLI | View real-time token expenditure, cache hit rates, and dollar savings |
+| `/plan` | CLI | Toggle read-only Plan Mode sandbox on/off |
+| `/cron` | CLI | List registered cron jobs and view trigger schedules |
 
 ---
 
@@ -788,7 +812,21 @@ make test
   -> Late-2026 Paper2Agent Repo-to-MCP Synthesis PASSED
 [Test] Late-2026 Mythos Variant Security Sweeper...
   -> Late-2026 Mythos Variant Security Sweeper PASSED
-================ All Tests Passed Successfully (41/41 - 100%) ================
+[Test] Phase 1: Stateful ANSI Diff Colorizer & Signal-Safe ask_user...
+  -> Phase 1: Diff Colorizer & Interactive ask_user PASSED
+[Test] Phase 2: Deterministic Lifecycle Hooks & 5-Tier Compactor...
+  -> Phase 2: Deterministic Lifecycle Hooks & 5-Tier Compactor PASSED
+[Test] Phase 3: SQLite WAL Task Board, FTS5 Recall & Cron Engine...
+  -> Phase 3: Task Board, FTS5 Recall & Cron Engine PASSED
+[Test] Phase 4: Plan Mode Security Sandbox & Isolated Worktrees...
+  -> Phase 4: Plan Mode & Isolated Worktrees PASSED
+[Test] Phase 5: POSIX PTY Subshells & Background Task Manager...
+  -> Phase 5: POSIX PTY Subshells & Task Manager PASSED
+[Test] Phase 6: Multi-Provider Web Search, Notebook Splicer & LSP-over-MCP...
+  -> Phase 6: Web Search, Notebook Splicer & LSP-over-MCP PASSED
+[Test] Phase 7: Polymorphic Omnichannel Gateway & Stdin-Piped Remote Backends...
+  -> Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends PASSED
+================ All Tests Passed Successfully (48/48 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
@@ -797,7 +835,7 @@ Belya is compiled and validated with AddressSanitizer and UndefinedBehaviorSanit
 ```bash
 make clean && make test CFLAGS="-Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -g -D_POSIX_C_SOURCE=200809L"
 ```
-**Result**: **41/41 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: **48/48 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
 
 ---
 
