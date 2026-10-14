@@ -283,6 +283,10 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
 }
 
 void belya_agent_register_schema(BelyaAgent *agent, const char *name, const char *desc, JsonValue *params) {
+    if (!agent) {
+        if (params) json_free(params);
+        return;
+    }
     agent->schema_count++;
     BelyaToolSchema *new_schemas = realloc(agent->schemas, sizeof(BelyaToolSchema) * agent->schema_count);
     if (!new_schemas) {
