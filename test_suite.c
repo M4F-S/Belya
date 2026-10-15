@@ -98,6 +98,48 @@ void test_token_estimator(void) {
     printf("  -> Token Estimator PASSED (Total: %zu tokens)\n", total_agent_tokens);
 }
 
+/* H16b: this fixture used to "restore" the repository file by writing a hardcoded snapshot
+   of what .agentrules looked like when the test was written, so every suite run silently
+   reverted any later edit to it. Save the real bytes and put exactly those back. */
+#define RULES_TEST_BAK ".agentrules.testbak"
+
+static bool rules_fixture_begin(void) {
+    bool existed = false;
+    FILE *src = fopen(".agentrules", "rb");
+    if (src) {
+        existed = true;
+        FILE *dst = fopen(RULES_TEST_BAK, "wb");
+        if (dst) {
+            char buf[4096];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), src)) > 0) fwrite(buf, 1, n, dst);
+            fclose(dst);
+        }
+        fclose(src);
+    }
+    bool rules_preexisted = rules_fixture_begin();
+    return existed;
+}
+
+static void rules_fixture_end(bool existed) {
+    if (existed) {
+        FILE *bak = fopen(RULES_TEST_BAK, "rb");
+        if (bak) {
+            FILE *out = fopen(".agentrules", "wb");
+            if (out) {
+                char buf[4096];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), bak)) > 0) fwrite(buf, 1, n, out);
+                fclose(out);
+            }
+            fclose(bak);
+        }
+        remove(RULES_TEST_BAK);
+    } else {
+        remove(".agentrules");
+    }
+}
+
 void test_agent_memory_and_rules(void) {
     printf("[Test] Agent Memory (FTS5) & Rules Auto-Discovery...\n");
 
@@ -145,25 +187,7 @@ void test_agent_memory_and_rules(void) {
     model_gateway_free(gw);
     unlink("test_agent_memory.sqlite");
     
-    // Restore repository .agentrules
-    FILE *rf_rest = fopen(".agentrules", "w");
-    if (rf_rest) {
-        fprintf(rf_rest,
-            "# Expert Researcher & Strategic Executioner Directives\n\n"
-            "## Role & Objective\n"
-            "Act as an expert researcher and strategic executioner. Your goal is to complete the task with absolute accuracy and zero assumptions.\n\n"
-            "## Core Rules\n"
-            "1. Verify Everything: Never assume facts, syntax, or outcomes. Treat every data point as unverified until proven otherwise.\n"
-            "2. Research Deeply: Conduct thorough internet research. Use only reliable, high-quality resources.\n"
-            "3. Test Continuously: Run tests at every critical stage. Verify that code, logic, or data works in practice, not just in theory.\n\n"
-            "## Execution Protocol\n"
-            "1. Research & Plan: Investigate the problem deeply. Formulate a structured, step-by-step execution plan.\n"
-            "2. Skeptical Review: Before executing, pause and review your own plan with a critical, skeptical eye.\n"
-            "3. Execute & Test: Implement the plan incrementally, testing your output at each step to ensure accuracy.\n"
-            "4. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions.\n"
-        );
-        fclose(rf_rest);
-    }
+    rules_fixture_end(rules_preexisted);
     printf("  -> Agent Memory & Rules PASSED\n");
 }
 

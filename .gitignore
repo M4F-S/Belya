@@ -41,3 +41,5 @@ alfa.old-*
 build/
 belya.new
 *.lkg
+# H16b: transient backup written by the rules fixture
+.agentrules.testbak
