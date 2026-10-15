@@ -2219,6 +2219,20 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
 
 // Late-2026 Phase 3: Mythos Variant Security Analysis
 
+/* H16: a needle that sits inside a string literal is text, not a call. Without this the
+   audit matched its own pattern literals below and reported three phantom "legacy string
+   manipulation" findings on every run. */
+static bool token_is_code(const char *line, const char *needle) {
+    const char *p = line;
+    while ((p = strstr(p, needle)) != NULL) {
+        if (p == line) return true;
+        char prev = p[-1];
+        if (prev != '"' && prev != '\'') return true;   /* a real call site */
+        p++;                                             /* inside a literal - keep looking */
+    }
+    return false;
+}
+
 char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern_type, const char *target_path) {
     (void)h;
     const char *path = (target_path && strlen(target_path) > 0) ? target_path : ".";
@@ -2262,8 +2276,8 @@ char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern
             if (strncmp(trim, "//", 2) == 0 || strncmp(trim, "/*", 2) == 0) continue;
 
             if (check_overflow) {
-                if (strstr(trim, "strcpy(") != NULL || strstr(trim, "strcat(") != NULL ||
-                    strstr(trim, "gets(") != NULL || strstr(trim, "sprintf(") != NULL) {
+                if (token_is_code(trim, "strcpy(") || token_is_code(trim, "strcat(") ||
+                    token_is_code(trim, "gets(") || token_is_code(trim, "sprintf(")) {
                     dyn_str_appendf(&ds, "[CWE-120: Buffer Copy without Checking Size of Input]\n");
                     dyn_str_appendf(&ds, "  Location: %s:%d\n  Code:     %s\n  Remedy:   Replace with snprintf() or bounded strncpy().\n\n", fpath, lineno, trim);
                     findings++;
