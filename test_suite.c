@@ -112,12 +112,18 @@ static bool rules_fixture_begin(void) {
         if (dst) {
             char buf[4096];
             size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), src)) > 0) fwrite(buf, 1, n, dst);
+            while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+                if (fwrite(buf, 1, n, dst) != n) break;   /* best effort: fixture copy */
+            }
             fclose(dst);
         }
         fclose(src);
     }
-    bool rules_preexisted = rules_fixture_begin();
+    FILE *rf = fopen(".agentrules", "w");
+    if (rf) {
+        fprintf(rf, "Always write self-contained C99 code without external dependencies.\n");
+        fclose(rf);
+    }
     return existed;
 }
 
@@ -129,7 +135,9 @@ static void rules_fixture_end(bool existed) {
             if (out) {
                 char buf[4096];
                 size_t n;
-                while ((n = fread(buf, 1, sizeof(buf), bak)) > 0) fwrite(buf, 1, n, out);
+                while ((n = fread(buf, 1, sizeof(buf), bak)) > 0) {
+                    if (fwrite(buf, 1, n, out) != n) break;   /* best effort: fixture copy */
+                }
                 fclose(out);
             }
             fclose(bak);
@@ -143,11 +151,7 @@ static void rules_fixture_end(bool existed) {
 void test_agent_memory_and_rules(void) {
     printf("[Test] Agent Memory (FTS5) & Rules Auto-Discovery...\n");
 
-    FILE *rf = fopen(".agentrules", "w");
-    if (rf) {
-        fprintf(rf, "Always write self-contained C99 code without external dependencies.\n");
-        fclose(rf);
-    }
+    bool rules_preexisted = rules_fixture_begin();
 
     ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
     BelyaAgent *agent = belya_agent_init(gw, "test_agent_memory.sqlite", "Test System Prompt");
