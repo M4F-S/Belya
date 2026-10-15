@@ -933,3 +933,18 @@ Licensed under the Apache License, Version 2.0 (the "License"); you may not use 
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
+---
+
+## Repository status: independent fork (declared 2026-10-15)
+
+This repository and its sibling are **independent forks**, not twins. They diverged in the
+organism core and in their test suites, and they are now maintained separately: every change
+is applied per repo and the whole suite of that repo is run before and after.
+
+Consequences:
+
+- There is **no automatic sync between them.** `scripts/sync_almaz.sh` is disabled and refuses
+  to run; do not resurrect it. A file that happens to be identical today is not a guarantee for
+  tomorrow.
+- A fix proven in one repo is **not** proven in the other.
+- Deploying is an operator action in both repos (`make deploy` from outside the service).
