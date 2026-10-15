@@ -54,9 +54,15 @@ deploy: $(TARGET)
 	if [ -e "$(DEPLOY_BIN)" ] && cmp -s "$(TARGET)" "$(DEPLOY_BIN)"; then \
 	  echo "[deploy] $(DEPLOY_BIN) already matches $(TARGET) - no restart needed"; \
 	else \
+	  if [ -e "$(DEPLOY_BIN)" ] && ! chattr -i "$(DEPLOY_BIN)" 2>/dev/null; then \
+	    echo "[deploy] REFUSED: cannot clear the immutable flag on $(DEPLOY_BIN)." >&2; \
+	    echo "[deploy] Publishing is an OPERATOR action: the service runs without" >&2; \
+	    echo "[deploy] CAP_LINUX_IMMUTABLE, so an agent cannot swap the running binary." >&2; \
+	    echo "[deploy] Nothing was changed. Run make deploy as root outside the service." >&2; \
+	    exit 1; \
+	  fi; \
 	  echo "[deploy] installing $(TARGET) -> $(DEPLOY_BIN)"; \
 	  if [ -e "$(DEPLOY_BIN)" ]; then cp -a "$(DEPLOY_BIN)" "$(DEPLOY_BIN).lkg"; fi; \
-	  chattr -i "$(DEPLOY_BIN)" 2>/dev/null || true; \
 	  install -m 0755 "$(TARGET)" "$(DEPLOY_BIN).new"; \
 	  mv -f "$(DEPLOY_BIN).new" "$(DEPLOY_BIN)"; \
 	  chattr +i "$(DEPLOY_BIN)" 2>/dev/null || true; \
