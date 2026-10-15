@@ -12,6 +12,21 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 
+/* H15a: this file used to hardcode "http://localhost:11434/v1/chat/completions" and model
+   "hermes-3" at five call sites. Nothing ever listened on 11434, so every benchmark silently
+   failed over to whatever other provider was reachable, and the agent then reported the
+   resulting diagnostics to the operator as a production problem ("start Ollama"). Read the
+   live configuration the same way main.c does. */
+static ModelGateway *benchmark_gateway_init(void) {
+    const char *endpoint = getenv("MODEL_ENDPOINT");
+    const char *api_key  = getenv("MODEL_API_KEY");
+    const char *model    = getenv("MODEL_NAME");
+    if (!endpoint || !*endpoint) endpoint = "https://openrouter.ai/api/v1/chat/completions";
+    if (!api_key  || !*api_key)  api_key  = "none";
+    if (!model    || !*model)    model    = "deepseek/deepseek-v4-flash";
+    return model_gateway_init(endpoint, api_key, model);
+}
+
 // Microsecond timestamp helper
 static double get_time_ms(void) {
     struct timeval tv;
@@ -403,7 +418,7 @@ static void benchmark_arena2_polyglot_editing(void) {
     int passed = 0;
     int total = 6;
 
-    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    ModelGateway *gw = benchmark_gateway_init();
     BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Polyglot benchmark agent");
     BelyaHarness *h = belya_harness_init(agent);
 
@@ -643,7 +658,7 @@ static void benchmark_arena3_memory_retention(void) {
 
     const char *db_file = "test_bench_mem.sqlite";
     unlink(db_file);
-    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    ModelGateway *gw = benchmark_gateway_init();
     BelyaAgent *agent = belya_agent_init(gw, db_file, "Memory benchmark instructions");
 
     // Test 1: Domain-Isolated Multi-Room Scoping
@@ -769,7 +784,7 @@ static void benchmark_arena4_swe_autonomous(void) {
     int passed = 0;
     int total = 4;
 
-    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    ModelGateway *gw = benchmark_gateway_init();
     BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Autonomous SWE solver");
     BelyaHarness *h = belya_harness_init(agent);
 
@@ -896,7 +911,7 @@ static void benchmark_arena5_system_resources(void) {
 
     // Test 1: Cold Start Latency
     double cs_start = get_time_ms();
-    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    ModelGateway *gw = benchmark_gateway_init();
     BelyaAgent *agent = belya_agent_init(gw, ":memory:", "System instructions");
     BelyaHarness *h = belya_harness_init(agent);
     double cs_end = get_time_ms();
@@ -995,7 +1010,7 @@ static void benchmark_arena6_late2026_sota(void) {
     int passed = 0;
     int total = 5;
 
-    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    ModelGateway *gw = benchmark_gateway_init();
     BelyaAgent *agent = belya_agent_init(gw, "bench_late2026.sqlite", "Late-2026 Benchmark");
     BelyaHarness *h = belya_harness_init(agent);
 
