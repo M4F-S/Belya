@@ -1,8 +1,16 @@
 # 🚀 Belya Autonomous Coding Engine: Project State & Session Handoff
 
+> **⚠️ VERIFIED STATE — 2026-10-15** (measured on the live VPS, not copied from earlier docs)
+> - **Deployed commit:** `920db5e` (branch `main`, == `origin/main`, tree clean)
+> - **Deployed artifact:** `/opt/belya/belya` = `/opt/charness/belya`, sha256 `919ff1a1…`, 372,024 B
+> - **Verified by:** rebuilding `920db5e` from GitHub — output was byte-identical to the running binary
+> - **Tests at this commit:** **49/49** (`make test`). **Tools:** 41 unique names.
+> - **Host:** Linux x86-64 (Ubuntu 24.04 VPS). macOS ARM64 appears below only as a dev-host note.
+> - Numbers further down this file that disagree with the block above are **stale** — the block wins.
+
 **Repository:** `M4F-S/Belya`  
 **Current Version:** `v2.1.0-phase7` (Competitive Parity & Late-2026 Sovereign Architecture)  
-**Host Environment:** macOS (Darwin ARM64) & Remote VPS Ubuntu 24.04 (`187.124.2.26`)  
+**Host Environment:** Remote VPS Ubuntu 24.04, Linux x86-64 (`187.124.2.26`) — the repo also builds on macOS (Darwin ARM64) dev hosts; **this deployment is Linux**  
 **Deployment Daemon:** `/opt/belya/belya` under `belya.service`  
 **Active Inference Backend:** `deepseek-v4.1-flash` via OpenCode Go Flat-Rate Gateway  
 **Memory Architecture:** SQLite 3 with FTS5, Gomaa Scoped Wings, and WAL Mode (`belya_memory.sqlite`)  
@@ -13,8 +21,8 @@
 
 Belya is the **production-grade, rock-solid, high-performance C99 autonomous coding agent and systems execution harness**.
 - **Cold Start:** < 1.5 ms (< 5 ms strict budget)
-- **Runtime Footprint:** ~9.8–11.7 MB RSS (< 12 MB strict budget) vs gigabytes consumed by Python/Node agents
-- **Binary Footprint:** ~325 KB stripped (< 350 KB strict budget)
+- **Runtime Footprint (2026-10-15, live daemon):** VmRSS ≈ 17.0 MiB · PSS ≈ 8.1 MiB · cgroup ≈ 51 MiB (peak 130 MiB). RSS is **session-dependent** — the same process measured 16.5 → 17.4 MiB across one session. The `9.70 MB` figure quoted in the README is the **benchmark-arena peak** (<25 MB target), a different workload. Always state which metric: VmRSS, PSS or cgroup.
+- **Binary Footprint (2026-10-15):** 372,024 B (≈363 KiB) and **NOT stripped** — the Makefile has no `strip` step. The `<350 KB` budget is enforced by `scripts/verify_phase.sh`, which strips a *copy* it makes itself.
 - **Tooling Suite:** **41 Native Built-in Tools** with permission gating, path jailing, and AST index acceleration
 - **Quality Standard:** Strict C99 + POSIX.1-2008, 0 compiler warnings (`-Wall -Wextra -Werror -Wpedantic -O2`), 0 memory leaks under ASan/UBSan
 
@@ -32,7 +40,7 @@ Belya is the **production-grade, rock-solid, high-performance C99 autonomous cod
 
 ## 🔬 2. Verification & Test Metrics
 
-- **Unit Test Suite:** **48/48 tests passed (100%)** under Clang/GCC with AddressSanitizer and UndefinedBehaviorSanitizer.
+- **Unit Test Suite:** **49/49 tests passed (100%)** at `920db5e` under GCC with strict flags (`-Werror -Wpedantic -Wshadow -Wformat=2`). ASan/UBSan coverage is exercised separately by `scripts/verify_phase.sh` (Gate 2).
 - **Multi-Arena Benchmarks:** **35/35 Arenas passed (100%)** across 6 domain arenas.
 - **Universal Exercism Coding Benchmark:** **11/11 Challenges Pass@1 (100.0%)** with zero compiler warnings and zero leaks.
 - **Compilation Cleanliness:** Zero warnings under `-Wall -Wextra -Werror -Wpedantic -O2`.

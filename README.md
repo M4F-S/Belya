@@ -10,7 +10,7 @@
 [![Exercism](https://img.shields.io/badge/Exercism_C_Battery-11%2F11_Pass@1_(100%25)-success.svg)]()
 [![Tools](https://img.shields.io/badge/Native_Tools-41_Tools-informational.svg)]()
 [![Memory](https://img.shields.io/badge/Memory_Footprint-<12MB_Peak_RSS-purple.svg)]()
-[![Binary](https://img.shields.io/badge/Binary_Size-~325KB-informational.svg)]()
+[![Binary](https://img.shields.io/badge/Binary_Size-363KiB_(unstripped)-informational.svg)]()
 
 A high-performance, zero-dependency autonomous AI agent and security execution harness implemented in pure C99. Designed for sub-millisecond execution, complete local privacy, low-level POSIX execution safety, Model Context Protocol (MCP) tool extensibility, dynamic self-tooling, multi-session checkpointing, pre-flight compiler auto-healing, Gomaa memory scoping, tool-call scavenging, 3-zone prompt caching, procedural skills curation, instant Git rollback, historical conversation search, multi-method REST API requests, persistent HTTP keep-alive connection reuse, forced text synthesis, real-time context pruning, workspace path jailing, file-first skills catalog, composable rule packs, troubleshooting resolvers, dual-tier automatic model gateway provider failover, **Late-2026 SOTA agentic architecture (ROMA context firewall, AST symbol graph, Paper2Agent MCP synthesis, Mythos security sweeper, middle-out compactor, FNV-1a attractor loop breaker)**, **Competitive Parity Master Plan (Phases 0–7: Diff Colorizer, Modal Prompts, Lifecycle Hooks, 5-Tier Compactor, SQLite Task Board, Cron Engine, Plan Mode, Isolated Git Worktrees, PTY Subshells, Web Search/Fetch, Notebook Splicer, LSP-over-MCP, Omnichannel Gateway, Stdin-Piped Remote Backends)**, **Belya Agency sovereign multi-agent orchestration**, and 24/7 VPS Telegram Bot remote control.
 
@@ -55,7 +55,7 @@ A high-performance, zero-dependency autonomous AI agent and security execution h
   - [14. Belya Agency: Sovereign Multi-Agent Orchestration Architecture](#14-belya-agency-sovereign-multi-agent-orchestration-architecture)
   - [15. Jev TypeSafe AI Decision Coprocessor & DeepSeek V4.1 Flash](#15-jev-typesafe-ai-decision-coprocessor--deepseek-v41-flash)
   - [16. OpenCode Go Subscription Backend & Model Economics](#16-opencode-go-subscription-backend--model-economics)
-- [Automated Test Suite (48/48 Comprehensive Tests)](#automated-test-suite-4848-comprehensive-tests)
+- [Automated Test Suite (49/49 Comprehensive Tests)](#automated-test-suite-4949-comprehensive-tests)
 - [Belya-Evolve: Metamorphic Research Sandbox](#belya-evolve-metamorphic-research-sandbox)
 - [Live Production & Real-World Evaluation Battery](#live-production--real-world-evaluation-battery)
 - [Changelog & Releases](#changelog--releases)
@@ -739,7 +739,7 @@ In addition to OpenRouter and local Ollama/vLLM backends, Belya supports high-th
 
 ---
 
-## Automated Test Suite (48/48 Comprehensive Tests)
+## Automated Test Suite (49/49 Comprehensive Tests)
 
 Run the comprehensive test suite locally or on your server:
 ```bash
@@ -844,7 +844,7 @@ make test
   -> Phase 6: Web Search/Fetch, Notebook Splicer & LSP-over-MCP PASSED
 [Test] Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends...
   -> Phase 7: Omnichannel Gateway & Stdin-Piped Remote Backends PASSED
-================ All Tests Passed Successfully (48/48 - 100%) ================
+================ All Tests Passed Successfully (49/49 - 100%) ================
 ```
 
 ### Zero-Tolerance Memory Safety Verification
@@ -853,7 +853,7 @@ Belya is compiled and validated with AddressSanitizer and UndefinedBehaviorSanit
 ```bash
 make clean && make test CFLAGS="-Wall -Wextra -O2 -std=c99 -fsanitize=address,undefined -g -D_POSIX_C_SOURCE=200809L"
 ```
-**Result**: **48/48 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
+**Result**: **49/49 tests pass** with **0 memory leaks, 0 heap buffer overflows, and 0 undefined behavior**.
 
 ---
 
