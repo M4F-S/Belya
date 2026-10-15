@@ -7,7 +7,7 @@ echo "🔒 7-Gate Verification Pipeline — Target: ${PHASE_NAME}"
 echo "=================================================================="
 
 if [ -f "watchdog.c" ]; then
-    BIN="almaz"
+    BIN="build/almaz"
     TEST_BIN="almaz_test"
     BENCH_BIN="almaz_benchmark"
     if gcc -Oz -E -x c /dev/null >/dev/null 2>&1; then
@@ -18,7 +18,7 @@ if [ -f "watchdog.c" ]; then
     EXTRA_LIBS="-lm"
     EXTRA_SRCS="timeline_anomaly.c budget_store.c health_watcher.c"
 else
-    BIN="belya"
+    BIN="build/belya"
     TEST_BIN="belya_test"
     BENCH_BIN="belya_benchmark"
     OPT_FLAG="-O2 -ffunction-sections -fdata-sections"

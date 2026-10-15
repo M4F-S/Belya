@@ -36,3 +36,8 @@ patches/
 # Deploy backups (leftover round)
 belya.old-*
 alfa.old-*
+
+# Build output (H3: the build no longer writes the deployed artifact)
+build/
+belya.new
+*.lkg
