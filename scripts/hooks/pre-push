@@ -1,0 +1,34 @@
+#!/bin/sh
+# Proposal-only workflow (2026-10-15).
+#
+# main is updated by the OPERATOR after review — never by the running agent. Inside the service
+# sandbox (recognised by the systemd credential directory, which only the unit injects) a push
+# that would update main is refused with instructions; outside the sandbox the operator's own
+# pushes are untouched.
+#
+# HONEST LIMIT: a client-side hook is a guardrail, not a wall. `git push --no-verify` bypasses
+# it and so does deleting the file. The real enforcement is GitHub-side branch protection on
+# main, which no client can bypass. This hook exists so the normal path is the right path and
+# so the policy is visible at the moment it matters.
+set -u
+
+if [ -z "${CREDENTIALS_DIRECTORY:-}" ] || [ ! -r "${CREDENTIALS_DIRECTORY}/git_ssh_key" ]; then
+    exit 0   # operator shell — not our business
+fi
+
+refused=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/main|refs/heads/master)
+            printf '\n[policy] Refusing to update %s from inside the agent service.\n' "$remote_ref" >&2
+            printf '[policy] main is updated by the operator after review. Your work is not lost\n' >&2
+            printf '[policy] - push it as a branch and report that branch for review:\n' >&2
+            printf '           git push origin HEAD:refs/heads/<descriptive-branch-name>\n' >&2
+            printf '[policy] Then say plainly: branch <name> is ready for review.\n\n' >&2
+            refused=1
+            ;;
+    esac
+done
+
+[ "$refused" -eq 1 ] && exit 1
+exit 0
