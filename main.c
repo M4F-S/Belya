@@ -39,12 +39,17 @@ int main(int argc, char **argv) {
     const char *resume_session_id = NULL;
     const char *headless_prompt = NULL;
     bool no_probe = false;
+    bool stage_mode = false;
+    const char *preset_name = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("Usage: belya [OPTIONS]\n\n");
             printf("Options:\n");
             printf("  -h, --help                 Show this help message\n");
+            printf("  -P, --preset <name>        Load model preset (falcon, falcon-vllm, falcon2, qwen, deepseek, airgap)\n");
+            printf("  --presets                  List all available UAE & championship model presets and exit\n");
+            printf("  -S, --stage, --telemetry   Enable live on-stage interactive visual telemetry HUD\n");
             printf("  -t, --telegram             Run as Telegram (+ Omnichannel) bot daemon\n");
             printf("  -o, --omnichannel          Alias for --telegram omnichannel daemon mode\n");
             printf("  -d, --docker <container>   Execute bash commands inside Docker sandbox container\n");
@@ -55,6 +60,14 @@ int main(int argc, char **argv) {
             printf("  --headless <prompt>        Alias for --prompt\n");
             printf("  --eval <prompt>            Alias for --prompt\n\n");
             return 0;
+        } else if (strcmp(argv[i], "--presets") == 0) {
+            model_presets_print_list();
+            return 0;
+        } else if ((strcmp(argv[i], "--preset") == 0 || strcmp(argv[i], "-P") == 0) && i + 1 < argc) {
+            preset_name = argv[++i];
+        } else if (strcmp(argv[i], "--stage") == 0 || strcmp(argv[i], "-S") == 0 || strcmp(argv[i], "--telemetry") == 0) {
+            stage_mode = true;
+            setenv("BELYA_STAGE_TELEMETRY", "1", 1);
         } else if (strcmp(argv[i], "--telegram") == 0 || strcmp(argv[i], "-t") == 0 ||
                    strcmp(argv[i], "--omnichannel") == 0 || strcmp(argv[i], "-o") == 0) {
             telegram_mode = true;
@@ -72,6 +85,22 @@ int main(int argc, char **argv) {
             resume_session_id = argv[++i];
         } else if ((strcmp(argv[i], "--headless") == 0 || strcmp(argv[i], "--eval") == 0 || strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
             headless_prompt = argv[++i];
+        }
+    }
+
+    if (preset_name) {
+        const ModelPresetConfig *preset = model_preset_get(preset_name);
+        if (preset) {
+            setenv("MODEL_NAME", preset->model_name, 1);
+            setenv("MODEL_ENDPOINT", preset->endpoint, 1);
+            if (preset->is_airgap) {
+                setenv("AIRGAP_MODE", "1", 1);
+            }
+            printf("\033[1;32m[Preset Applied]:\033[0m %s -> Model: %s (%s)\n",
+                   preset->name, preset->model_name, preset->description);
+        } else {
+            fprintf(stderr, "\033[1;31m[Error] Unknown preset '%s'. Run 'belya --presets' for options.\033[0m\n", preset_name);
+            return 1;
         }
     }
 
@@ -166,6 +195,9 @@ int main(int argc, char **argv) {
     if (!harness) {
         fprintf(stderr, "\033[1;31m[Error] Out of memory: failed to initialize harness.\033[0m\n");
         return 1;
+    }
+    if (stage_mode) {
+        harness->stage_mode = true;
     }
 
     if (telegram_mode) {

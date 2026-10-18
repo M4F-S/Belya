@@ -2435,8 +2435,12 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         json_arr_add(messages_arr, telem_msg);
     }
 
-    // If model does not support API tools (like deepseek-r1 in Ollama), inject tool instructions in system message
-    if (agent->gateway && agent->gateway->model && strstr(agent->gateway->model, "deepseek-r1") != NULL && agent->schema_count > 0) {
+    // If model does not support API tools (like deepseek-r1 or local falcon in Ollama), inject tool instructions in system message
+    if (agent->gateway && agent->gateway->model &&
+        (strstr(agent->gateway->model, "deepseek-r1") != NULL ||
+         strstr(agent->gateway->model, "falcon") != NULL ||
+         strstr(agent->gateway->model, "Falcon") != NULL) &&
+        agent->schema_count > 0) {
         JsonValue *tool_guide_msg = json_create_object();
         json_obj_add(tool_guide_msg, "role", json_create_string("system"));
         DynString tg = dyn_str_new();

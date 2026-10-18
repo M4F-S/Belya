@@ -130,6 +130,10 @@ struct BelyaHarness {
     BelyaExecBackend exec_backend;
     char docker_container[128];
     char ssh_host[128];
+
+    // Championship Live Stage Demonstration & Interactive Visual Telemetry
+    bool stage_mode;
+    double last_turn_latency_ms;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);

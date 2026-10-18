@@ -223,4 +223,10 @@ static inline bool is_valid_hex_sha(const char *s) {
     return true;
 }
 
+static inline double get_time_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
+}
+
 #endif

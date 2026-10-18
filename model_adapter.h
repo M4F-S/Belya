@@ -73,5 +73,17 @@ ModelGatewayProbeResult model_gateway_preflight_probe(const ModelGateway *gw);
 void model_gateway_probe_result_free(ModelGatewayProbeResult *res);
 void model_gateway_print_probe_report(const ModelGatewayProbeResult *res);
 
+/* Championship & UAE Ecosystem Model Presets */
+typedef struct {
+    const char *name;
+    const char *model_name;
+    const char *endpoint;
+    const char *description;
+    bool is_airgap;
+} ModelPresetConfig;
+
+const ModelPresetConfig *model_preset_get(const char *name);
+void model_presets_print_list(void);
+
 #endif
 
