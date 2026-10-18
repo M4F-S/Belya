@@ -41,7 +41,7 @@ MISSION="${1:-Audit src/telecom_service.c for buffer overflow vulnerabilities an
 echo -e "${MAGENTA}[*] Launching Belya Stage HUD with Real-Time Telemetry...${RESET}"
 echo -e "Mission: \"${MISSION}\"\n"
 
-./build/belya --stage -P falcon3 "${MISSION}" || {
+./build/belya --stage -P falcon3 -p "${MISSION}" || {
     echo -e "\n${YELLOW}[!] Live model probe returned exit code; running deterministic self-contained verification suite...${RESET}"
     ./belya_test
 }

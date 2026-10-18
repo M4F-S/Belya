@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
     bool no_probe = false;
     bool stage_mode = false;
     const char *preset_name = NULL;
+    bool probe_only = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -49,6 +50,7 @@ int main(int argc, char **argv) {
             printf("  -h, --help                 Show this help message\n");
             printf("  -P, --preset <name>        Load model preset (falcon, falcon-vllm, falcon2, qwen, deepseek, airgap)\n");
             printf("  --presets                  List all available UAE & championship model presets and exit\n");
+            printf("  --probe                    Execute gateway pre-flight health & authentication probe and exit\n");
             printf("  -S, --stage, --telemetry   Enable live on-stage interactive visual telemetry HUD\n");
             printf("  -t, --telegram             Run as Telegram (+ Omnichannel) bot daemon\n");
             printf("  -o, --omnichannel          Alias for --telegram omnichannel daemon mode\n");
@@ -65,6 +67,8 @@ int main(int argc, char **argv) {
             return 0;
         } else if ((strcmp(argv[i], "--preset") == 0 || strcmp(argv[i], "-P") == 0) && i + 1 < argc) {
             preset_name = argv[++i];
+        } else if (strcmp(argv[i], "--probe") == 0) {
+            probe_only = true;
         } else if (strcmp(argv[i], "--stage") == 0 || strcmp(argv[i], "-S") == 0 || strcmp(argv[i], "--telemetry") == 0) {
             stage_mode = true;
             setenv("BELYA_STAGE_TELEMETRY", "1", 1);
@@ -85,6 +89,8 @@ int main(int argc, char **argv) {
             resume_session_id = argv[++i];
         } else if ((strcmp(argv[i], "--headless") == 0 || strcmp(argv[i], "--eval") == 0 || strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
             headless_prompt = argv[++i];
+        } else if (argv[i][0] != '-' && !headless_prompt) {
+            headless_prompt = argv[i];
         }
     }
 
@@ -136,10 +142,15 @@ int main(int argc, char **argv) {
 
     // Pre-flight health and authentication probe
     const char *probe_env = getenv("GATEWAY_PREFLIGHT_PROBE");
-    if (!no_probe && (!probe_env || (strcmp(probe_env, "0") != 0 && strcmp(probe_env, "false") != 0))) {
+    if (probe_only || (!no_probe && (!probe_env || (strcmp(probe_env, "0") != 0 && strcmp(probe_env, "false") != 0)))) {
         ModelGatewayProbeResult probe = model_gateway_preflight_probe(gateway);
         model_gateway_print_probe_report(&probe);
+        bool all_ok = probe.all_ok;
         model_gateway_probe_result_free(&probe);
+        if (probe_only) {
+            model_gateway_free(gateway);
+            return all_ok ? 0 : 1;
+        }
     }
 
     // 2. Initialize Belya Agent with persistent SQLite memory & Strategic Execution Directives
