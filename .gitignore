@@ -5,6 +5,7 @@ almaz
 belya_test
 belya_test_asan
 belya_benchmark
+company_simulation
 test_runner
 bench_*
 

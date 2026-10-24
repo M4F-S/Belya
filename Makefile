@@ -22,6 +22,9 @@ TEST_TARGET = belya_test
 BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
+SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c company_simulation.c
+SIM_TARGET = company_simulation
+
 all: $(TARGET)
 
 $(BUILD_DIR):
@@ -46,6 +49,12 @@ arena: benchmark
 
 $(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(BENCHMARK_SRCS) $(LIBS)
+
+sim: $(SIM_TARGET)
+	./$(SIM_TARGET)
+
+$(SIM_TARGET): $(SIM_SRCS)
+	$(CC) $(CFLAGS) -o $@ $(SIM_SRCS) $(LIBS)
 
 # deploy: publish the built artifact to the path the service actually runs, respecting the
 # immutable flag, and restart ONLY when the content really changed (H3/H4).
