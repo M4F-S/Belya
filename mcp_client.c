@@ -1,5 +1,6 @@
 #include "common.h"
 #include "mcp_client.h"
+#include "mcp_http.h"
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -98,6 +99,7 @@ MCPClient *mcp_client_start(const char *command_line) {
     client->stdin_fd = stdin_pipe[1];
     client->stdout_fd = stdout_pipe[0];
     client->pid = pid;
+    client->transport = MCP_TRANSPORT_STDIO;
     client->request_id = 1;
 
     // Send initialize request
@@ -151,6 +153,10 @@ MCPClient *mcp_client_start(const char *command_line) {
 
 JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *params) {
     if (!client || !client->connected) return NULL;
+
+    if (client->transport == MCP_TRANSPORT_HTTP) {
+        return mcp_http_request(client, method, params);
+    }
 
     JsonValue *req = json_create_object();
     json_obj_add(req, "jsonrpc", json_create_string("2.0"));
@@ -267,14 +273,20 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
 void mcp_client_close(MCPClient *client) {
     if (!client) return;
     client->connected = false;
-    close(client->stdin_fd);
-    close(client->stdout_fd);
-    if (client->pid > 0) {
-        kill(client->pid, SIGTERM);
-        struct timespec ts = {0, 50000000L};
-        nanosleep(&ts, NULL);
-        waitpid(client->pid, NULL, WNOHANG);
+
+    if (client->transport == MCP_TRANSPORT_STDIO) {
+        if (client->stdin_fd >= 0) close(client->stdin_fd);
+        if (client->stdout_fd >= 0) close(client->stdout_fd);
+        if (client->pid > 0) {
+            kill(client->pid, SIGTERM);
+            struct timespec ts = {0, 50000000L};
+            nanosleep(&ts, NULL);
+            waitpid(client->pid, NULL, WNOHANG);
+        }
     }
+
     if (client->command) free(client->command);
+    if (client->url) free(client->url);
+    if (client->bearer_token) free(client->bearer_token);
     free(client);
 }

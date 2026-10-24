@@ -3783,7 +3783,12 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     if (!h || !server_cmd || h->mcp_server_count >= 8) return false;
 
     printf("\033[1;36m[MCP] Connecting to server:\033[0m %s\n", server_cmd);
-    MCPClient *client = mcp_client_start(server_cmd);
+    MCPClient *client = NULL;
+    if (strncmp(server_cmd, "http://", 7) == 0 || strncmp(server_cmd, "https://", 8) == 0) {
+        client = mcp_client_start_http(server_cmd);
+    } else {
+        client = mcp_client_start(server_cmd);
+    }
     if (!client || !client->connected) {
         printf("\033[1;31m[MCP] Failed to connect to server.\033[0m\n");
         return false;
@@ -5795,7 +5800,9 @@ void belya_harness_repl(BelyaHarness *h) {
                 if (strlen(cmd) > 0) {
                     belya_harness_connect_mcp(h, cmd);
                 } else {
-                    printf("Usage: /mcp <server_command> (e.g. /mcp npx -y @modelcontextprotocol/server-filesystem .)\n\n");
+                    printf("Usage: /mcp <server_command | http(s)://endpoint>\n"
+                           "  stdio: /mcp npx -y @modelcontextprotocol/server-filesystem .\n"
+                           "  http : /mcp https://mcp.example.com/mcp   (MCP_HTTP_TOKEN, MCP_HTTP_TIMEOUT_MS)\n\n");
                 }
                 continue;
             }
