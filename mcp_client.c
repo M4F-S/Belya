@@ -288,5 +288,7 @@ void mcp_client_close(MCPClient *client) {
     if (client->command) free(client->command);
     if (client->url) free(client->url);
     if (client->bearer_token) free(client->bearer_token);
+    if (client->session_id) free(client->session_id);
+    if (client->negotiated_version) free(client->negotiated_version);
     free(client);
 }

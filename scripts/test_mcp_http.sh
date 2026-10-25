@@ -22,6 +22,12 @@ done
 
 "$BIN" --url "http://127.0.0.1:$PORT/mcp"
 
+# Optional: an official-SDK server (stateful 2025-11-25) to exercise negotiation.
+if [[ -n "${MCP_SDK_URL:-}" ]]; then
+  echo "[mcp] official SDK endpoint: $MCP_SDK_URL"
+  "$BIN" --url "$MCP_SDK_URL"
+fi
+
 # Negative paths: 401 and 403 must be reported honestly.
 set +e
 "$BIN" --url "http://127.0.0.1:$PORT/mcp/auth-test" >/tmp/belya_mcp_auth.log 2>&1

@@ -28,6 +28,10 @@ typedef struct MCPClient {
     char *url;
     char *bearer_token;
     long timeout_ms;
+    char *session_id;          /* pre-2026 servers only */
+    char *negotiated_version;  /* set after the first request */
+    int negotiated;
+    int legacy;                /* 1 when the server needs initialize + session */
 } MCPClient;
 
 MCPClient *mcp_client_start(const char *command_line);
