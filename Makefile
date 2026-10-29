@@ -90,3 +90,10 @@ gdrive:
 	@./scripts/sync_to_gdrive.sh
 
 .PHONY: all test benchmark arena clean gdrive deploy release
+
+# drift-guard
+drift:
+	python3 tools/drift_check.py
+
+prd-lock:
+	python3 tools/drift_check.py --update-lock

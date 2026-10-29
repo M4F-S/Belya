@@ -27,7 +27,10 @@ __pycache__/
 *.pyc
 
 # Private session progress & docs
-docs/
+docs/*
+!docs/PRD.md
+!docs/PRD.lock
+!docs/PRD-CHANGELOG.md
 
 # Evolution outputs
 reports/
