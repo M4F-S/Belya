@@ -1,0 +1,18 @@
+# Hermetic verification image for Belya/Almaz.
+#
+# Exists because the repo needs libcurl + sqlite3 dev headers and build hosts
+# vary; "make verify" has to mean one thing everywhere. Sources are baked in
+# (COPY) rather than bind-mounted so the gate also runs against a remote
+# Docker daemon, where host paths are not visible.
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential libcurl4-openssl-dev libsqlite3-dev python3 ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+
+ARG GATE=test
+RUN make clean >/dev/null 2>&1 || true; make "$GATE"

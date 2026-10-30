@@ -54,7 +54,7 @@ test-loop: $(LOOP_TARGET)
 	  rc=$$?; kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; exit $$rc
 
 $(LOOP_TARGET): $(LOOP_SRCS) | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -o $@ $(LOOP_SRCS) $(LIBS)
+	$(CC) $(CFLAGS) -I. -o $@ $(LOOP_SRCS) $(LIBS)
 
 benchmark: $(BENCHMARK_TARGET) $(TARGET)
 	./$(BENCHMARK_TARGET)
