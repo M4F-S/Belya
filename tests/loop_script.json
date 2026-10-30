@@ -1,0 +1,37 @@
+[
+  {
+    "status": 200,
+    "body": {
+      "choices": [{"message": {"role": "assistant", "content": "hello from mock"}}],
+      "usage": {"prompt_tokens": 11, "completion_tokens": 4}
+    }
+  },
+  {
+    "status": 200,
+    "body": {
+      "choices": [{
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [{
+            "id": "call_loop_1",
+            "type": "function",
+            "function": {"name": "bash", "arguments": "{\"command\":\"echo hi\"}"}
+          }]
+        }
+      }],
+      "usage": {"prompt_tokens": 12, "completion_tokens": 6}
+    }
+  },
+  {
+    "status": 429,
+    "body": {"error": {"message": "rate limited"}}
+  },
+  {
+    "status": 200,
+    "body": {
+      "choices": [{"message": {"role": "assistant", "content": "after retry"}}],
+      "usage": {"prompt_tokens": 13, "completion_tokens": 3}
+    }
+  }
+]
