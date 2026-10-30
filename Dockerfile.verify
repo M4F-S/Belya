@@ -15,4 +15,4 @@ WORKDIR /src
 COPY . /src
 
 ARG GATE=test
-RUN make clean >/dev/null 2>&1 || true; make "$GATE" && make test-mock
+RUN make clean >/dev/null 2>&1 || true; make "$GATE" && make test-mock && make test-perms

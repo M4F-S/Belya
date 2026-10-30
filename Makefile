@@ -8,7 +8,7 @@ endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -16,13 +16,15 @@ DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c test_suite.c
 TEST_TARGET = belya_test
 LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
 LOOP_TARGET = build/test_agent_loop
+PERMS_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_permissions.c
+PERMS_TARGET = build/test_permissions
 MCP_HTTP_TEST_TARGET = build/test_mcp_http
 
-BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c benchmark_runner.c
+BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
 all: $(TARGET)
@@ -45,6 +47,14 @@ $(MCP_HTTP_TEST_TARGET): mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c 
 
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIBS)
+
+# Authorisation table tests: permission_classify() is pure; the gate is checked
+# against a real harness in both permission modes.
+test-perms: $(PERMS_TARGET)
+	./$(PERMS_TARGET)
+
+$(PERMS_TARGET): $(PERMS_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(PERMS_SRCS) $(LIBS)
 
 # First real loop test: drives belya_agent_step() against a scripted model.
 test-mock:
