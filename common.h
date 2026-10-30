@@ -43,6 +43,10 @@ static inline DynString dyn_str_new(void) {
 }
 
 static inline void dyn_str_grow(DynString *ds, size_t needed) {
+    if (needed > SIZE_MAX - ds->len - 1) {
+        fprintf(stderr, "[Fatal] dyn_str_grow: size overflow\n");
+        abort();
+    }
     if (ds->len + needed + 1 > ds->cap) {
         size_t new_cap = ds->cap ? ds->cap : 512;
         while (ds->len + needed + 1 > new_cap) {
@@ -62,10 +66,23 @@ static inline void dyn_str_grow(DynString *ds, size_t needed) {
     }
 }
 
+/* G1 (2026-10-30): grow() did `len + needed + 1` unguarded, so GCC 14 cannot
+   rule out size_t overflow and rejects the memcpy under -Werror=stringop-overflow.
+   Guard the arithmetic explicitly and re-check capacity at the copy site; on
+   either failure abort loudly rather than writing into an undersized buffer. */
 static inline void dyn_str_append(DynString *ds, const char *str) {
     if (!str) return;
     size_t slen = strlen(str);
+    if (slen == 0) return;
+    if (slen > SIZE_MAX - ds->len - 1) {
+        fprintf(stderr, "[Fatal] dyn_str_append: size overflow\n");
+        abort();
+    }
     dyn_str_grow(ds, slen);
+    if (!ds->data || ds->cap < ds->len + slen + 1) {
+        fprintf(stderr, "[Fatal] dyn_str_append: capacity invariant violated\n");
+        abort();
+    }
     memcpy(ds->data + ds->len, str, slen);
     ds->len += slen;
     ds->data[ds->len] = '\0';
@@ -73,7 +90,15 @@ static inline void dyn_str_append(DynString *ds, const char *str) {
 
 static inline void dyn_str_append_len(DynString *ds, const char *str, size_t slen) {
     if (!str || slen == 0) return;
+    if (slen > SIZE_MAX - ds->len - 1) {
+        fprintf(stderr, "[Fatal] dyn_str_append_len: size overflow\n");
+        abort();
+    }
     dyn_str_grow(ds, slen);
+    if (!ds->data || ds->cap < ds->len + slen + 1) {
+        fprintf(stderr, "[Fatal] dyn_str_append_len: capacity invariant violated\n");
+        abort();
+    }
     memcpy(ds->data + ds->len, str, slen);
     ds->len += slen;
     ds->data[ds->len] = '\0';
