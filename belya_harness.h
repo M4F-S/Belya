@@ -4,6 +4,7 @@
 #include "belya_agent.h"
 #include "linenoise.h"
 #include "mcp_client.h"
+#include "permissions.h"
 #include <sys/socket.h>
 #include <stdint.h>
 #include <time.h>
@@ -97,6 +98,10 @@ struct BelyaHarness {
     size_t mcp_server_count;
     BelyaPermissionPromptFn permission_prompt_fn;
     void *permission_userdata;
+    /* PERMISSIVE (default) keeps unattended callers running: an ASK with no
+       approver executes and is logged. STRICT turns it into a refusal. DENY
+       always refuses, in both modes. */
+    BelyaPermissionMode permission_mode;
 
     // Metacognitive Circuit Breaker state
     char last_failed_tool[64];
@@ -169,6 +174,11 @@ char *belya_harness_audit_security_variants(BelyaHarness *h, const char *pattern
 // 2026 Competitive Parity Phase 1: Stateful ANSI Diff Colorizer & Signal-Safe Modal
 char *belya_ansi_diff_colorize(const char *raw_diff);
 bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, const char *args_json, void *userdata);
+
+/* Resolve the tier a call will execute under, applying the harness mode.
+   DENY wins unconditionally; ASK collapses to ALLOW in permissive mode when
+   there is no approver attached (daemon/cron), and to DENY in strict mode. */
+PermTier belya_harness_permission_gate(BelyaHarness *h, const char *tool_name, const char *args_json);
 
 // 2026 Competitive Parity Phase 2: Deterministic Lifecycle Hook Runner
 typedef enum {

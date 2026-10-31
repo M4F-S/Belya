@@ -3021,6 +3021,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
         h->task_table.tasks[i].state = BELYA_TASK_STATE_UNUSED;
     }
     h->agent = agent;
+    h->permission_mode = BELYA_PERM_PERMISSIVE;
+    {
+        const char *pm = getenv("BELYA_PERMISSION_MODE");
+        if (pm && strcmp(pm, "strict") == 0) h->permission_mode = BELYA_PERM_STRICT;
+    }
     if (agent) {
         agent->user_data = h;
         belya_agent_set_pre_compact_hook(agent, harness_on_pre_compact_hook, h);
@@ -3931,6 +3936,19 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
 
 static bool harness_ask_permission(const char *name, const char *args) {
     return belya_terminal_permission_prompt(g_harness, name, args, NULL);
+}
+
+PermTier belya_harness_permission_gate(BelyaHarness *h, const char *tool_name, const char *args_json) {
+    PermTier tier = permission_classify(tool_name, args_json);
+    if (tier != PERM_TIER_ASK) return tier;
+
+    /* An approver can always be consulted. */
+    if (h && h->permission_prompt_fn) return PERM_TIER_ASK;
+
+    /* No approver: unattended callers (Telegram daemon, cron) must not block on
+       stdin. Permissive keeps today's behaviour, strict refuses. */
+    if (h && h->permission_mode == BELYA_PERM_STRICT) return PERM_TIER_DENY;
+    return PERM_TIER_ALLOW;
 }
 
 BelyaHookResult belya_run_lifecycle_hook(BelyaHarness *h, BelyaHookType hook_type, const char *tool_name, const char *tool_args, const char *observation) {
@@ -6157,8 +6175,9 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                     }
                 }
 
-                if (!matched || matched->security == PERM_DENY) {
-                    printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
+                PermTier tier = belya_harness_permission_gate(h, tc->name, tc->arguments_json);
+                if (!matched || matched->security == PERM_DENY || tier == PERM_TIER_DENY) {
+                    printf("\033[1;31m[Denied]: %s blocked by policy.\033[0m\n", tc->name);
                     belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
                     continue;
                 }
@@ -6175,7 +6194,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                     }
                 }
 
-                if (matched->security == PERM_ASK_USER) {
+                if (tier == PERM_TIER_ASK) {
                     bool permitted = false;
                     if (h->permission_prompt_fn) {
                         permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);
