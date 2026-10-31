@@ -16,6 +16,9 @@ double telegram_bot_send_status_message(TelegramBot *bot, const char *chat_id, c
 bool telegram_bot_edit_message(TelegramBot *bot, const char *chat_id, double message_id, const char *text);
 bool telegram_bot_delete_message(TelegramBot *bot, const char *chat_id, double message_id);
 bool telegram_bot_send_chat_action(TelegramBot *bot, const char *chat_id, const char *action);
+/* Markdown -> Telegram HTML, with plain-text fallback. */
+bool telegram_bot_send_rich(TelegramBot *bot, const char *chat_id, const char *text);
+
 bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char *text);
 void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness);
 void telegram_bot_stop(TelegramBot *bot);
