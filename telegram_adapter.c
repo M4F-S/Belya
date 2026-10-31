@@ -1,6 +1,7 @@
 #include "common.h"
 #include "telegram_adapter.h"
 #include "belya_channel.h"
+#include "telegram_render.h"
 #include <curl/curl.h>
 #include <signal.h>
 #include <time.h>
@@ -27,7 +28,13 @@ static JsonValue *telegram_http_post(TelegramBot *bot, const char *method, const
     if (!curl) return NULL;
 
     char url[512];
-    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", bot->bot_token, method);
+    /* TELEGRAM_API_BASE lets tests point the adapter at a local fake server. */
+    const char *api_base = getenv("TELEGRAM_API_BASE");
+    if (api_base && api_base[0]) {
+        snprintf(url, sizeof(url), "%s/bot%s/%s", api_base, bot->bot_token, method);
+    } else {
+        snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", bot->bot_token, method);
+    }
 
     char *json_body = payload ? json_serialize(payload) : xstrdup("{}");
 
@@ -231,6 +238,101 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
         nanosleep(&ts, NULL); // 50ms delay between consecutive Telegram messages
     }
     return true;
+}
+
+/* ---- Streaming: render deltas into one message and edit it in place ---- */
+
+typedef struct {
+    TelegramBot *bot;
+    char chat_id[64];
+    DynString buf;
+    double msg_id;
+    time_t last_edit;
+    int edits;
+    bool disabled;
+} TelegramStream;
+
+static bool tg_send_html(TelegramBot *bot, const char *chat_id, const char *html, double *out_id) {
+    if (!bot || !chat_id || !html || !html[0]) return false;
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "text", json_create_string(html));
+    json_obj_add(payload, "parse_mode", json_create_string("HTML"));
+    JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
+    json_free(payload);
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    if (ok && out_id) {
+        JsonValue *res = json_obj_get(resp, "result");
+        if (res) *out_id = json_obj_get_num(res, "message_id", 0);
+    }
+    json_free(resp);
+    return ok;
+}
+
+static bool tg_edit_html(TelegramBot *bot, const char *chat_id, double msg_id, const char *html) {
+    if (!bot || !chat_id || msg_id <= 0 || !html || !html[0]) return false;
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "message_id", json_create_number(msg_id));
+    json_obj_add(payload, "text", json_create_string(html));
+    json_obj_add(payload, "parse_mode", json_create_string("HTML"));
+    JsonValue *resp = telegram_http_post(bot, "editMessageText", payload);
+    json_free(payload);
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    json_free(resp);
+    return ok;
+}
+
+/*
+ * Reasoning deltas are dropped: the model's private deliberation never belongs
+ * in a user's chat. Content deltas accumulate and repaint a single message,
+ * throttled to ~1/second because Telegram rate-limits editMessageText.
+ */
+static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userdata) {
+    TelegramStream *s = (TelegramStream *)userdata;
+    if (!s || s->disabled || !chunk || !chunk[0]) return;
+    if (is_reasoning) return;
+
+    dyn_str_append(&s->buf, chunk);
+    if (s->buf.len > 3400) {  /* too long for one message: end-of-turn send handles it */
+        s->disabled = true;
+        return;
+    }
+
+    time_t now = time(NULL);
+    if (s->msg_id == 0) {
+        char *html = telegram_render_html(s->buf.data);
+        double id = 0;
+        if (html && tg_send_html(s->bot, s->chat_id, html, &id)) {
+            s->msg_id = id;
+            s->last_edit = now;
+        } else {
+            s->disabled = true;
+        }
+        free(html);
+        return;
+    }
+
+    if (now - s->last_edit < 1) return;
+    char *html = telegram_render_html(s->buf.data);
+    if (html && !tg_edit_html(s->bot, s->chat_id, s->msg_id, html)) s->disabled = true;
+    free(html);
+    s->last_edit = now;
+    s->edits++;
+}
+
+/* Final answer as Telegram HTML, falling back to plain text if parsing fails. */
+bool telegram_bot_send_rich(TelegramBot *bot, const char *chat_id, const char *text) {
+    if (!bot || !chat_id || !text || !text[0]) return false;
+    char *html = telegram_render_html(text);
+    if (html && strlen(html) <= 3900 && tg_send_html(bot, chat_id, html, NULL)) {
+        free(html);
+        return true;
+    }
+    free(html);
+    return telegram_bot_send_chunks(bot, chat_id, text);
 }
 
 typedef struct {
@@ -729,6 +831,16 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 char *final_response_text = NULL;
                 DynString accum_content = dyn_str_new();
 
+                TelegramStream sctx;
+                memset(&sctx, 0, sizeof(sctx));
+                sctx.bot = bot;
+                snprintf(sctx.chat_id, sizeof(sctx.chat_id), "%s", chat_id_str);
+                sctx.buf = dyn_str_new();
+                if (harness->agent && harness->agent->gateway) {
+                    harness->agent->gateway->stream_cb = telegram_stream_cb;
+                    harness->agent->gateway->stream_userdata = &sctx;
+                }
+
                 belya_harness_reset_turn_state(harness);
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
@@ -854,14 +966,35 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     telegram_bot_delete_message(bot, chat_id_str, status_msg_id);
                 }
 
-                if (final_response_text && strlen(final_response_text) > 0) {
-                    telegram_bot_send_chunks(bot, chat_id_str, final_response_text);
-                    free(final_response_text);
-                } else if (accum_content.len > 0) {
-                    telegram_bot_send_chunks(bot, chat_id_str, accum_content.data);
-                } else {
-                    telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
+                if (harness->agent && harness->agent->gateway) {
+                    harness->agent->gateway->stream_cb = NULL;
+                    harness->agent->gateway->stream_userdata = NULL;
                 }
+
+                const char *final_text = (final_response_text && final_response_text[0])
+                                             ? final_response_text
+                                             : (accum_content.len > 0 ? accum_content.data : NULL);
+                bool delivered = false;
+                if (sctx.msg_id > 0 && final_text) {
+                    char *html = telegram_render_html(final_text);
+                    if (html && strlen(html) <= 3900 && tg_edit_html(bot, chat_id_str, sctx.msg_id, html)) {
+                        delivered = true; /* the streamed message already holds the answer */
+                    }
+                    free(html);
+                }
+                if (!delivered && sctx.msg_id > 0) {
+                    telegram_bot_delete_message(bot, chat_id_str, sctx.msg_id);
+                }
+                if (!delivered) {
+                    if (final_text) {
+                        telegram_bot_send_rich(bot, chat_id_str, final_text);
+                    } else {
+                        telegram_bot_send_message(bot, chat_id_str, "Action completed.");
+                    }
+                }
+
+                if (final_response_text) free(final_response_text);
+                dyn_str_free(&sctx.buf);
                 dyn_str_free(&accum_content);
 
                 // Auto-persist active session to SQLite so conversations survive restarts

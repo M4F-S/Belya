@@ -8,7 +8,7 @@ endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -16,7 +16,7 @@ DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c test_suite.c
 TEST_TARGET = belya_test
 LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
 LOOP_TARGET = build/test_agent_loop
@@ -24,7 +24,7 @@ PERMS_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_permissions.c
 PERMS_TARGET = build/test_permissions
 MCP_HTTP_TEST_TARGET = build/test_mcp_http
 
-BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_adapter.c belya_channel.c benchmark_runner.c
+BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
 all: $(TARGET)
@@ -59,6 +59,21 @@ $(PERMS_TARGET): $(PERMS_SRCS) | $(BUILD_DIR)
 # First real loop test: drives belya_agent_step() against a scripted model.
 test-mock:
 	python3 tests/test_mock_server.py
+
+# Telegram markdown -> HTML renderer (pure function).
+test-tgrender:
+	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -o build/test_telegram_render tests/test_telegram_render.c telegram_render.c
+	./build/test_telegram_render
+
+# Telegram send path against a local fake Bot API (asserts the wire payload).
+TGSEND_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_telegram_send.c
+TGSEND_TARGET = build/test_telegram_send
+
+test-tgsend: $(TGSEND_TARGET)
+	@sh tests/run_tgsend.sh
+
+$(TGSEND_TARGET): $(TGSEND_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(TGSEND_SRCS) $(LIBS)
 
 test-loop: $(LOOP_TARGET)
 	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \

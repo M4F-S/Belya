@@ -3,6 +3,18 @@
 #include <curl/curl.h>
 #include <unistd.h>
 
+/* Streaming debug echo: only when stdout is a terminal (CLI), never in a
+ * daemon, where stdout is the journal. Reasoning in particular must not be
+ * sprayed into logs a human reads. */
+static bool stream_echo_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("BELYA_STREAM_ECHO");
+        cached = (e && e[0] == '1') ? 1 : (isatty(STDOUT_FILENO) ? 1 : 0);
+    }
+    return cached == 1;
+}
+
 typedef struct {
     ModelGateway *gw;
     DynString line_buf;
@@ -52,7 +64,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 dyn_str_append(&ctx->accum_reasoning, reasoning);
                 if (ctx->gw->stream_cb) {
                     ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
-                } else {
+                } else if (stream_echo_enabled()) {
                     if (!ctx->printed_reasoning_header) {
                         printf("\n\033[0;36m[Reasoning]:\033[0m\n");
                         ctx->printed_reasoning_header = true;
@@ -68,7 +80,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 dyn_str_append(&ctx->accum_content, content);
                 if (ctx->gw->stream_cb) {
                     ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
-                } else {
+                } else if (stream_echo_enabled()) {
                     if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
                         printf("\n\n\033[1;34m[Belya]\033[0m\n");
                         ctx->printed_content_header = true;
