@@ -75,6 +75,10 @@ test-tgsend: $(TGSEND_TARGET)
 $(TGSEND_TARGET): $(TGSEND_SRCS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I. -o $@ $(TGSEND_SRCS) $(LIBS)
 
+# Exercises every registered tool through the real binary using a scripted model.
+test-tools: $(TARGET)
+	@BELYA_BIN=./$(TARGET) python3 tests/tool_probe.py ./$(TARGET) bash read_file write_file list_dir search_files git_status
+
 test-loop: $(LOOP_TARGET)
 	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \
 	  pid=$$!; sleep 0.8; \
