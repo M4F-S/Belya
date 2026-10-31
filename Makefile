@@ -18,6 +18,8 @@ DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
 TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c test_suite.c
 TEST_TARGET = belya_test
+LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
+LOOP_TARGET = build/test_agent_loop
 MCP_HTTP_TEST_TARGET = build/test_mcp_http
 
 BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c benchmark_runner.c
@@ -43,6 +45,19 @@ $(MCP_HTTP_TEST_TARGET): mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c 
 
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIBS)
+
+# First real loop test: drives belya_agent_step() against a scripted model.
+test-mock:
+	python3 tests/test_mock_server.py
+
+test-loop: $(LOOP_TARGET)
+	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \
+	  pid=$$!; sleep 0.8; \
+	  MODEL_MOCK_URL=http://127.0.0.1:18081/v1/chat/completions ./$(LOOP_TARGET); \
+	  rc=$$?; kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; exit $$rc
+
+$(LOOP_TARGET): $(LOOP_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(LOOP_SRCS) $(LIBS)
 
 benchmark: $(BENCHMARK_TARGET) $(TARGET)
 	./$(BENCHMARK_TARGET)
