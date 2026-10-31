@@ -296,16 +296,28 @@ static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userd
     if (is_reasoning) return;
 
     dyn_str_append(&s->buf, chunk);
-    if (s->buf.len > 3400) {  /* too long for one message: end-of-turn send handles it */
+    if (s->buf.len > 12000) { /* runaway guard; end-of-turn send handles the rest */
         s->disabled = true;
+        return;
+    }
+
+    /* Cap on the RENDERED bytes: escaping expands '<' 4x and '&' 5x, so a
+     * markdown-size check lets oversized HTML through and Telegram rejects it. */
+    char *html = telegram_render_html(s->buf.data);
+    if (!html) {
+        s->disabled = true;
+        return;
+    }
+    if (strlen(html) > 3500) {
+        s->disabled = true;
+        free(html);
         return;
     }
 
     time_t now = time(NULL);
     if (s->msg_id == 0) {
-        char *html = telegram_render_html(s->buf.data);
         double id = 0;
-        if (html && tg_send_html(s->bot, s->chat_id, html, &id)) {
+        if (tg_send_html(s->bot, s->chat_id, html, &id)) {
             s->msg_id = id;
             s->last_edit = now;
         } else {
@@ -315,9 +327,11 @@ static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userd
         return;
     }
 
-    if (now - s->last_edit < 1) return;
-    char *html = telegram_render_html(s->buf.data);
-    if (html && !tg_edit_html(s->bot, s->chat_id, s->msg_id, html)) s->disabled = true;
+    if (now - s->last_edit < 1) {
+        free(html);
+        return;
+    }
+    if (!tg_edit_html(s->bot, s->chat_id, s->msg_id, html)) s->disabled = true;
     free(html);
     s->last_edit = now;
     s->edits++;
@@ -976,21 +990,31 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                                              : (accum_content.len > 0 ? accum_content.data : NULL);
                 bool delivered = false;
                 if (sctx.msg_id > 0 && final_text) {
-                    char *html = telegram_render_html(final_text);
-                    if (html && strlen(html) <= 3900 && tg_edit_html(bot, chat_id_str, sctx.msg_id, html)) {
-                        delivered = true; /* the streamed message already holds the answer */
+                    /* Identical text means the last streamed edit already holds it;
+                     * editing again would earn "message is not modified". */
+                    if (sctx.buf.len > 0 && strcmp(sctx.buf.data, final_text) == 0) {
+                        delivered = true;
+                    } else {
+                        char *html = telegram_render_html(final_text);
+                        if (html && strlen(html) <= 3900 &&
+                            tg_edit_html(bot, chat_id_str, sctx.msg_id, html)) {
+                            delivered = true;
+                        }
+                        free(html);
                     }
-                    free(html);
-                }
-                if (!delivered && sctx.msg_id > 0) {
-                    telegram_bot_delete_message(bot, chat_id_str, sctx.msg_id);
                 }
                 if (!delivered) {
-                    if (final_text) {
-                        telegram_bot_send_rich(bot, chat_id_str, final_text);
-                    } else {
-                        telegram_bot_send_message(bot, chat_id_str, "Action completed.");
+                    /* Send first, then remove the provisional message: deleting
+                     * before a successful send loses the answer entirely if the
+                     * resend also fails (429, parse rejection). */
+                    bool sent = final_text ? telegram_bot_send_rich(bot, chat_id_str, final_text) : false;
+                    if (sent && sctx.msg_id > 0) {
+                        telegram_bot_delete_message(bot, chat_id_str, sctx.msg_id);
+                        delivered = true;
                     }
+                }
+                if (!delivered && !final_text) {
+                    telegram_bot_send_message(bot, chat_id_str, "Action completed.");
                 }
 
                 if (final_response_text) free(final_response_text);
