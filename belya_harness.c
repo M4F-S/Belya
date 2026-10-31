@@ -1803,7 +1803,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
                     char *breaker_alert = NULL;
                     bool tripped = belya_harness_record_tool_observation(sub_harness, tc->name, tc->arguments_json, obs, &breaker_alert);
-                    const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
+                    const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Error: tool returned no result");
 
                     belya_agent_add_tool_result(sub_agent, tc->id, tc->name, final_obs);
                     dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", final_obs ? final_obs : "");

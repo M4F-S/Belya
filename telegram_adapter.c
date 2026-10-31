@@ -438,10 +438,18 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
             if (updates && updates->type == JSON_ARRAY) {
                 for (size_t i = 0; i < updates->u.array.count; i++) {
                     JsonValue *up = updates->u.array.items[i];
-                    long u_id = (long)json_obj_get_num(up, "update_id", 0);
-                    if (u_id > ctx->bot->last_update_id) {
-                        ctx->bot->last_update_id = u_id;
-                    }
+                            long u_id = (long)json_obj_get_num(up, "update_id", 0);
+                            if (!json_obj_get(up, "callback_query")) {
+                                /* A plain message arrived while we were waiting for a button.
+                                   Leave it unacknowledged so the main loop still sees it, and
+                                   abandon the prompt: acknowledging it here destroyed the
+                                   user's message by advancing the offset past it. */
+                                ctx->bot->last_update_id = u_id - 1;
+                                answered = true;
+                                decision = false;
+                                break;
+                            }
+                            if (u_id > ctx->bot->last_update_id) ctx->bot->last_update_id = u_id;
 
                     JsonValue *cb = json_obj_get(up, "callback_query");
                     if (cb) {
@@ -919,12 +927,23 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                                 }
                             }
 
-                            if (!matched || matched->security == PERM_DENY) {
-                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                            if (!matched) {
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Unknown tool.");
                                 continue;
                             }
 
-                            if (matched->security == PERM_ASK_USER) {
+                            /* Call-level authorisation: judge the arguments, not just the
+                               registry tier. Every tool is registered PERM_ALLOW, so on this
+                               path the classifier is the only thing between the model and a
+                               destructive root command. Mirrors belya_harness.c:6178. */
+                            PermTier call_tier = belya_harness_permission_gate(harness, tc->name, tc->arguments_json);
+                            if (matched->security == PERM_DENY || call_tier == PERM_TIER_DENY) {
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name,
+                                    "Error: Tool blocked by security policy (destructive or out-of-workspace call).");
+                                continue;
+                            }
+
+                            if (matched->security == PERM_ASK_USER || call_tier == PERM_TIER_ASK) {
                                 bool permitted = false;
                                 if (harness->permission_prompt_fn) {
                                     permitted = harness->permission_prompt_fn(harness, tc->name, tc->arguments_json, harness->permission_userdata);
@@ -949,7 +968,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             char *breaker_alert = NULL;
                             bool tripped = belya_harness_record_tool_observation(harness, tc->name, tc->arguments_json, obs, &breaker_alert);
                             (void)tripped; /* breaker state is consumed via breaker_alert below */
-                            const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
+                            const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Error: tool returned no result");
 
                             belya_agent_add_tool_result(harness->agent, tc->id, tc->name, final_obs);
                             if (breaker_alert) free(breaker_alert);
