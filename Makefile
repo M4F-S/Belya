@@ -61,9 +61,9 @@ test-mock:
 	python3 tests/test_mock_server.py
 
 # Telegram markdown -> HTML renderer (pure function).
-test-tgrender:
-	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -o build/test_telegram_render tests/test_telegram_render.c telegram_render.c
-	./build/test_telegram_render
+test-tgrender: | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -o $(BUILD_DIR)/test_telegram_render tests/test_telegram_render.c telegram_render.c
+	./$(BUILD_DIR)/test_telegram_render
 
 # Telegram send path against a local fake Bot API (asserts the wire payload).
 TGSEND_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_telegram_send.c
