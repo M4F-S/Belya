@@ -50,9 +50,16 @@ static void buf_add_escaped(Buf *b, const char *s, size_t n) {
     }
 }
 
-static const char *skip_ws(const char *s) {
-    while (*s && isspace((unsigned char)*s)) s++;
-    return s;
+/*
+ * Bounded on purpose. An unbounded whitespace scan walks past the line's '\n',
+ * the caller then computes n - (trimmed - line) on a pointer past the line end,
+ * the subtraction wraps to ~SIZE_MAX, and split_row() reads off the end of the
+ * buffer. That was a real SIGSEGV; every scan here takes an explicit length.
+ */
+static size_t skip_ws_n(const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n && isspace((unsigned char)s[i])) i++;
+    return i;
 }
 
 static size_t rstrip_len(const char *s, size_t n) {
@@ -64,17 +71,16 @@ static size_t rstrip_len(const char *s, size_t n) {
  * Inline markdown inside one line: **bold**, `code`, and "- " bullets.
  * Toggles are deliberately simple - nesting bold inside code is not something
  * this agent emits, and one unbalanced tag makes Telegram reject the message.
+ * `lead` is a precomputed, bounded indent.
  */
-static void render_inline(Buf *out, const char *line, size_t n) {
-    size_t i = 0;
-    const char *p = skip_ws(line);
-    size_t indent = (size_t)(p - line);
+static void render_inline(Buf *out, const char *line, size_t n, size_t lead) {
+    size_t i = lead;
 
-    if (indent + 1 < n && line[indent] == '-' &&
-        (line[indent + 1] == ' ' || line[indent + 1] == '\t')) {
-        buf_add(out, line, indent);
+    if (lead + 1 < n && line[lead] == '-' &&
+        (line[lead + 1] == ' ' || line[lead + 1] == '\t')) {
+        buf_add(out, line, lead);
         buf_adds(out, "\xE2\x80\xA2 ");
-        i = indent + 1;
+        i = lead + 1;
         while (i < n && isspace((unsigned char)line[i])) i++;
     }
 
@@ -124,6 +130,9 @@ static int split_row(const char *line, size_t n, char cells[][MAX_CELL]) {
             cell_start = i + 1;
         }
     }
+    /* "| a | b |" yields a trailing empty cell; drop it so rows do not render
+     * with a dangling separator. */
+    if (count > 0 && cells[count - 1][0] == '\0') count--;
     return count;
 }
 
@@ -138,6 +147,13 @@ static bool is_separator_row(const char *line, size_t n) {
     return saw_dash;
 }
 
+/* Length of the line at p and the start of the following line. */
+static void line_at(const char *p, size_t *n, const char **next) {
+    const char *nl = strchr(p, '\n');
+    *n = nl ? (size_t)(nl - p) : strlen(p);
+    *next = nl ? nl + 1 : p + *n;
+}
+
 char *telegram_render_html(const char *markdown) {
     if (!markdown) return NULL;
 
@@ -149,66 +165,96 @@ char *telegram_render_html(const char *markdown) {
     headers[0][0] = '\0';
     int ncols = 0;
     bool in_table = false;
+    bool in_fence = false;
 
     const char *p = markdown;
     while (*p) {
-        const char *nl = strchr(p, '\n');
-        size_t n = nl ? (size_t)(nl - p) : strlen(p);
-        const char *line = p;
-        p = nl ? nl + 1 : p + n;
+        size_t n;
+        const char *next;
+        line_at(p, &n, &next);
 
-        const char *trimmed = skip_ws(line);
-        size_t tlen = rstrip_len(trimmed, n - (size_t)(trimmed - line));
+        size_t lead = skip_ws_n(p, n);
+        size_t tlen = rstrip_len(p + lead, n - lead);
 
-        if (tlen > 0 && trimmed[0] == '|') {
-            char cells[MAX_COLS][MAX_CELL];
-            int c = split_row(trimmed, tlen, cells);
+        /* fenced code: verbatim, and a leading pipe inside it is not a table */
+        if (tlen >= 3 && strncmp(p + lead, "```", 3) == 0) {
+            if (!in_fence) {
+                buf_adds(&out, "<pre>");
+                in_fence = true;
+            } else {
+                buf_adds(&out, "</pre>\n");
+                in_fence = false;
+            }
+            in_table = false;
+            p = next;
+            continue;
+        }
+        if (in_fence) {
+            buf_add_escaped(&out, p, rstrip_len(p, n));
+            buf_adds(&out, "\n");
+            p = next;
+            continue;
+        }
 
-            if (!in_table) {
+        /* A table starts only when the NEXT line is a separator row, so a line
+         * that merely begins with a pipe ("| grep foo") survives as text. */
+        if (!in_table && tlen > 0 && p[lead] == '|' && *next) {
+            size_t n2;
+            const char *next2;
+            line_at(next, &n2, &next2);
+            size_t lead2 = skip_ws_n(next, n2);
+            if (is_separator_row(next + lead2, n2 - lead2)) {
+                char cells[MAX_COLS][MAX_CELL];
+                int c = split_row(p + lead, tlen, cells);
                 ncols = c;
                 for (int i = 0; i < c; i++) memcpy(headers[i], cells[i], MAX_CELL);
-                if (*p) {
-                    const char *nl2 = strchr(p, '\n');
-                    size_t n2 = nl2 ? (size_t)(nl2 - p) : strlen(p);
-                    if (is_separator_row(p, n2)) p = nl2 ? nl2 + 1 : p + n2;
-                }
                 in_table = true;
+                p = next2; /* skip header + separator */
                 continue;
             }
+        }
 
-            /* data row: "• **Header** — value — value" */
+        if (in_table && tlen > 0 && p[lead] == '|') {
+            char cells[MAX_COLS][MAX_CELL];
+            int c = split_row(p + lead, tlen, cells);
             buf_adds(&out, "\xE2\x80\xA2 ");
             for (int i = 0; i < c; i++) {
                 if (i > 0) buf_adds(&out, " \xC2\xB7 ");
-                if (i < ncols && headers[i][0]) buf_adds(&out, "<b>");
-                render_inline(&out, cells[i], strlen(cells[i]));
-                if (i < ncols && headers[i][0]) buf_adds(&out, "</b>");
+                /* only the first column carries the row label */
+                bool label = (i == 0 && ncols > 0 && headers[0][0]);
+                if (label) buf_adds(&out, "<b>");
+                render_inline(&out, cells[i], strlen(cells[i]), 0);
+                if (label) buf_adds(&out, "</b>");
             }
             buf_adds(&out, "\n");
+            p = next;
             continue;
         }
-
         in_table = false;
 
-        if (tlen > 0 && trimmed[0] == '#') {
-            size_t h = 0;
-            while (h < tlen && trimmed[h] == '#') h++;
-            const char *text = skip_ws(trimmed + h);
-            size_t tl = rstrip_len(text, tlen - h);
+        if (tlen > 0 && p[lead] == '#') {
+            size_t h = lead;
+            while (h < n && p[h] == '#') h++;
+            size_t tl_lead = skip_ws_n(p + h, n - h);
+            size_t tl = rstrip_len(p + h + tl_lead, n - h - tl_lead);
             buf_adds(&out, "<b>");
-            render_inline(&out, text, tl);
+            render_inline(&out, p + h + tl_lead, tl, 0);
             buf_adds(&out, "</b>\n");
+            p = next;
             continue;
         }
 
-        if (tlen == 3 && (strncmp(trimmed, "---", 3) == 0 || strncmp(trimmed, "***", 3) == 0 ||
-                          strncmp(trimmed, "___", 3) == 0)) {
+        if (tlen == 3 && (strncmp(p + lead, "---", 3) == 0 || strncmp(p + lead, "***", 3) == 0 ||
+                          strncmp(p + lead, "___", 3) == 0)) {
+            p = next;
             continue;
         }
 
-        render_inline(&out, line, rstrip_len(line, n));
+        render_inline(&out, p, rstrip_len(p, n), lead);
         buf_adds(&out, "\n");
+        p = next;
     }
 
+    if (in_fence) buf_adds(&out, "</pre>\n");
     return out.data;
 }
