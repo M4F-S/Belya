@@ -47,6 +47,9 @@ $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIBS)
 
 # First real loop test: drives belya_agent_step() against a scripted model.
+test-mock:
+	python3 tests/test_mock_server.py
+
 test-loop: $(LOOP_TARGET)
 	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \
 	  pid=$$!; sleep 0.8; \
