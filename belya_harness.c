@@ -832,43 +832,105 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     }
 
     if (!pos) {
-        // Extract anchor token or up to first 24 chars for line search
-        char sample_token[64] = {0};
-        size_t sidx = 0;
-        const char *token_p = old_text;
-        while (*token_p == ' ' || *token_p == '\t' || *token_p == '\r' || *token_p == '\n') token_p++;
-        while (*token_p && *token_p != ' ' && *token_p != '\t' && *token_p != '=' && *token_p != '(' && *token_p != '\n' && sidx < sizeof(sample_token) - 1) {
-            sample_token[sidx++] = *token_p++;
+        // Extract up to 16 anchor tokens (length >= 3) and first trimmed line from old_text
+        char tokens[16][48];
+        size_t token_count = 0;
+        char first_line_trimmed[128] = {0};
+        bool got_first_line = false;
+
+        const char *tp = old_text;
+        while (*tp && token_count < 16) {
+            while (*tp && (*tp == ' ' || *tp == '\t' || *tp == '\r' || *tp == '\n')) tp++;
+            if (!*tp) break;
+            const char *t_start = tp;
+            while (*tp && *tp != ' ' && *tp != '\t' && *tp != '\r' && *tp != '\n') tp++;
+            size_t tlen = tp - t_start;
+            if (tlen >= 3 && tlen < sizeof(tokens[0])) {
+                memcpy(tokens[token_count], t_start, tlen);
+                tokens[token_count][tlen] = '\0';
+                token_count++;
+            }
         }
-        sample_token[sidx] = '\0';
+
+        // Extract first non-empty line
+        const char *flp = old_text;
+        while (*flp && (*flp == ' ' || *flp == '\t' || *flp == '\r' || *flp == '\n')) flp++;
+        const char *fl_start = flp;
+        while (*flp && *flp != '\r' && *flp != '\n') flp++;
+        size_t fl_len = flp - fl_start;
+        if (fl_len > 0) {
+            size_t copy_fl = fl_len < sizeof(first_line_trimmed) - 1 ? fl_len : sizeof(first_line_trimmed) - 1;
+            memcpy(first_line_trimmed, fl_start, copy_fl);
+            first_line_trimmed[copy_fl] = '\0';
+            got_first_line = true;
+        }
+
+        // Pass 1: Find best matching line in content
+        size_t cur_ln = 1;
+        size_t best_ln = 0;
+        int best_score = 0;
+        const char *scan = content;
+        while (*scan) {
+            const char *ln_start = scan;
+            while (*scan && *scan != '\n') scan++;
+            size_t cur_ln_len = scan - ln_start;
+
+            char line_buf[512];
+            size_t copy_sz = cur_ln_len < sizeof(line_buf) - 1 ? cur_ln_len : sizeof(line_buf) - 1;
+            memcpy(line_buf, ln_start, copy_sz);
+            line_buf[copy_sz] = '\0';
+
+            int score = 0;
+            if (got_first_line && strlen(first_line_trimmed) >= 4 && strstr(line_buf, first_line_trimmed)) {
+                score += 15;
+            }
+            for (size_t k = 0; k < token_count; k++) {
+                if (strstr(line_buf, tokens[k])) {
+                    score += 2;
+                }
+            }
+            if (score > best_score) {
+                best_score = score;
+                best_ln = cur_ln;
+            }
+
+            cur_ln++;
+            if (*scan == '\n') scan++;
+        }
 
         DynString err = dyn_str_new();
         dyn_str_append(&err, "Error: old_text was not found in the target file.");
-        if (sidx >= 3) {
-            dyn_str_append(&err, "\nSimilar lines found in file for reference:\n");
-            size_t ln = 1;
-            int found_count = 0;
-            const char *scan = content;
-            while (*scan && found_count < 3) {
+        if (best_score > 0 && best_ln > 0) {
+            size_t start_ln = (best_ln > 4) ? (best_ln - 4) : 1;
+            size_t end_ln = best_ln + 5;
+            dyn_str_appendf(&err, "\nSimilar lines found in file for reference (closest matching section in '%s' around line %zu):\n", path, best_ln);
+            dyn_str_append(&err, "-----------------------------------------------------------------\n");
+
+            cur_ln = 1;
+            scan = content;
+            while (*scan) {
                 const char *ln_start = scan;
                 while (*scan && *scan != '\n') scan++;
                 size_t cur_ln_len = scan - ln_start;
-                char line_buf[256];
-                size_t copy_sz = cur_ln_len < sizeof(line_buf) - 1 ? cur_ln_len : sizeof(line_buf) - 1;
-                memcpy(line_buf, ln_start, copy_sz);
-                line_buf[copy_sz] = '\0';
 
-                if (strstr(line_buf, sample_token)) {
-                    dyn_str_appendf(&err, "  Line %zu: %s\n", ln, line_buf);
-                    found_count++;
+                if (cur_ln >= start_ln && cur_ln <= end_ln) {
+                    char line_buf[512];
+                    size_t copy_sz = cur_ln_len < sizeof(line_buf) - 1 ? cur_ln_len : sizeof(line_buf) - 1;
+                    memcpy(line_buf, ln_start, copy_sz);
+                    line_buf[copy_sz] = '\0';
+                    dyn_str_appendf(&err, "  %4zu | %s\n", cur_ln, line_buf);
                 }
-                ln++;
+
+                cur_ln++;
                 if (*scan == '\n') scan++;
+                if (cur_ln > end_ln) break;
             }
-            if (found_count == 0) {
-                dyn_str_append(&err, "  (No lines containing search anchor found. Call read_file to inspect exact current text.)\n");
-            }
+            dyn_str_append(&err, "-----------------------------------------------------------------\n");
+            dyn_str_append(&err, "Hint: Check indentation, line numbers, and exact whitespace from the snippet above before retrying.\n");
+        } else {
+            dyn_str_append(&err, "\n(No lines containing search anchor found. Call read_file to inspect exact current text.)\n");
         }
+
         free(content);
         return err.data;
     }
@@ -1163,6 +1225,88 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
     closedir(d);
 }
 
+static const char *find_ripgrep_bin(void) {
+    static const char *candidates[] = {
+        "/opt/homebrew/bin/rg",
+        "/usr/local/bin/rg",
+        "/usr/bin/rg",
+        "/bin/rg",
+        NULL
+    };
+    for (int i = 0; candidates[i]; i++) {
+        if (access(candidates[i], X_OK) == 0) return candidates[i];
+    }
+    return NULL;
+}
+
+static bool search_files_ripgrep(const char *rg_bin, const char *path, const char *pattern, const char *glob_pat, bool is_regex, DynString *out, int *match_count) {
+    if (!rg_bin || !path || !pattern) return false;
+
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) return false;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return false;
+    }
+
+    if (pid == 0) {
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        int dev_null = open("/dev/null", O_WRONLY);
+        if (dev_null >= 0) {
+            dup2(dev_null, STDERR_FILENO);
+            close(dev_null);
+        }
+        close(pipe_fds[1]);
+
+        const char *argv[16];
+        int idx = 0;
+        argv[idx++] = rg_bin;
+        argv[idx++] = "--max-count";
+        argv[idx++] = "30";
+        argv[idx++] = "--no-heading";
+        argv[idx++] = "--line-number";
+        argv[idx++] = "--color";
+        argv[idx++] = "never";
+        if (!is_regex) {
+            argv[idx++] = "-F";
+        }
+        if (glob_pat && strlen(glob_pat) > 0) {
+            argv[idx++] = "-g";
+            argv[idx++] = glob_pat;
+        }
+        argv[idx++] = pattern;
+        argv[idx++] = path;
+        argv[idx] = NULL;
+
+        execv(rg_bin, (char *const *)argv);
+        _exit(127);
+    }
+
+    close(pipe_fds[1]);
+    char buf[1024];
+    ssize_t bytes_read;
+    int matches = 0;
+    while ((bytes_read = read(pipe_fds[0], buf, sizeof(buf) - 1)) > 0) {
+        buf[bytes_read] = '\0';
+        for (ssize_t b = 0; b < bytes_read; b++) {
+            if (buf[b] == '\n') matches++;
+        }
+        dyn_str_append(out, buf);
+        if (matches >= 100) break;
+    }
+    close(pipe_fds[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    *match_count = matches;
+    return (WIFEXITED(status) && (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 1));
+}
+
 static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *pattern = json_obj_get_str(args, "pattern");
@@ -1189,7 +1333,16 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
 
     DynString out = dyn_str_new();
     int match_count = 0;
-    search_files_recursive(path, pattern, glob_pat, use_regex, preg, &out, &match_count);
+
+    const char *rg_bin = find_ripgrep_bin();
+    bool rg_used = false;
+    if (rg_bin && is_path_safe(path)) {
+        rg_used = search_files_ripgrep(rg_bin, path, pattern, glob_pat, use_regex, &out, &match_count);
+    }
+
+    if (!rg_used) {
+        search_files_recursive(path, pattern, glob_pat, use_regex, preg, &out, &match_count);
+    }
 
     if (preg) {
         regfree(preg);
@@ -6242,9 +6395,9 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
     if (h->stage_mode) {
         printf("\n\033[1;36m┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\033[0m\n");
-        printf("\033[1;36m┃\033[0m \033[1;33m🏆 CREATE AI AGENTS CHAMPIONSHIP (DUBAI) - LIVE STAGE TELEMETRY HUD\033[0m       \033[1;36m┃\033[0m\n");
-        printf("\033[1;36m┃\033[0m Agent:    \033[1;37mBelya (Sovereign Business AI - Best Business Track)\033[0m               \033[1;36m┃\033[0m\n");
-        printf("\033[1;36m┃\033[0m Runtime:  \033[1;32mBare-Metal C99 POSIX\033[0m (macOS M2 / Linux) | RSS: \033[1;32m%.2f MB\033[0m           \033[1;36m┃\033[0m\n", belya_get_current_rss_mb());
+        printf("\033[1;36m┃\033[0m \033[1;33m⚡ BELYA AUTONOMOUS RUNTIME TELEMETRY HUD\033[0m                                   \033[1;36m┃\033[0m\n");
+        printf("\033[1;36m┃\033[0m Agent:    \033[1;37mBelya (Autonomous Systems Execution Engine)\033[0m                        \033[1;36m┃\033[0m\n");
+        printf("\033[1;36m┃\033[0m Runtime:  \033[1;32mBare-Metal C99 POSIX\033[0m (macOS / Linux) | RSS: \033[1;32m%.2f MB\033[0m               \033[1;36m┃\033[0m\n", belya_get_current_rss_mb());
         printf("\033[1;36m┃\033[0m Security: \033[1;32m100%% Air-Gapped\033[0m | Zero-Leak SQLite Memory | Sandboxed Execution     \033[1;36m┃\033[0m\n");
         printf("\033[1;36m┃\033[0m Model:    \033[1;35m%-26s\033[0m | Tools: \033[1;33m%zu active\033[0m                      \033[1;36m┃\033[0m\n",
                (h->agent->gateway && h->agent->gateway->model) ? h->agent->gateway->model : "default", h->tool_count);

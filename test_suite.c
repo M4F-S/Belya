@@ -3410,7 +3410,11 @@ static void test_belya_company_system(void) {
     char *health = belya_company_monitor_health(company);
     assert(health != NULL);
     assert(strstr(health, "Agent Well-Being") != NULL);
+#if (defined(__has_feature) && __has_feature(address_sanitizer)) || defined(__SANITIZE_ADDRESS__)
+    assert(company->team_vmrss_mb < 1024.0); // ASan shadow memory increases virtual/resident footprint
+#else
     assert(company->team_vmrss_mb < 50.0);
+#endif
     free(health);
 
     // 6. Customer Delivery Director digest

@@ -268,16 +268,16 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             "5. Don't reinvent the wheel; instead, leverage proven frameworks and best practices from past successes.\n"
             "6. Zero-Tolerance Memory Safety: Always check allocation returns (malloc/calloc != NULL), validate pointer bounds, free every resource deterministically, and guarantee zero memory leaks or undefined behavior.\n\n"
             "Execution Protocol:\n"
-            "1. OBSERVE: Before modifying any file, ALWAYS call read_file first to verify its exact current contents. Do not guess line numbers, indentation, or whitespace.\n"
-            "2. THINK: State your hypothesis and reasoning in your response text BEFORE calling any tool. Explain WHY you chose this action.\n"
-            "3. ACT: Execute one focused tool call at a time. Check the result before proceeding.\n"
-            "4. VERIFY: After editing code, run the compiler or test suite to confirm your change works. If it fails, re-read the file and try a different approach.\n"
-            "5. If you fail an edit 3 times, STOP retrying the same approach. Re-read the file with read_file, identify what changed, and formulate a completely new strategy.\n"
-            "6. Git Workflow: Work strictly within a Git repository. Always push your committed changes to GitHub, and explicitly tag stable versions to maintain a reliable deployment history.\n\n"
+            "1. OBSERVE & LOCATE: Search codebase symbols or read specific lines before modifying code. Never guess function signatures, line numbers, indentation, or whitespace.\n"
+            "2. HYPOTHESIZE: State a concise, falsifiable hypothesis in text BEFORE calling tools. Explain WHY the bug or task exists and WHAT minimal change addresses it.\n"
+            "3. SURGICAL MINIMAL EDITS: Execute surgical edits that touch ONLY the necessary functions. Preserve existing comments, docstrings, formatting, and surrounding logic.\n"
+            "4. CONTINUOUS VERIFICATION: After editing any code, immediately run the project's build and test suite (e.g. make test, cargo test) via bash. If tests fail, inspect the exact compiler diagnostic or assertion failure and fix it autonomously.\n"
+            "5. REPETITIVE FAILURE CIRCUIT BREAKER: If an edit or test fails twice, STOP guessing. Re-read the neighborhood lines to see the actual file state, inspect diagnostics, and formulate a fresh hypothesis.\n"
+            "6. GIT DISCIPLINE: Work strictly within the Git repository. Create conventional commits and explicitly tag stable milestones to maintain reliable deployment history.\n\n"
             "Tool Constraints:\n"
             "- edit_file: old_text must EXACTLY match the file content character-for-character, including all leading spaces, tabs, and newlines. ALWAYS read_file first.\n"
             "- bash: Do NOT run interactive commands (vim, nano, top, less, man, sudo). They will hang. Use cat, head, tail, sed, awk, grep instead.\n"
-            "- search_files: Returns max 50 matches. Use file_glob or regex to narrow scope.\n"
+            "- search_files: Fast ripgrep/grep search. Returns max 50 matches. Use file_glob or regex to narrow scope.\n"
             "- For large files (>200 lines), use read_file with offset and limit parameters.\n\n"
             "Conversational & Greeting Protocol:\n"
             "- When the user sends a greeting (e.g., 'hello', 'hi', 'hey'), pleasantry, or introductory question (e.g., 'who are you', 'what can you do'), respond conversationally, concisely, and naturally in plain text. DO NOT invoke any tools or output JSON function calls for simple greetings.\n"
@@ -387,24 +387,70 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
     const char *limit_env = getenv("TOOL_OUTPUT_LIMIT");
     size_t limit_bytes = (limit_env && atoi(limit_env) > 500) ? (size_t)atoi(limit_env) : 8000;
 
-    if (result && strlen(result) > limit_bytes) {
+    if (result && strlen(result) > 0) {
         size_t total_len = strlen(result);
-        size_t half = limit_bytes / 2;
-        size_t head_len = half > 1500 ? (half - 500) : half;
-        size_t tail_len = half > 1500 ? (half + 500) : half;
-        if (head_len + tail_len > limit_bytes) {
-            head_len = limit_bytes / 2;
-            tail_len = limit_bytes - head_len;
-        }
 
-        DynString ds = dyn_str_new();
-        dyn_str_append_len(&ds, result, head_len);
-        dyn_str_appendf(&ds, "\n\n[... Output truncated: %zu bytes omitted of %zu total bytes to preserve context & speed ...]\n\n",
-                        total_len - (head_len + tail_len), total_len);
-        dyn_str_append_len(&ds, result + (total_len - tail_len), tail_len);
-        m->content = ds.data;
+        // Count total lines to support line-aware dual-head folding
+        size_t line_count = 0;
+        for (size_t p = 0; p < total_len; p++) {
+            if (result[p] == '\n') line_count++;
+        }
+        if (total_len > 0 && result[total_len - 1] != '\n') line_count++;
+
+        if (line_count > 60 || total_len > limit_bytes) {
+            const char *head_end = NULL;
+            const char *tail_start = NULL;
+
+            if (line_count > 60) {
+                // Find end of line 15
+                size_t l_idx = 0;
+                const char *s = result;
+                while (*s && l_idx < 15) {
+                    if (*s == '\n') l_idx++;
+                    s++;
+                }
+                head_end = s;
+
+                // Find start of line (line_count - 30)
+                size_t target_tail_line = (line_count > 30) ? (line_count - 30) : 0;
+                l_idx = 0;
+                s = result;
+                while (*s && l_idx < target_tail_line) {
+                    if (*s == '\n') l_idx++;
+                    s++;
+                }
+                tail_start = s;
+
+                // Guard: if head_end >= tail_start or combined byte length exceeds limit_bytes, fall back to byte bounds
+                if (head_end >= tail_start || ((size_t)(head_end - result) + (size_t)(result + total_len - tail_start)) > limit_bytes) {
+                    head_end = NULL;
+                    tail_start = NULL;
+                }
+            }
+
+            if (!head_end || !tail_start) {
+                size_t half = limit_bytes / 2;
+                size_t head_len = half > 1500 ? (half - 500) : half;
+                size_t tail_len = half > 1500 ? (half + 500) : half;
+                if (head_len + tail_len > limit_bytes) {
+                    head_len = limit_bytes / 2;
+                    tail_len = limit_bytes - head_len;
+                }
+                head_end = result + head_len;
+                tail_start = result + (total_len - tail_len);
+            }
+
+            DynString ds = dyn_str_new();
+            dyn_str_append_len(&ds, result, (size_t)(head_end - result));
+            dyn_str_appendf(&ds, "\n\n[... Output truncated: %zu bytes omitted of %zu total bytes to preserve context & speed ...]\n\n",
+                            (size_t)(tail_start - head_end), total_len);
+            dyn_str_append(&ds, tail_start);
+            m->content = ds.data;
+        } else {
+            m->content = xstrdup(result);
+        }
     } else {
-        m->content = xstrdup(result ? result : "");
+        m->content = xstrdup("");
     }
 }
 
@@ -2366,6 +2412,41 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 const char *provider = provider_label(agent->gateway->endpoint);
                 dyn_str_appendf(&dynamic_part, "Active Model: %s (Provider: %s).\nWhen asked what model, LLM, or backend you are currently running, identify yourself as Belya powered by '%s' via %s.\n",
                                 agent->gateway->model, provider, agent->gateway->model, provider);
+            }
+
+            if (strstr(dynamic_part.data, "=== Repository Factsheet") == NULL) {
+                dyn_str_append(&dynamic_part, "\n=== Repository Factsheet (Auto-Detected) ===\n");
+                if (access("Makefile", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: C/POSIX Makefile\nPrimary Verification: 'make test'\n");
+                } else if (access("Cargo.toml", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: Rust / Cargo\nPrimary Verification: 'cargo test'\n");
+                } else if (access("package.json", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: Node / TypeScript\nPrimary Verification: 'npm test'\n");
+                } else if (access("CMakeLists.txt", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: CMake\nPrimary Verification: 'ctest'\n");
+                } else if (access("go.mod", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: Go Module\nPrimary Verification: 'go test ./...'\n");
+                } else if (access("pyproject.toml", F_OK) == 0) {
+                    dyn_str_append(&dynamic_part, "Project Engine: Python\nPrimary Verification: 'pytest'\n");
+                }
+
+                FILE *gh = fopen(".git/HEAD", "r");
+                if (gh) {
+                    char head_buf[256];
+                    if (fgets(head_buf, sizeof(head_buf), gh)) {
+                        char *nl = strchr(head_buf, '\n');
+                        if (nl) *nl = '\0';
+                        char *cr = strchr(head_buf, '\r');
+                        if (cr) *cr = '\0';
+                        if (strncmp(head_buf, "ref: refs/heads/", 16) == 0) {
+                            dyn_str_appendf(&dynamic_part, "Git Branch: %s\n", head_buf + 16);
+                        } else if (strlen(head_buf) > 0) {
+                            head_buf[10] = '\0';
+                            dyn_str_appendf(&dynamic_part, "Git Commit: %s (detached)\n", head_buf);
+                        }
+                    }
+                    fclose(gh);
+                }
             }
 
             if (use_anthropic_cache_blocks) {
