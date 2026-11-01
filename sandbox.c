@@ -35,11 +35,13 @@
      LANDLOCK_ACCESS_FS_REFER | LANDLOCK_ACCESS_FS_TRUNCATE)
 
 /* Landlock ABI 4 added TCP connect control. Denying every port outright would
- * break git, curl and package managers, so 80/443 stay open unless the operator
- * overrides it. Inbound listening is deliberately not handled: the agent starts
+ * break git, curl and package managers, so 22/80/443 stay open unless the
+ * operator overrides it. 22 is included because the agent pushes over SSH with
+ * a deploy key; excluding it would silently break every deploy path while 443
+ * remains available for exfiltration anyway. Inbound listening is deliberately not handled: the agent starts
  * local servers on purpose and that is not an egress risk. */
 #define SB_MAX_ALLOW_PORTS 8
-#define SB_DEFAULT_PORTS "80,443"
+#define SB_DEFAULT_PORTS "22,80,443"
 
 static size_t parse_ports(unsigned short *ports, size_t max) {
     const char *env = getenv("BELYA_SANDBOX_ALLOW_PORTS");
