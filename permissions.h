@@ -33,6 +33,10 @@ typedef enum {
  * from tests. args_json may be NULL. */
 PermTier permission_classify(const char *tool_name, const char *args_json);
 
+/* Turbo widens ASK to ALLOW and leaves DENY untouched: an auto-approve
+ * switch that can authorise a destructive call is not a mode. */
+PermTier permission_apply_turbo(PermTier tier, int turbo);
+
 /* True when `cmd` is a single, un-chained invocation of a read-only or
  * build-only command. Any shell metacharacter disqualifies it. */
 bool permission_is_safe_command(const char *cmd);

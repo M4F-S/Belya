@@ -118,5 +118,19 @@ int main(void) {
 
     printf("\npermission tests: %s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED",
            g_fail, g_fail == 1 ? "" : "s");
+    /* Turbo: widens ASK, never touches DENY. */
+    if (permission_apply_turbo(PERM_TIER_ASK, 1) != PERM_TIER_ALLOW) {
+        printf("  [FAIL] turbo widens ASK\n");
+        g_fail++;
+    }
+    if (permission_apply_turbo(PERM_TIER_DENY, 1) != PERM_TIER_DENY) {
+        printf("  [FAIL] turbo must not override DENY\n");
+        g_fail++;
+    }
+    if (permission_apply_turbo(PERM_TIER_ALLOW, 0) != PERM_TIER_ALLOW) {
+        printf("  [FAIL] turbo off must not change ALLOW\n");
+        g_fail++;
+    }
+
     return g_fail ? 1 : 0;
 }
