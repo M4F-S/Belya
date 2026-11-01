@@ -290,6 +290,19 @@ static bool tg_edit_html(TelegramBot *bot, const char *chat_id, double msg_id, c
  * in a user's chat. Content deltas accumulate and repaint a single message,
  * throttled to ~1/second because Telegram rate-limits editMessageText.
  */
+/* Turbo mode: auto-approve ASK-tier calls for a bounded window. DENY is not
+ * affected - see permission_apply_turbo(). Off by default, armed per operator
+ * command or by BELYA_TURBO=1 (24h) so a restart does not silently arm it. */
+static time_t g_turbo_until = 0;
+
+static int turbo_active(void) {
+    if (g_turbo_until == 0) {
+        const char *env = getenv("BELYA_TURBO");
+        if (env && env[0] == '1') g_turbo_until = time(NULL) + 24 * 3600;
+    }
+    return g_turbo_until > time(NULL);
+}
+
 static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userdata) {
     TelegramStream *s = (TelegramStream *)userdata;
     if (!s || s->disabled || !chunk || !chunk[0]) return;
@@ -646,6 +659,34 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     continue;
                 }
 
+                if (strncmp(text, "/turbo", 6) == 0) {
+                    const char *arg = text + 6;
+                    while (*arg == ' ') arg++;
+                    char turbo_msg[320];
+                    if (*arg == '\0') {
+                        long left = (g_turbo_until > time(NULL)) ? (long)(g_turbo_until - time(NULL)) : 0;
+                        if (left > 0)
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 %ld min left. ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.",
+                                left / 60);
+                        else
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "Turbo OFF. ASK gates prompt with buttons.\n/turbo 30 turns it on for 30 min.");
+                    } else if (strcmp(arg, "off") == 0) {
+                        g_turbo_until = 0;
+                        snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again.");
+                    } else {
+                        long mins = strtol(arg, NULL, 10);
+                        if (mins <= 0) mins = 30;
+                        if (mins > 720) mins = 720;
+                        g_turbo_until = time(NULL) + mins * 60;
+                        snprintf(turbo_msg, sizeof(turbo_msg),
+                            "\u26a1 Turbo ON for %ld min. ASK gates auto-approve, DENY still blocks.", mins);
+                    }
+                    telegram_bot_send_message(bot, chat_id_str, turbo_msg);
+                    continue;
+                }
+
                 if (strcmp(text, "/status") == 0) {
                     size_t total_p = harness->agent->total_prompt_tokens;
                     size_t total_c = harness->agent->total_cached_tokens;
@@ -937,6 +978,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                                path the classifier is the only thing between the model and a
                                destructive root command. Mirrors belya_harness.c:6178. */
                             PermTier call_tier = belya_harness_permission_gate(harness, tc->name, tc->arguments_json);
+                            {
+                                int turbo = turbo_active();
+                                call_tier = permission_apply_turbo(call_tier, turbo);
+                                /* One line per gated call: without it the journal shows
+                                 * nothing at all about why a tool ran or was refused. */
+                                fprintf(stderr, "[perm] tool=%s tier=%s turbo=%d\n",
+                                        tc->name, permission_tier_name(call_tier), turbo);
+                            }
                             if (matched->security == PERM_DENY || call_tier == PERM_TIER_DENY) {
                                 belya_agent_add_tool_result(harness->agent, tc->id, tc->name,
                                     "Error: Tool blocked by security policy (destructive or out-of-workspace call).");

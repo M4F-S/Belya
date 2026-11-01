@@ -250,3 +250,8 @@ const char *permission_tier_name(PermTier tier) {
     }
     return "unknown";
 }
+
+PermTier permission_apply_turbo(PermTier tier, int turbo) {
+    if (turbo && tier == PERM_TIER_ASK) return PERM_TIER_ALLOW;
+    return tier;
+}
