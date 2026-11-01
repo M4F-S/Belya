@@ -421,6 +421,26 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
 
     // Delete existing duplicate with identical topic, wing, and room to prevent pollution
     sqlite3_stmt *del_stmt;
+
+    /* agent_memory_fts is a separate table with its own rowids. Deleting only
+       from agent_memory left the FTS copy behind, so the JOIN on rowid in
+       belya_agent_search_memory started matching unrelated rows as soon as a
+       topic was updated. Clear the index entry first, while the old row is
+       still there to select it by. */
+    if (agent->has_fts5) {
+        const char *del_fts_sql =
+            "DELETE FROM agent_memory_fts WHERE rowid IN "
+            "(SELECT rowid FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?);";
+        sqlite3_stmt *del_fts = NULL;
+        if (sqlite3_prepare_v2(agent->db, del_fts_sql, -1, &del_fts, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(del_fts, 1, topic, -1, SQLITE_STATIC);
+            sqlite3_bind_text(del_fts, 2, w, -1, SQLITE_STATIC);
+            sqlite3_bind_text(del_fts, 3, r, -1, SQLITE_STATIC);
+            sqlite3_step(del_fts);
+            sqlite3_finalize(del_fts);
+        }
+    }
+
     const char *del_sql = "DELETE FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?;";
     if (sqlite3_prepare_v2(agent->db, del_sql, -1, &del_stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(del_stmt, 1, topic, -1, SQLITE_STATIC);
@@ -431,6 +451,7 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     }
 
     sqlite3_stmt *stmt;
+    sqlite3_int64 new_rowid = 0;
     const char *sql = "INSERT INTO agent_memory (topic, content, wing, room, salience, access_count) VALUES (?, ?, ?, ?, 1.0, 0);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, topic, -1, SQLITE_STATIC);
@@ -439,15 +460,18 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
         sqlite3_bind_text(stmt, 4, r, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
+        new_rowid = sqlite3_last_insert_rowid(agent->db);
     }
 
     if (agent->has_fts5) {
-        const char *fts_insert = "INSERT INTO agent_memory_fts (topic, content) VALUES (?, ?);";
+        /* Bind the SAME rowid the row got in agent_memory, so the JOIN is sound. */
+        const char *fts_insert = "INSERT INTO agent_memory_fts (rowid, topic, content) VALUES (?, ?, ?);";
         if (sqlite3_prepare_v2(agent->db, fts_insert, -1, &stmt, NULL) == SQLITE_OK) {
             char fts_top[512];
             snprintf(fts_top, sizeof(fts_top), "%s %s %s", w, r, topic);
-            sqlite3_bind_text(stmt, 1, fts_top, -1, SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, content, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(stmt, 1, new_rowid);
+            sqlite3_bind_text(stmt, 2, fts_top, -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 3, content, -1, SQLITE_STATIC);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -2535,6 +2559,16 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         }
         agent->messages = new_msgs;
     }
+    /* A transport failure is not something the assistant said. Recording it as
+       an assistant turn feeds the model its own error text on the next call, and
+       it starts apologising for a network it cannot see. Return the error to
+       the caller (which shows the user) without touching history. */
+    if (resp.content &&
+        (strncmp(resp.content, "Network Error:", 14) == 0 ||
+         strncmp(resp.content, "API Error:", 10) == 0)) {
+        return resp;
+    }
+
     BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
     memset(ast_msg, 0, sizeof(BelyaMessage));
     ast_msg->role = xstrdup("assistant");

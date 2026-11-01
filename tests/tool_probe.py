@@ -172,6 +172,13 @@ def main():
     print("\nSUMMARY:", ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
     print("total:", len(RESULTS))
 
+    # This used to print and exit 0 no matter what, so a broken tool layer passed
+    # the gate. Anything that is not OK now fails the build.
+    bad = [r for r in RESULTS if r["status"] != "OK"]
+    if bad:
+        print("\nFAILED:", ", ".join(f'{r["tool"]}={r["status"]}' for r in bad))
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     CURRENT_TOOL = ""

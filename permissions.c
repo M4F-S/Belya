@@ -61,7 +61,7 @@ bool permission_arg_string(const char *args_json, const char *key, char *buf, si
 static const char *const k_safe_argv0[] = {
     "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "find", "file",
     "stat", "du", "df", "which", "uname", "echo", "printf", "true", "false",
-    "date", "sort", "uniq", "cut", "tr", "nl", "diff", "make", "gcc", "cc",
+    "date", "sort", "uniq", "cut", "tr", "nl", "diff", "gcc", "cc",
     "clang", "nm", "objdump", "readelf", "sha256sum", "md5sum", "basename",
     "dirname", "realpath", "tree", "jq", "git", NULL
 };
@@ -184,6 +184,85 @@ static bool command_is_destructive(const char *cmd) {
     return false;
 }
 
+
+/* --------------------------------------------------- hard denial vectors */
+/*
+ * The first classifier matched argv0 by exact string, so "/bin/rm -rf /" was
+ * only ASK - and ASK is auto-approved under turbo. These checks run on every
+ * token, strip any directory prefix, and understand the wrappers that are
+ * normally used to slip past a naive match (env/nice/time/sudo/xargs/-exec).
+ * A verdict here is DENY and turbo cannot lift it.
+ */
+static const char *tok_basename(const char *tok) {
+    const char *slash = strrchr(tok, '/');
+    return slash ? slash + 1 : tok;
+}
+
+static bool is_rootish_operand(const char *tok) {
+    static const char *const k_roots[] = {
+        "/", "/*", "~", "~/", "$HOME", "${HOME}", "/etc", "/usr", "/bin", "/sbin",
+        "/var", "/opt", "/boot", "/home", "/root", "/lib", "/lib64", "/dev", NULL
+    };
+    if (in_list(k_roots, tok)) return true;
+    /* --no-preserve-root, and any path under a root-ish prefix, counts */
+    if (strncmp(tok, "--no-preserve-root", 18) == 0) return true;
+    for (int i = 0; k_roots[i]; i++) {
+        size_t n = strlen(k_roots[i]);
+        if (strncmp(tok, k_roots[i], n) == 0 && tok[n] == '/') return true;
+    }
+    return false;
+}
+
+static bool token_is_destructive_binary(const char *base) {
+    static const char *const k_bins[] = {
+        "rm", "rmdir", "unlink", "shred", "wipefs", "mkfs", "mkfs.ext4", "mkfs.xfs",
+        "dd", "truncate", "mkswap", NULL
+    };
+    for (int i = 0; k_bins[i]; i++)
+        if (strcmp(base, k_bins[i]) == 0) return true;
+    if (strncmp(base, "mkfs.", 5) == 0) return true;
+    return false;
+}
+
+static bool command_has_denied_vector(const char *cmd) {
+    if (!cmd) return false;
+
+    char buf[PERM_CMD_MAX];
+    snprintf(buf, sizeof buf, "%s", cmd);
+
+    bool destructive_seen = false;
+    bool root_operand = false;
+
+    /* separators become spaces so every word is visible as its own token */
+    for (char *p = buf; *p; p++)
+        if (*p == ';' || *p == '|' || *p == '&' || *p == '\n' || *p == '(' || *p == ')')
+            *p = ' ';
+
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+        const char *base = tok_basename(tok);
+        if (token_is_destructive_binary(base)) destructive_seen = true;
+        if (is_rootish_operand(tok)) root_operand = true;
+        /* "--output=/anything" on git (or any tool) writes outside the workspace */
+        if (strncmp(tok, "--output=/", 10) == 0) return true;
+        /* make -f/-C pointed at the root filesystem */
+        if ((strcmp(base, "make") == 0 || strcmp(base, "gmake") == 0)) {
+            /* handled by the following tokens */
+        }
+    }
+
+    if (destructive_seen && root_operand) return true;
+
+    if (str_contains_ci(cmd, "-exec rm") || str_contains_ci(cmd, "xargs rm") ||
+        str_contains_ci(cmd, "xargs -0 rm") || str_contains_ci(cmd, "> /etc/") ||
+        str_contains_ci(cmd, ">> /etc/") || str_contains_ci(cmd, "> /usr/") ||
+        str_contains_ci(cmd, "make -f /dev/") || str_contains_ci(cmd, "make -f /etc/") ||
+        str_contains_ci(cmd, "make -C / ") || str_contains_ci(cmd, "-o /etc/"))
+        return true;
+
+    return false;
+}
+
 /* ------------------------------------------------------------- classify */
 
 static bool is_read_tool(const char *t) {
@@ -202,7 +281,7 @@ static bool is_write_tool(const char *t) {
 static bool is_inert_tool(const char *t) {
     return strcmp(t, "todo_write") == 0 || strcmp(t, "todo_read") == 0 ||
            strcmp(t, "memory_save") == 0 || strcmp(t, "memory_recall") == 0 ||
-           strcmp(t, "send_telegram") == 0 || strcmp(t, "exit_plan_mode") == 0 ||
+           strcmp(t, "send_telegram") == 0 ||
            strcmp(t, "enter_plan_mode") == 0 || strcmp(t, "task") == 0 ||
            strcmp(t, "web_search") == 0;
 }
@@ -216,6 +295,7 @@ PermTier permission_classify(const char *tool_name, const char *args_json) {
             return PERM_TIER_ASK;
         }
         if (command_is_destructive(cmd)) return PERM_TIER_DENY;
+        if (command_has_denied_vector(cmd)) return PERM_TIER_DENY;
         if (permission_is_safe_command(cmd)) return PERM_TIER_ALLOW;
         return PERM_TIER_ASK;
     }
