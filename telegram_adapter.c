@@ -313,12 +313,31 @@ static bool tg_edit_html(TelegramBot *bot, const char *chat_id, double msg_id, c
  * affected - see permission_apply_turbo(). Off by default, armed per operator
  * command or by BELYA_TURBO=1 (24h) so a restart does not silently arm it. */
 static time_t g_turbo_until = 0;
+static int g_turbo_forever = 0;
+static int g_turbo_loaded = 0;
+
+/* "Forever" has to survive a restart or it is not forever. A one-byte marker
+ * file is the whole persistence layer: present = on, absent = not. */
+static const char *turbo_state_path(void) {
+    const char *p = getenv("BELYA_TURBO_FILE");
+    return (p && *p) ? p : "/opt/belya/.turbo";
+}
+
+static void turbo_state_load(void) {
+    if (g_turbo_loaded) return;
+    g_turbo_loaded = 1;
+    FILE *f = fopen(turbo_state_path(), "r");
+    if (f) {
+        g_turbo_forever = 1;
+        fclose(f);
+    }
+}
 
 static int turbo_active(void) {
-    if (g_turbo_until == 0) {
-        const char *env = getenv("BELYA_TURBO");
-        if (env && env[0] == '1') g_turbo_until = time(NULL) + 24 * 3600;
-    }
+    turbo_state_load();
+    if (g_turbo_forever) return 1;
+    const char *env = getenv("BELYA_TURBO");
+    if (env && env[0] == '1') return 1;
     return g_turbo_until > time(NULL);
 }
 
@@ -682,18 +701,38 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     const char *arg = text + 6;
                     while (*arg == ' ') arg++;
                     char turbo_msg[320];
+                    turbo_state_load();
                     if (*arg == '\0') {
                         long left = (g_turbo_until > time(NULL)) ? (long)(g_turbo_until - time(NULL)) : 0;
-                        if (left > 0)
+                        if (g_turbo_forever)
                             snprintf(turbo_msg, sizeof(turbo_msg),
-                                "\u26a1 Turbo ON \u2014 %ld min left. ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.",
+                                "\u26a1 Turbo ON \u2014 permanent (survives restarts). ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
+                        else if (left > 0)
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 %ld min left. ASK gates auto-approve, DENY still blocks.\n/turbo on = permanent, /turbo off = stop.",
                                 left / 60);
                         else
                             snprintf(turbo_msg, sizeof(turbo_msg),
-                                "Turbo OFF. ASK gates prompt with buttons.\n/turbo 30 turns it on for 30 min.");
+                                "Turbo OFF. ASK gates prompt with buttons.\n/turbo on = permanent, /turbo 30 = 30 min.");
                     } else if (strcmp(arg, "off") == 0) {
                         g_turbo_until = 0;
-                        snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again.");
+                        g_turbo_forever = 0;
+                        if (remove(turbo_state_path()) == 0)
+                            snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again.");
+                        else
+                            snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again. (no state file to remove)");
+                    } else if (strcmp(arg, "on") == 0 || strcmp(arg, "forever") == 0) {
+                        FILE *f = fopen(turbo_state_path(), "w");
+                        if (!f) {
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "Could not arm permanent turbo: cannot write %s.", turbo_state_path());
+                        } else {
+                            fputc('1', f);
+                            fclose(f);
+                            g_turbo_forever = 1;
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 permanent, survives restarts. ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
+                        }
                     } else {
                         long mins = strtol(arg, NULL, 10);
                         if (mins <= 0) mins = 30;
