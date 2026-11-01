@@ -1,0 +1,34 @@
+name: verify
+
+# The gate is the pinned image: same toolchain, same tests, no host drift.
+# `make verify` runs the full ladder on any machine with the dev headers; this
+# workflow runs it inside ubuntu:24.04 exactly as Dockerfile.verify does, and
+# fails the run unless the suite reports success.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the verification gate
+        run: |
+          set -o pipefail
+          docker build --progress=plain -f Dockerfile.verify -t belya-verify:ci . 2>&1 | tee /tmp/gate.log
+
+      - name: Assert the suite reported success
+        run: |
+          grep -q "All Tests Passed" /tmp/gate.log
+          grep -q "permission tests: PASSED" /tmp/gate.log
+          grep -q "sandbox: PASSED" /tmp/gate.log
+          grep -q "retry-after: 0 failures" /tmp/gate.log
+          grep -q "compaction: PASSED" /tmp/gate.log
+          grep -q "SUMMARY: OK=6" /tmp/gate.log
+          echo "gate: all markers present"
