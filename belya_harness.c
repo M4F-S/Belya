@@ -1,5 +1,6 @@
 #include "common.h"
 #include "belya_harness.h"
+#include "sandbox.h"
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -393,6 +394,9 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+        /* Confine every shell to the workspace by kernel rule, not by parsing.
+           Plan mode may stack its own stricter policy on top of this. */
+        if (g_harness) sandbox_apply(g_harness->cwd);
         if (g_harness && g_harness->plan_mode) {
             apply_plan_mode_kernel_sandbox();
         }
@@ -4311,6 +4315,7 @@ int belya_harness_spawn_task(BelyaHarness *h, const char *command) {
         }
         close(master_fd);
         setpgid(0, 0);
+        if (h) sandbox_apply(h->cwd);
         execlp("bash", "bash", "-c", command, (char *)NULL);
         _exit(127);
     }
