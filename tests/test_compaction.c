@@ -58,6 +58,20 @@ int main(void) {
     ck("prefix length unchanged", strlen(sys_before) == strlen(a->messages[0].content),
        a->messages[0].content);
 
+    /* tier 2 must actually truncate a large stale tool observation */
+    char big[1600];
+    memset(big, 'x', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    belya_agent_add_message(a, "tool", big);
+    belya_agent_add_message(a, "assistant", "recent");
+    belya_agent_add_message(a, "assistant", "recent");
+    belya_agent_add_message(a, "assistant", "recent");
+    size_t big_idx = a->msg_count - 4;
+    belya_agent_compact_5tier(a, COMPACT_TIER_2_TRUNCATE_TOOLS, 4);
+    size_t big_len = a->messages[big_idx].content ? strlen(a->messages[big_idx].content) : 0;
+    ck("stale tool observation truncated", big_len > 0 && big_len < sizeof big,
+       "length unchanged or zeroed");
+
     const char *tail = a->messages[a->msg_count - 1].content;
     size_t tl = tail ? strlen(tail) : 0;
     ck("later turns are still pruned", tl > 0 && tail[tl - 1] != ' ' && tail[tl - 1] != '\n',
