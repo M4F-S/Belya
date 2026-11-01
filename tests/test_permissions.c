@@ -43,7 +43,7 @@ int main(void) {
     expect("bash", "{\"command\":\"git status\"}", PERM_TIER_ALLOW);
     expect("bash", "{\"command\":\"git diff HEAD~1\"}", PERM_TIER_ALLOW);
     expect("bash", "{\"command\":\"grep -rn foo src\"}", PERM_TIER_ALLOW);
-    expect("bash", "{\"command\":\"make test\"}", PERM_TIER_ALLOW);
+    expect("bash", "{\"command\":\"make test\"}", PERM_TIER_ASK);  /* recipes run arbitrary code */
     expect("bash", "{\"command\":\"cat README.md\"}", PERM_TIER_ALLOW);
     expect("bash", "{\"command\":\"find . -name '*.c'\"}", PERM_TIER_ALLOW);
 
@@ -139,6 +139,17 @@ int main(void) {
     expect("fetch_url", "{\"url\":\"http://x\",\"method\":\"POST\"}", PERM_TIER_ASK);
     expect("fetch_url", "{\"url\":\"http://x\"}", PERM_TIER_ALLOW);
     expect("exit_plan_mode", "{}", PERM_TIER_ASK);
+
+    /* Handbook bypass vectors: absolute paths and wrappers must not escape DENY. */
+    expect("bash", "{\"command\":\"/bin/rm -rf /\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"/usr/bin/rm -rf /etc\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"env rm -rf /\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"sudo rm -rf /var\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"rm -rf --no-preserve-root /\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"find / -exec rm -rf {} ;\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"git diff --output=/etc/shadow\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"shred /dev/sda\"}", PERM_TIER_DENY);
+    expect("bash", "{\"command\":\"rm -rf ./build\"}", PERM_TIER_ASK);   /* relative: still asks */
 
     return g_fail ? 1 : 0;
 }

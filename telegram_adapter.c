@@ -249,7 +249,12 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
         memcpy(chunk, text + offset, take);
         chunk[take] = '\0';
 
-        telegram_bot_send_message(bot, chat_id, chunk);
+        if (!telegram_bot_send_message(bot, chat_id, chunk)) {
+            /* A silent gap mid-answer is worse than a reported failure: the user
+               reads a truncated reply and believes it is complete. */
+            free(chunk);
+            return false;
+        }
         free(chunk);
 
         offset += take;
@@ -335,7 +340,16 @@ static void turbo_state_load(void) {
 
 static int turbo_active(void) {
     turbo_state_load();
-    if (g_turbo_forever) return 1;
+    if (g_turbo_forever) {
+        /* Honour an operator who removed the marker from the shell: the file is
+           the source of truth, not the copy cached at first read. */
+        FILE *f = fopen(turbo_state_path(), "r");
+        if (f) {
+            fclose(f);
+            return 1;
+        }
+        g_turbo_forever = 0;
+    }
     const char *env = getenv("BELYA_TURBO");
     if (env && env[0] == '1') return 1;
     return g_turbo_until > time(NULL);
