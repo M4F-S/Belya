@@ -132,5 +132,13 @@ int main(void) {
         g_fail++;
     }
 
+    /* Rules added after review: force-push is never approvable, an upload is not
+     * a read, and plan mode cannot be exited silently. */
+    expect("git", "{\"command\":\"git push --force origin main\"}", PERM_TIER_DENY);
+    expect("git", "{\"args\":\"push -f\"}", PERM_TIER_DENY);
+    expect("fetch_url", "{\"url\":\"http://x\",\"method\":\"POST\"}", PERM_TIER_ASK);
+    expect("fetch_url", "{\"url\":\"http://x\"}", PERM_TIER_ALLOW);
+    expect("exit_plan_mode", "{}", PERM_TIER_ASK);
+
     return g_fail ? 1 : 0;
 }

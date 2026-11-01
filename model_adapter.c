@@ -350,6 +350,9 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         }
 
         if ((http_code == 429 || http_code >= 500) && attempt < max_attempts - 1) {
+            /* 429 is a rate limit, not a hiccup: the provider asks us to wait.
+               A 1s first backoff just earns another 429. Floor it at 4s. */
+            if (http_code == 429 && sleep_sec < 4) sleep_sec = 4;
             dyn_str_free(&stream_ctx.line_buf);
             dyn_str_free(&stream_ctx.accum_content);
             dyn_str_free(&stream_ctx.accum_reasoning);
