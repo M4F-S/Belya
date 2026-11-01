@@ -57,6 +57,12 @@ test-sandbox: | $(BUILD_DIR)
 	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -D_POSIX_C_SOURCE=200809L -I. -o $(BUILD_DIR)/test_sandbox tests/test_sandbox.c sandbox.c
 	./$(BUILD_DIR)/test_sandbox
 
+COMPACT_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_compaction.c
+
+test-compaction: | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $(BUILD_DIR)/test_compaction $(COMPACT_SRCS) $(LIBS)
+	./$(BUILD_DIR)/test_compaction
+
 test-perms: $(PERMS_TARGET)
 	./$(PERMS_TARGET)
 

@@ -756,12 +756,18 @@ void belya_agent_clear_history(BelyaAgent *agent) {
     agent->msg_count = 1;
 }
 
+/* Index 0 (system) and 1 (root objective) are the cache-stable prefix. Anything
+ * that rewrites them - even stripping one trailing newline - changes every
+ * token after it, so the provider's prefix cache misses for the rest of the
+ * session. Later messages are fair game. */
+#define BELYA_CACHE_STABLE_PREFIX 2
+
 void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_recent) {
     if (!agent || agent->msg_count <= 2) return;
 
     if (tier == COMPACT_TIER_1_MICRO) {
-        // Strip trailing whitespace and blank lines from all message contents
-        for (size_t i = 1; i < agent->msg_count; i++) {
+        // Strip trailing whitespace from the compactable window only
+        for (size_t i = BELYA_CACHE_STABLE_PREFIX; i < agent->msg_count; i++) {
             if (agent->messages[i].content) {
                 size_t clen = strlen(agent->messages[i].content);
                 while (clen > 0 && (agent->messages[i].content[clen-1] == ' ' || 
@@ -778,8 +784,8 @@ void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_
 
     if (tier == COMPACT_TIER_2_TRUNCATE_TOOLS) {
         // Truncate older tool observations (> 3 turns ago) exceeding 1200 bytes
-        size_t cutoff = agent->msg_count > 3 ? agent->msg_count - 3 : 1;
-        for (size_t i = 1; i < cutoff; i++) {
+        size_t cutoff = agent->msg_count > 3 ? agent->msg_count - 3 : BELYA_CACHE_STABLE_PREFIX;
+        for (size_t i = BELYA_CACHE_STABLE_PREFIX; i < cutoff; i++) {
             if (agent->messages[i].role && (strcmp(agent->messages[i].role, "tool") == 0 || agent->messages[i].tool_call_id != NULL)) {
                 if (agent->messages[i].content && strlen(agent->messages[i].content) > 1200) {
                     char *old = agent->messages[i].content;
