@@ -2306,7 +2306,12 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
             if (agent->pre_compact_hook) {
                 agent->pre_compact_hook(agent->pre_compact_userdata);
             }
-            // Now perform 5-tier compaction with root intent pinning & lossless archival
+            /* Escalate the ladder instead of jumping to eviction: micro-prune,
+               then truncate stale tool observations, then middle-out. Tiers 1 and
+               2 were never called, so gcc compiled them out of the shipped binary
+               and the "5-tier" ladder was really one tier. */
+            belya_agent_compact_5tier(agent, COMPACT_TIER_1_MICRO, keep);
+            belya_agent_compact_5tier(agent, COMPACT_TIER_2_TRUNCATE_TOOLS, keep);
             belya_agent_compact_5tier(agent, COMPACT_TIER_3_MIDDLE_OUT, keep);
 
             // Log the compaction
