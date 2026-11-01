@@ -3,6 +3,18 @@
 #include <curl/curl.h>
 #include <unistd.h>
 
+/* Streaming debug echo: only when stdout is a terminal (CLI), never in a
+ * daemon, where stdout is the journal. Reasoning in particular must not be
+ * sprayed into logs a human reads. */
+static bool stream_echo_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("BELYA_STREAM_ECHO");
+        cached = (e && e[0] == '1') ? 1 : (isatty(STDOUT_FILENO) ? 1 : 0);
+    }
+    return cached == 1;
+}
+
 typedef struct {
     ModelGateway *gw;
     DynString line_buf;
@@ -18,7 +30,19 @@ typedef struct {
     size_t cached_tokens;
     bool printed_reasoning_header;
     bool printed_content_header;
+    long retry_after_sec;   /* from the Retry-After header, 0 when absent */
 } StreamContext;
+
+/* Providers say how long to wait on 429. Ignoring it earns another 429. */
+static size_t curl_header_cb(char *buf, size_t size, size_t nitems, void *userdata) {
+    StreamContext *ctx = (StreamContext *)userdata;
+    size_t n = size * nitems;
+    if (ctx && n > 12 && strncasecmp(buf, "retry-after:", 12) == 0) {
+        long v = strtol(buf + 12, NULL, 10);
+        if (v > 0) ctx->retry_after_sec = v;
+    }
+    return n;
+}
 
 static void stream_process_line(StreamContext *ctx, const char *line) {
     if (!line || strlen(line) == 0) return;
@@ -52,7 +76,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 dyn_str_append(&ctx->accum_reasoning, reasoning);
                 if (ctx->gw->stream_cb) {
                     ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
-                } else {
+                } else if (stream_echo_enabled()) {
                     if (!ctx->printed_reasoning_header) {
                         printf("\n\033[0;36m[Reasoning]:\033[0m\n");
                         ctx->printed_reasoning_header = true;
@@ -68,7 +92,7 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 dyn_str_append(&ctx->accum_content, content);
                 if (ctx->gw->stream_cb) {
                     ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
-                } else {
+                } else if (stream_echo_enabled()) {
                     if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
                         printf("\n\n\033[1;34m[Belya]\033[0m\n");
                         ctx->printed_content_header = true;
@@ -284,6 +308,8 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         stream_ctx.accum_content = dyn_str_new();
         stream_ctx.accum_reasoning = dyn_str_new();
         stream_ctx.raw_fallback = dyn_str_new();
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curl_header_cb);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &stream_ctx);
 
         DynString non_stream_body = dyn_str_new();
 
@@ -338,6 +364,27 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         }
 
         if ((http_code == 429 || http_code >= 500) && attempt < max_attempts - 1) {
+            /* 429 is a rate limit, not a hiccup: use the provider's own number
+               when it sent one (capped so a hostile value cannot stall a turn),
+               otherwise floor the backoff at 4s. */
+            if (http_code == 429) {
+                if (stream_ctx.retry_after_sec > 0) {
+                    long ra = stream_ctx.retry_after_sec;
+                    /* Cap so a silly value cannot stall a turn; overridable so
+                       the cap itself is testable. */
+                    long cap = 30;
+                    const char *cap_env = getenv("BELYA_RETRY_AFTER_CAP");
+                    if (cap_env && *cap_env) {
+                        long v = strtol(cap_env, NULL, 10);
+                        if (v > 0) cap = v;
+                    }
+                    if (ra > cap) ra = cap;
+                    sleep((unsigned)ra);
+                    sleep_sec = 1;      /* already waited; do not add more */
+                } else if (sleep_sec < 4) {
+                    sleep_sec = 4;
+                }
+            }
             dyn_str_free(&stream_ctx.line_buf);
             dyn_str_free(&stream_ctx.accum_content);
             dyn_str_free(&stream_ctx.accum_reasoning);

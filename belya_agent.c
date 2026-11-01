@@ -210,6 +210,40 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             }
         }
 
+        /* Keep agent_memory_fts in step with agent_memory by trigger, not by
+           hand. Manual inserts only covered the persist path: any other delete
+           (decay, GC, a human with sqlite3) left orphan index rows behind and
+           the rowid JOIN in belya_agent_search_memory started returning rows
+           that were never there. Triggers hold the invariant for every writer.
+           The 4-column schema is tried first; the 2-column fallback has no
+           wing/room, so trigger creation fails and we fall back with it. */
+        if (agent->has_fts5) {
+            const char *trig4[] = {
+                "CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN "
+                "INSERT INTO agent_memory_fts(rowid, topic, content) VALUES (new.rowid, "
+                "new.topic || ' ' || COALESCE(new.wing,'') || ' ' || COALESCE(new.room,''), new.content); END;",
+                "CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN "
+                "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; END;",
+                NULL
+            };
+            int made = 1;
+            for (int ti = 0; trig4[ti]; ti++)
+                if (sqlite3_exec(agent->db, trig4[ti], 0, 0, 0) != SQLITE_OK) made = 0;
+            if (!made) {
+                sqlite3_exec(agent->db,
+                    "CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN "
+                    "INSERT INTO agent_memory_fts(rowid, topic, content) VALUES (new.rowid, new.topic, new.content); END;",
+                    0, 0, 0);
+                sqlite3_exec(agent->db,
+                    "CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN "
+                    "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; END;",
+                    0, 0, 0);
+            }
+            /* one-time repair of drift that already happened */
+            sqlite3_exec(agent->db,
+                "DELETE FROM agent_memory_fts WHERE rowid NOT IN (SELECT rowid FROM agent_memory);", 0, 0, 0);
+        }
+
         // Initialize agent manifests FTS5 table if FTS5 is available
         if (agent->has_fts5) {
             const char *m_fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_manifests_fts USING fts5(name, role, instructions, tools);";
@@ -421,6 +455,7 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
 
     // Delete existing duplicate with identical topic, wing, and room to prevent pollution
     sqlite3_stmt *del_stmt;
+
     const char *del_sql = "DELETE FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?;";
     if (sqlite3_prepare_v2(agent->db, del_sql, -1, &del_stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(del_stmt, 1, topic, -1, SQLITE_STATIC);
@@ -441,17 +476,7 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
         sqlite3_finalize(stmt);
     }
 
-    if (agent->has_fts5) {
-        const char *fts_insert = "INSERT INTO agent_memory_fts (topic, content) VALUES (?, ?);";
-        if (sqlite3_prepare_v2(agent->db, fts_insert, -1, &stmt, NULL) == SQLITE_OK) {
-            char fts_top[512];
-            snprintf(fts_top, sizeof(fts_top), "%s %s %s", w, r, topic);
-            sqlite3_bind_text(stmt, 1, fts_top, -1, SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, content, -1, SQLITE_STATIC);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
-    }
+    /* the FTS row is written by the agent_memory_ai trigger */
 
     char log_summary[256];
     snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, topic);
@@ -731,12 +756,18 @@ void belya_agent_clear_history(BelyaAgent *agent) {
     agent->msg_count = 1;
 }
 
+/* Index 0 (system) and 1 (root objective) are the cache-stable prefix. Anything
+ * that rewrites them - even stripping one trailing newline - changes every
+ * token after it, so the provider's prefix cache misses for the rest of the
+ * session. Later messages are fair game. */
+#define BELYA_CACHE_STABLE_PREFIX 2
+
 void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_recent) {
     if (!agent || agent->msg_count <= 2) return;
 
     if (tier == COMPACT_TIER_1_MICRO) {
-        // Strip trailing whitespace and blank lines from all message contents
-        for (size_t i = 1; i < agent->msg_count; i++) {
+        // Strip trailing whitespace from the compactable window only
+        for (size_t i = BELYA_CACHE_STABLE_PREFIX; i < agent->msg_count; i++) {
             if (agent->messages[i].content) {
                 size_t clen = strlen(agent->messages[i].content);
                 while (clen > 0 && (agent->messages[i].content[clen-1] == ' ' || 
@@ -753,8 +784,8 @@ void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_
 
     if (tier == COMPACT_TIER_2_TRUNCATE_TOOLS) {
         // Truncate older tool observations (> 3 turns ago) exceeding 1200 bytes
-        size_t cutoff = agent->msg_count > 3 ? agent->msg_count - 3 : 1;
-        for (size_t i = 1; i < cutoff; i++) {
+        size_t cutoff = agent->msg_count > 3 ? agent->msg_count - 3 : BELYA_CACHE_STABLE_PREFIX;
+        for (size_t i = BELYA_CACHE_STABLE_PREFIX; i < cutoff; i++) {
             if (agent->messages[i].role && (strcmp(agent->messages[i].role, "tool") == 0 || agent->messages[i].tool_call_id != NULL)) {
                 if (agent->messages[i].content && strlen(agent->messages[i].content) > 1200) {
                     char *old = agent->messages[i].content;
@@ -2275,7 +2306,12 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
             if (agent->pre_compact_hook) {
                 agent->pre_compact_hook(agent->pre_compact_userdata);
             }
-            // Now perform 5-tier compaction with root intent pinning & lossless archival
+            /* Escalate the ladder instead of jumping to eviction: micro-prune,
+               then truncate stale tool observations, then middle-out. Tiers 1 and
+               2 were never called, so gcc compiled them out of the shipped binary
+               and the "5-tier" ladder was really one tier. */
+            belya_agent_compact_5tier(agent, COMPACT_TIER_1_MICRO, keep);
+            belya_agent_compact_5tier(agent, COMPACT_TIER_2_TRUNCATE_TOOLS, keep);
             belya_agent_compact_5tier(agent, COMPACT_TIER_3_MIDDLE_OUT, keep);
 
             // Log the compaction
@@ -2539,6 +2575,16 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         }
         agent->messages = new_msgs;
     }
+    /* A transport failure is not something the assistant said. Recording it as
+       an assistant turn feeds the model its own error text on the next call, and
+       it starts apologising for a network it cannot see. Return the error to
+       the caller (which shows the user) without touching history. */
+    if (resp.content &&
+        (strncmp(resp.content, "Network Error:", 14) == 0 ||
+         strncmp(resp.content, "API Error:", 10) == 0)) {
+        return resp;
+    }
+
     BelyaMessage *ast_msg = &agent->messages[agent->msg_count++];
     memset(ast_msg, 0, sizeof(BelyaMessage));
     ast_msg->role = xstrdup("assistant");

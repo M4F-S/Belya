@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Stateless MCP `2026-07-28` HTTP transport (`mcp_http.c` / `mcp_http.h`): JSON-RPC over
+  Streamable HTTP with `_meta` inside `params`, `MCP-Protocol-Version` / `Mcp-Method` /
+  `Mcp-Name` headers, `text/event-stream` frame parsing, and distinct 401/403 handling.
+  `/mcp http(s)://...` now connects a remote MCP server; the stdio transport is unchanged.
+- `make test` now also runs an offline MCP HTTP selftest. Live interop against a
+  spec-enforcing mock server: `scripts/test_mcp_http.sh` + `tests/mcp_mock_server.py`.
+- MCP HTTP negotiation: the client tries stateless `2026-07-28` first, and falls back to the
+  stateful `2025-11-25` flow (initialize + `Mcp-Session-Id`) when a server rejects the modern
+  request with HTTP 400. Verified against the official `@modelcontextprotocol/sdk` server.
+
 
 ## [v2.1.0] — 2026-10-14
 ### 🚀 Competitive Parity & Late-2026 Sovereign Architecture Release

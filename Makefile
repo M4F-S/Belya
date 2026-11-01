@@ -6,9 +6,16 @@ else
     DEAD_STRIP = -Wl,--gc-sections
 endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
+
+# Debian/Ubuntu ship libcurl's headers under the multiarch triplet
+# (/usr/include/x86_64-linux-gnu/curl/curl.h), not /usr/include/curl. Without
+# this the host build says "curl/curl.h: No such file" while the package is
+# installed, which pushed every verification into a container.
+MULTIARCH := $(shell $(CC) -print-multiarch 2>/dev/null)
+CPPFLAGS += $(if $(MULTIARCH),-I/usr/include/$(MULTIARCH))
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -16,13 +23,18 @@ DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c test_suite.c
 TEST_TARGET = belya_test
+LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
+LOOP_TARGET = build/test_agent_loop
+PERMS_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_permissions.c
+PERMS_TARGET = build/test_permissions
+MCP_HTTP_TEST_TARGET = build/test_mcp_http
 
-BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c benchmark_runner.c
+BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
-SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c company_simulation.c
+SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c company_simulation.c
 SIM_TARGET = company_simulation
 
 all: $(TARGET)
@@ -36,11 +48,68 @@ $(TARGET): $(OBJS) | $(BUILD_DIR)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-test: $(TEST_TARGET)
+test: $(TEST_TARGET) $(MCP_HTTP_TEST_TARGET)
 	./$(TEST_TARGET)
+	./$(MCP_HTTP_TEST_TARGET)
+
+$(MCP_HTTP_TEST_TARGET): mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c mcp_http.h mcp_client.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c $(LIBS)
 
 $(TEST_TARGET): $(TEST_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRCS) $(LIBS)
+
+# Authorisation table tests: permission_classify() is pure; the gate is checked
+# against a real harness in both permission modes.
+test-retry: $(TARGET)
+	BELYA_BIN=$$(pwd)/$(BUILD_DIR)/belya python3 tests/test_retry.py
+
+test-sandbox: | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -D_POSIX_C_SOURCE=200809L -I. -o $(BUILD_DIR)/test_sandbox tests/test_sandbox.c sandbox.c
+	./$(BUILD_DIR)/test_sandbox
+
+COMPACT_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_compaction.c
+
+test-compaction: | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $(BUILD_DIR)/test_compaction $(COMPACT_SRCS) $(LIBS)
+	./$(BUILD_DIR)/test_compaction
+
+test-perms: $(PERMS_TARGET)
+	./$(PERMS_TARGET)
+
+$(PERMS_TARGET): $(PERMS_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(PERMS_SRCS) $(LIBS)
+
+# First real loop test: drives belya_agent_step() against a scripted model.
+test-mock:
+	python3 tests/test_mock_server.py
+
+# Telegram markdown -> HTML renderer (pure function).
+test-tgrender: | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -o $(BUILD_DIR)/test_telegram_render tests/test_telegram_render.c telegram_render.c
+	./$(BUILD_DIR)/test_telegram_render
+
+# Telegram send path against a local fake Bot API (asserts the wire payload).
+TGSEND_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_telegram_send.c
+TGSEND_TARGET = build/test_telegram_send
+
+test-tgsend: $(TGSEND_TARGET)
+	@sh tests/run_tgsend.sh
+
+$(TGSEND_TARGET): $(TGSEND_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(TGSEND_SRCS) $(LIBS)
+
+# Exercises every registered tool through the real binary using a scripted model.
+test-tools: $(TARGET)
+	@BELYA_BIN=./$(TARGET) python3 tests/tool_probe.py ./$(TARGET) bash read_file write_file list_dir search_files git_status
+
+test-loop: $(LOOP_TARGET)
+	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \
+	  pid=$$!; sleep 0.8; \
+	  MODEL_MOCK_URL=http://127.0.0.1:18081/v1/chat/completions ./$(LOOP_TARGET); \
+	  rc=$$?; kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; exit $$rc
+
+$(LOOP_TARGET): $(LOOP_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(LOOP_SRCS) $(LIBS)
 
 benchmark: $(BENCHMARK_TARGET) $(TARGET)
 	./$(BENCHMARK_TARGET)
@@ -98,3 +167,16 @@ gdrive:
 	@./scripts/sync_to_gdrive.sh
 
 .PHONY: all test benchmark arena clean gdrive deploy release
+
+# drift-guard
+drift:
+	python3 tools/drift_check.py
+
+prd-lock:
+	python3 tools/drift_check.py --update-lock
+
+# One command for the whole gate, runnable on any host with the dev headers
+# (Debian/Ubuntu: libcurl4-openssl-dev libsqlite3-dev) or inside the pinned
+# image via Dockerfile.verify. This is what CI should call.
+verify: $(TARGET) test test-mock test-perms test-tgrender test-tgsend test-sandbox test-retry test-compaction test-tools
+	@echo "verify: all targets passed"

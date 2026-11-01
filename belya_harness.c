@@ -1,5 +1,6 @@
 #include "common.h"
 #include "belya_harness.h"
+#include "sandbox.h"
 #include <time.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -393,6 +394,9 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
+        /* Confine every shell to the workspace by kernel rule, not by parsing.
+           Plan mode may stack its own stricter policy on top of this. */
+        if (g_harness) sandbox_apply(g_harness->cwd);
         if (g_harness && g_harness->plan_mode) {
             apply_plan_mode_kernel_sandbox();
         }
@@ -1809,7 +1813,7 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
 
                     char *breaker_alert = NULL;
                     bool tripped = belya_harness_record_tool_observation(sub_harness, tc->name, tc->arguments_json, obs, &breaker_alert);
-                    const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
+                    const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Error: tool returned no result");
 
                     belya_agent_add_tool_result(sub_agent, tc->id, tc->name, final_obs);
                     dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", final_obs ? final_obs : "");
@@ -3106,6 +3110,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
         h->task_table.tasks[i].state = BELYA_TASK_STATE_UNUSED;
     }
     h->agent = agent;
+    h->permission_mode = BELYA_PERM_PERMISSIVE;
+    {
+        const char *pm = getenv("BELYA_PERMISSION_MODE");
+        if (pm && strcmp(pm, "strict") == 0) h->permission_mode = BELYA_PERM_STRICT;
+    }
     if (agent) {
         agent->user_data = h;
         belya_agent_set_pre_compact_hook(agent, harness_on_pre_compact_hook, h);
@@ -3872,7 +3881,12 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     if (!h || !server_cmd || h->mcp_server_count >= 8) return false;
 
     printf("\033[1;36m[MCP] Connecting to server:\033[0m %s\n", server_cmd);
-    MCPClient *client = mcp_client_start(server_cmd);
+    MCPClient *client = NULL;
+    if (strncmp(server_cmd, "http://", 7) == 0 || strncmp(server_cmd, "https://", 8) == 0) {
+        client = mcp_client_start_http(server_cmd);
+    } else {
+        client = mcp_client_start(server_cmd);
+    }
     if (!client || !client->connected) {
         printf("\033[1;31m[MCP] Failed to connect to server.\033[0m\n");
         return false;
@@ -4015,6 +4029,19 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
 
 static bool harness_ask_permission(const char *name, const char *args) {
     return belya_terminal_permission_prompt(g_harness, name, args, NULL);
+}
+
+PermTier belya_harness_permission_gate(BelyaHarness *h, const char *tool_name, const char *args_json) {
+    PermTier tier = permission_classify(tool_name, args_json);
+    if (tier != PERM_TIER_ASK) return tier;
+
+    /* An approver can always be consulted. */
+    if (h && h->permission_prompt_fn) return PERM_TIER_ASK;
+
+    /* No approver: unattended callers (Telegram daemon, cron) must not block on
+       stdin. Permissive keeps today's behaviour, strict refuses. */
+    if (h && h->permission_mode == BELYA_PERM_STRICT) return PERM_TIER_DENY;
+    return PERM_TIER_ALLOW;
 }
 
 BelyaHookResult belya_run_lifecycle_hook(BelyaHarness *h, BelyaHookType hook_type, const char *tool_name, const char *tool_args, const char *observation) {
@@ -4382,6 +4409,7 @@ int belya_harness_spawn_task(BelyaHarness *h, const char *command) {
         }
         close(master_fd);
         setpgid(0, 0);
+        if (h) sandbox_apply(h->cwd);
         execlp("bash", "bash", "-c", command, (char *)NULL);
         _exit(127);
     }
@@ -5890,7 +5918,9 @@ void belya_harness_repl(BelyaHarness *h) {
                 if (strlen(cmd) > 0) {
                     belya_harness_connect_mcp(h, cmd);
                 } else {
-                    printf("Usage: /mcp <server_command> (e.g. /mcp npx -y @modelcontextprotocol/server-filesystem .)\n\n");
+                    printf("Usage: /mcp <server_command | http(s)://endpoint>\n"
+                           "  stdio: /mcp npx -y @modelcontextprotocol/server-filesystem .\n"
+                           "  http : /mcp https://mcp.example.com/mcp   (MCP_HTTP_TOKEN, MCP_HTTP_TIMEOUT_MS)\n\n");
                 }
                 continue;
             }
@@ -6276,8 +6306,9 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                     }
                 }
 
-                if (!matched || matched->security == PERM_DENY) {
-                    printf("\033[1;31m[Denied]: Tool execution blocked.\033[0m\n");
+                PermTier tier = belya_harness_permission_gate(h, tc->name, tc->arguments_json);
+                if (!matched || matched->security == PERM_DENY || tier == PERM_TIER_DENY) {
+                    printf("\033[1;31m[Denied]: %s blocked by policy.\033[0m\n", tc->name);
                     belya_agent_add_tool_result(h->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
                     continue;
                 }
@@ -6294,7 +6325,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                     }
                 }
 
-                if (matched->security == PERM_ASK_USER) {
+                if (tier == PERM_TIER_ASK) {
                     bool permitted = false;
                     if (h->permission_prompt_fn) {
                         permitted = h->permission_prompt_fn(h, tc->name, tc->arguments_json, h->permission_userdata);

@@ -1,12 +1,13 @@
 #include "common.h"
 #include "telegram_adapter.h"
 #include "belya_channel.h"
+#include "telegram_render.h"
 #include <curl/curl.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
-static volatile bool g_telegram_interrupted = false;
+static volatile sig_atomic_t g_telegram_interrupted = false;
 
 static void telegram_sig_handler(int sig) {
     (void)sig;
@@ -27,7 +28,13 @@ static JsonValue *telegram_http_post(TelegramBot *bot, const char *method, const
     if (!curl) return NULL;
 
     char url[512];
-    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", bot->bot_token, method);
+    /* TELEGRAM_API_BASE lets tests point the adapter at a local fake server. */
+    const char *api_base = getenv("TELEGRAM_API_BASE");
+    if (api_base && api_base[0]) {
+        snprintf(url, sizeof(url), "%s/bot%s/%s", api_base, bot->bot_token, method);
+    } else {
+        snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s", bot->bot_token, method);
+    }
 
     char *json_body = payload ? json_serialize(payload) : xstrdup("{}");
 
@@ -104,9 +111,18 @@ TelegramBot *telegram_bot_init(const char *bot_token, const char *allowed_chat_i
 bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char *text) {
     if (!bot || !chat_id || !text || strlen(text) == 0) return false;
 
+    /* Several callers hand us strings that already contain Telegram HTML while
+       sending with no parse_mode, so users were shown the raw tags. Decide here,
+       at the single choke point, and fall back to plain text if Telegram rejects
+       the markup (unbalanced tags, unsupported nesting) rather than lose it. */
+    bool html_like = strstr(text, "<b>") || strstr(text, "</b>") ||
+                     strstr(text, "<code>") || strstr(text, "<pre>") ||
+                     strstr(text, "<i>") || strstr(text, "<tg-spoiler>");
+
     JsonValue *payload = json_create_object();
     json_obj_add(payload, "chat_id", json_create_string(chat_id));
     json_obj_add(payload, "text", json_create_string(text));
+    if (html_like) json_obj_add(payload, "parse_mode", json_create_string("HTML"));
 
     JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
     json_free(payload);
@@ -114,7 +130,17 @@ bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char
     if (!resp) return false;
     bool ok = json_obj_get_bool(resp, "ok", false);
     json_free(resp);
-    return ok;
+    if (ok || !html_like) return ok;
+
+    JsonValue *plain = json_create_object();
+    json_obj_add(plain, "chat_id", json_create_string(chat_id));
+    json_obj_add(plain, "text", json_create_string(text));
+    JsonValue *r2 = telegram_http_post(bot, "sendMessage", plain);
+    json_free(plain);
+    if (!r2) return false;
+    bool ok2 = json_obj_get_bool(r2, "ok", false);
+    json_free(r2);
+    return ok2;
 }
 
 double telegram_bot_send_status_message(TelegramBot *bot, const char *chat_id, const char *text) {
@@ -223,7 +249,12 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
         memcpy(chunk, text + offset, take);
         chunk[take] = '\0';
 
-        telegram_bot_send_message(bot, chat_id, chunk);
+        if (!telegram_bot_send_message(bot, chat_id, chunk)) {
+            /* A silent gap mid-answer is worse than a reported failure: the user
+               reads a truncated reply and believes it is complete. */
+            free(chunk);
+            return false;
+        }
         free(chunk);
 
         offset += take;
@@ -231,6 +262,156 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
         nanosleep(&ts, NULL); // 50ms delay between consecutive Telegram messages
     }
     return true;
+}
+
+/* ---- Streaming: render deltas into one message and edit it in place ---- */
+
+typedef struct {
+    TelegramBot *bot;
+    char chat_id[64];
+    DynString buf;
+    double msg_id;
+    time_t last_edit;
+    int edits;
+    bool disabled;
+} TelegramStream;
+
+static bool tg_send_html(TelegramBot *bot, const char *chat_id, const char *html, double *out_id) {
+    if (!bot || !chat_id || !html || !html[0]) return false;
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "text", json_create_string(html));
+    json_obj_add(payload, "parse_mode", json_create_string("HTML"));
+    JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
+    json_free(payload);
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    if (ok && out_id) {
+        JsonValue *res = json_obj_get(resp, "result");
+        if (res) *out_id = json_obj_get_num(res, "message_id", 0);
+    }
+    json_free(resp);
+    return ok;
+}
+
+static bool tg_edit_html(TelegramBot *bot, const char *chat_id, double msg_id, const char *html) {
+    if (!bot || !chat_id || msg_id <= 0 || !html || !html[0]) return false;
+    JsonValue *payload = json_create_object();
+    json_obj_add(payload, "chat_id", json_create_string(chat_id));
+    json_obj_add(payload, "message_id", json_create_number(msg_id));
+    json_obj_add(payload, "text", json_create_string(html));
+    json_obj_add(payload, "parse_mode", json_create_string("HTML"));
+    JsonValue *resp = telegram_http_post(bot, "editMessageText", payload);
+    json_free(payload);
+    if (!resp) return false;
+    bool ok = json_obj_get_bool(resp, "ok", false);
+    json_free(resp);
+    return ok;
+}
+
+/*
+ * Reasoning deltas are dropped: the model's private deliberation never belongs
+ * in a user's chat. Content deltas accumulate and repaint a single message,
+ * throttled to ~1/second because Telegram rate-limits editMessageText.
+ */
+/* Turbo mode: auto-approve ASK-tier calls for a bounded window. DENY is not
+ * affected - see permission_apply_turbo(). Off by default, armed per operator
+ * command or by BELYA_TURBO=1 (24h) so a restart does not silently arm it. */
+static time_t g_turbo_until = 0;
+static int g_turbo_forever = 0;
+static int g_turbo_loaded = 0;
+
+/* "Forever" has to survive a restart or it is not forever. A one-byte marker
+ * file is the whole persistence layer: present = on, absent = not. */
+static const char *turbo_state_path(void) {
+    const char *p = getenv("BELYA_TURBO_FILE");
+    return (p && *p) ? p : "/opt/belya/.turbo";
+}
+
+static void turbo_state_load(void) {
+    if (g_turbo_loaded) return;
+    g_turbo_loaded = 1;
+    FILE *f = fopen(turbo_state_path(), "r");
+    if (f) {
+        g_turbo_forever = 1;
+        fclose(f);
+    }
+}
+
+static int turbo_active(void) {
+    turbo_state_load();
+    if (g_turbo_forever) {
+        /* Honour an operator who removed the marker from the shell: the file is
+           the source of truth, not the copy cached at first read. */
+        FILE *f = fopen(turbo_state_path(), "r");
+        if (f) {
+            fclose(f);
+            return 1;
+        }
+        g_turbo_forever = 0;
+    }
+    const char *env = getenv("BELYA_TURBO");
+    if (env && env[0] == '1') return 1;
+    return g_turbo_until > time(NULL);
+}
+
+static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userdata) {
+    TelegramStream *s = (TelegramStream *)userdata;
+    if (!s || s->disabled || !chunk || !chunk[0]) return;
+    if (is_reasoning) return;
+
+    dyn_str_append(&s->buf, chunk);
+    if (s->buf.len > 12000) { /* runaway guard; end-of-turn send handles the rest */
+        s->disabled = true;
+        return;
+    }
+
+    /* Cap on the RENDERED bytes: escaping expands '<' 4x and '&' 5x, so a
+     * markdown-size check lets oversized HTML through and Telegram rejects it. */
+    char *html = telegram_render_html(s->buf.data);
+    if (!html) {
+        s->disabled = true;
+        return;
+    }
+    if (strlen(html) > 3500) {
+        s->disabled = true;
+        free(html);
+        return;
+    }
+
+    time_t now = time(NULL);
+    if (s->msg_id == 0) {
+        double id = 0;
+        if (tg_send_html(s->bot, s->chat_id, html, &id)) {
+            s->msg_id = id;
+            s->last_edit = now;
+        } else {
+            s->disabled = true;
+        }
+        free(html);
+        return;
+    }
+
+    if (now - s->last_edit < 1) {
+        free(html);
+        return;
+    }
+    if (!tg_edit_html(s->bot, s->chat_id, s->msg_id, html)) s->disabled = true;
+    free(html);
+    s->last_edit = now;
+    s->edits++;
+}
+
+/* Final answer as Telegram HTML, falling back to plain text if parsing fails. */
+bool telegram_bot_send_rich(TelegramBot *bot, const char *chat_id, const char *text) {
+    if (!bot || !chat_id || !text || !text[0]) return false;
+    char *html = telegram_render_html(text);
+    if (html && strlen(html) <= 3900 && tg_send_html(bot, chat_id, html, NULL)) {
+        free(html);
+        return true;
+    }
+    free(html);
+    return telegram_bot_send_chunks(bot, chat_id, text);
 }
 
 typedef struct {
@@ -322,10 +503,18 @@ static bool telegram_permission_prompt_callback(BelyaHarness *h, const char *nam
             if (updates && updates->type == JSON_ARRAY) {
                 for (size_t i = 0; i < updates->u.array.count; i++) {
                     JsonValue *up = updates->u.array.items[i];
-                    long u_id = (long)json_obj_get_num(up, "update_id", 0);
-                    if (u_id > ctx->bot->last_update_id) {
-                        ctx->bot->last_update_id = u_id;
-                    }
+                            long u_id = (long)json_obj_get_num(up, "update_id", 0);
+                            if (!json_obj_get(up, "callback_query")) {
+                                /* A plain message arrived while we were waiting for a button.
+                                   Leave it unacknowledged so the main loop still sees it, and
+                                   abandon the prompt: acknowledging it here destroyed the
+                                   user's message by advancing the offset past it. */
+                                ctx->bot->last_update_id = u_id - 1;
+                                answered = true;
+                                decision = false;
+                                break;
+                            }
+                            if (u_id > ctx->bot->last_update_id) ctx->bot->last_update_id = u_id;
 
                     JsonValue *cb = json_obj_get(up, "callback_query");
                     if (cb) {
@@ -522,6 +711,54 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     continue;
                 }
 
+                if (strncmp(text, "/turbo", 6) == 0) {
+                    const char *arg = text + 6;
+                    while (*arg == ' ') arg++;
+                    char turbo_msg[320];
+                    turbo_state_load();
+                    if (*arg == '\0') {
+                        long left = (g_turbo_until > time(NULL)) ? (long)(g_turbo_until - time(NULL)) : 0;
+                        if (g_turbo_forever)
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 permanent (survives restarts). ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
+                        else if (left > 0)
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 %ld min left. ASK gates auto-approve, DENY still blocks.\n/turbo on = permanent, /turbo off = stop.",
+                                left / 60);
+                        else
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "Turbo OFF. ASK gates prompt with buttons.\n/turbo on = permanent, /turbo 30 = 30 min.");
+                    } else if (strcmp(arg, "off") == 0) {
+                        g_turbo_until = 0;
+                        g_turbo_forever = 0;
+                        if (remove(turbo_state_path()) == 0)
+                            snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again.");
+                        else
+                            snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again. (no state file to remove)");
+                    } else if (strcmp(arg, "on") == 0 || strcmp(arg, "forever") == 0) {
+                        FILE *f = fopen(turbo_state_path(), "w");
+                        if (!f) {
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "Could not arm permanent turbo: cannot write %s.", turbo_state_path());
+                        } else {
+                            fputc('1', f);
+                            fclose(f);
+                            g_turbo_forever = 1;
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 permanent, survives restarts. ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
+                        }
+                    } else {
+                        long mins = strtol(arg, NULL, 10);
+                        if (mins <= 0) mins = 30;
+                        if (mins > 720) mins = 720;
+                        g_turbo_until = time(NULL) + mins * 60;
+                        snprintf(turbo_msg, sizeof(turbo_msg),
+                            "\u26a1 Turbo ON for %ld min. ASK gates auto-approve, DENY still blocks.", mins);
+                    }
+                    telegram_bot_send_message(bot, chat_id_str, turbo_msg);
+                    continue;
+                }
+
                 if (strcmp(text, "/status") == 0) {
                     size_t total_p = harness->agent->total_prompt_tokens;
                     size_t total_c = harness->agent->total_cached_tokens;
@@ -595,14 +832,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                 if (strcmp(text, "/timeline") == 0) {
                     char *tl = belya_agent_get_timeline(harness->agent, 10);
-                    telegram_bot_send_chunks(bot, chat_id_str, tl);
+                    telegram_bot_send_chunks(bot, chat_id_str, tl ? tl : "No timeline entries yet.");
                     free(tl);
                     continue;
                 }
 
                 if (strcmp(text, "/sessions") == 0) {
                     char *sess_list = belya_agent_list_sessions(harness->agent);
-                    telegram_bot_send_chunks(bot, chat_id_str, sess_list);
+                    telegram_bot_send_chunks(bot, chat_id_str, sess_list ? sess_list : "No sessions recorded yet.");
                     free(sess_list);
                     continue;
                 }
@@ -640,7 +877,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                 if (strcmp(text, "/reflect") == 0) {
                     char *ref = belya_agent_reflect_and_distill(harness->agent);
-                    telegram_bot_send_chunks(bot, chat_id_str, ref);
+                    telegram_bot_send_chunks(bot, chat_id_str, ref ? ref : "No reflection available yet.");
                     free(ref);
                     continue;
                 }
@@ -729,6 +966,16 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 char *final_response_text = NULL;
                 DynString accum_content = dyn_str_new();
 
+                TelegramStream sctx;
+                memset(&sctx, 0, sizeof(sctx));
+                sctx.bot = bot;
+                snprintf(sctx.chat_id, sizeof(sctx.chat_id), "%s", chat_id_str);
+                sctx.buf = dyn_str_new();
+                if (harness->agent && harness->agent->gateway) {
+                    harness->agent->gateway->stream_cb = telegram_stream_cb;
+                    harness->agent->gateway->stream_userdata = &sctx;
+                }
+
                 belya_harness_reset_turn_state(harness);
 
                 while (turn_running && max_steps-- > 0 && !g_telegram_interrupted) {
@@ -793,12 +1040,31 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                                 }
                             }
 
-                            if (!matched || matched->security == PERM_DENY) {
-                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Tool blocked by security policy.");
+                            if (!matched) {
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name, "Error: Unknown tool.");
                                 continue;
                             }
 
-                            if (matched->security == PERM_ASK_USER) {
+                            /* Call-level authorisation: judge the arguments, not just the
+                               registry tier. Every tool is registered PERM_ALLOW, so on this
+                               path the classifier is the only thing between the model and a
+                               destructive root command. Mirrors belya_harness.c:6178. */
+                            PermTier call_tier = belya_harness_permission_gate(harness, tc->name, tc->arguments_json);
+                            {
+                                int turbo = turbo_active();
+                                call_tier = permission_apply_turbo(call_tier, turbo);
+                                /* One line per gated call: without it the journal shows
+                                 * nothing at all about why a tool ran or was refused. */
+                                fprintf(stderr, "[perm] tool=%s tier=%s turbo=%d\n",
+                                        tc->name, permission_tier_name(call_tier), turbo);
+                            }
+                            if (matched->security == PERM_DENY || call_tier == PERM_TIER_DENY) {
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name,
+                                    "Error: Tool blocked by security policy (destructive or out-of-workspace call).");
+                                continue;
+                            }
+
+                            if (matched->security == PERM_ASK_USER || call_tier == PERM_TIER_ASK) {
                                 bool permitted = false;
                                 if (harness->permission_prompt_fn) {
                                     permitted = harness->permission_prompt_fn(harness, tc->name, tc->arguments_json, harness->permission_userdata);
@@ -810,6 +1076,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             }
 
                             JsonValue *args_parsed = json_parse(tc->arguments_json);
+                            if (!args_parsed) {
+                                /* Truncated stream, unescaped quote, or a null
+                                   arguments field: dispatching with empty args
+                                   runs the tool against nothing. Refuse instead. */
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name,
+                                    "Error: tool call arguments were not valid JSON (possibly truncated); nothing was executed.");
+                                continue;
+                            }
                             char *obs = NULL;
                             g_active_custom_script_path = matched->custom_script_path;
                             if (matched->mcp_client) {
@@ -823,7 +1097,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             char *breaker_alert = NULL;
                             bool tripped = belya_harness_record_tool_observation(harness, tc->name, tc->arguments_json, obs, &breaker_alert);
                             (void)tripped; /* breaker state is consumed via breaker_alert below */
-                            const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Success");
+                            const char *final_obs = breaker_alert ? breaker_alert : (obs ? obs : "Error: tool returned no result");
 
                             belya_agent_add_tool_result(harness->agent, tc->id, tc->name, final_obs);
                             if (breaker_alert) free(breaker_alert);
@@ -854,14 +1128,45 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     telegram_bot_delete_message(bot, chat_id_str, status_msg_id);
                 }
 
-                if (final_response_text && strlen(final_response_text) > 0) {
-                    telegram_bot_send_chunks(bot, chat_id_str, final_response_text);
-                    free(final_response_text);
-                } else if (accum_content.len > 0) {
-                    telegram_bot_send_chunks(bot, chat_id_str, accum_content.data);
-                } else {
-                    telegram_bot_send_message(bot, chat_id_str, "✅ Action completed.");
+                if (harness->agent && harness->agent->gateway) {
+                    harness->agent->gateway->stream_cb = NULL;
+                    harness->agent->gateway->stream_userdata = NULL;
                 }
+
+                const char *final_text = (final_response_text && final_response_text[0])
+                                             ? final_response_text
+                                             : (accum_content.len > 0 ? accum_content.data : NULL);
+                bool delivered = false;
+                if (sctx.msg_id > 0 && final_text) {
+                    /* Identical text means the last streamed edit already holds it;
+                     * editing again would earn "message is not modified". */
+                    if (sctx.buf.len > 0 && strcmp(sctx.buf.data, final_text) == 0) {
+                        delivered = true;
+                    } else {
+                        char *html = telegram_render_html(final_text);
+                        if (html && strlen(html) <= 3900 &&
+                            tg_edit_html(bot, chat_id_str, sctx.msg_id, html)) {
+                            delivered = true;
+                        }
+                        free(html);
+                    }
+                }
+                if (!delivered) {
+                    /* Send first, then remove the provisional message: deleting
+                     * before a successful send loses the answer entirely if the
+                     * resend also fails (429, parse rejection). */
+                    bool sent = final_text ? telegram_bot_send_rich(bot, chat_id_str, final_text) : false;
+                    if (sent && sctx.msg_id > 0) {
+                        telegram_bot_delete_message(bot, chat_id_str, sctx.msg_id);
+                        delivered = true;
+                    }
+                }
+                if (!delivered && !final_text) {
+                    telegram_bot_send_message(bot, chat_id_str, "Action completed.");
+                }
+
+                if (final_response_text) free(final_response_text);
+                dyn_str_free(&sctx.buf);
                 dyn_str_free(&accum_content);
 
                 // Auto-persist active session to SQLite so conversations survive restarts
