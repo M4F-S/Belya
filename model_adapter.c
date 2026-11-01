@@ -30,7 +30,19 @@ typedef struct {
     size_t cached_tokens;
     bool printed_reasoning_header;
     bool printed_content_header;
+    long retry_after_sec;   /* from the Retry-After header, 0 when absent */
 } StreamContext;
+
+/* Providers say how long to wait on 429. Ignoring it earns another 429. */
+static size_t curl_header_cb(char *buf, size_t size, size_t nitems, void *userdata) {
+    StreamContext *ctx = (StreamContext *)userdata;
+    size_t n = size * nitems;
+    if (ctx && n > 12 && strncasecmp(buf, "retry-after:", 12) == 0) {
+        long v = strtol(buf + 12, NULL, 10);
+        if (v > 0) ctx->retry_after_sec = v;
+    }
+    return n;
+}
 
 static void stream_process_line(StreamContext *ctx, const char *line) {
     if (!line || strlen(line) == 0) return;
@@ -296,6 +308,8 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         stream_ctx.accum_content = dyn_str_new();
         stream_ctx.accum_reasoning = dyn_str_new();
         stream_ctx.raw_fallback = dyn_str_new();
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, curl_header_cb);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &stream_ctx);
 
         DynString non_stream_body = dyn_str_new();
 
@@ -350,9 +364,19 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         }
 
         if ((http_code == 429 || http_code >= 500) && attempt < max_attempts - 1) {
-            /* 429 is a rate limit, not a hiccup: the provider asks us to wait.
-               A 1s first backoff just earns another 429. Floor it at 4s. */
-            if (http_code == 429 && sleep_sec < 4) sleep_sec = 4;
+            /* 429 is a rate limit, not a hiccup: use the provider's own number
+               when it sent one (capped so a hostile value cannot stall a turn),
+               otherwise floor the backoff at 4s. */
+            if (http_code == 429) {
+                if (stream_ctx.retry_after_sec > 0) {
+                    long ra = stream_ctx.retry_after_sec;
+                    if (ra > 30) ra = 30;
+                    sleep((unsigned)ra);
+                    sleep_sec = 1;      /* already waited; do not add more */
+                } else if (sleep_sec < 4) {
+                    sleep_sec = 4;
+                }
+            }
             dyn_str_free(&stream_ctx.line_buf);
             dyn_str_free(&stream_ctx.accum_content);
             dyn_str_free(&stream_ctx.accum_reasoning);
