@@ -210,6 +210,40 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             }
         }
 
+        /* Keep agent_memory_fts in step with agent_memory by trigger, not by
+           hand. Manual inserts only covered the persist path: any other delete
+           (decay, GC, a human with sqlite3) left orphan index rows behind and
+           the rowid JOIN in belya_agent_search_memory started returning rows
+           that were never there. Triggers hold the invariant for every writer.
+           The 4-column schema is tried first; the 2-column fallback has no
+           wing/room, so trigger creation fails and we fall back with it. */
+        if (agent->has_fts5) {
+            const char *trig4[] = {
+                "CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN "
+                "INSERT INTO agent_memory_fts(rowid, topic, content) VALUES (new.rowid, "
+                "new.topic || ' ' || COALESCE(new.wing,'') || ' ' || COALESCE(new.room,''), new.content); END;",
+                "CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN "
+                "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; END;",
+                NULL
+            };
+            int made = 1;
+            for (int ti = 0; trig4[ti]; ti++)
+                if (sqlite3_exec(agent->db, trig4[ti], 0, 0, 0) != SQLITE_OK) made = 0;
+            if (!made) {
+                sqlite3_exec(agent->db,
+                    "CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN "
+                    "INSERT INTO agent_memory_fts(rowid, topic, content) VALUES (new.rowid, new.topic, new.content); END;",
+                    0, 0, 0);
+                sqlite3_exec(agent->db,
+                    "CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN "
+                    "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; END;",
+                    0, 0, 0);
+            }
+            /* one-time repair of drift that already happened */
+            sqlite3_exec(agent->db,
+                "DELETE FROM agent_memory_fts WHERE rowid NOT IN (SELECT rowid FROM agent_memory);", 0, 0, 0);
+        }
+
         // Initialize agent manifests FTS5 table if FTS5 is available
         if (agent->has_fts5) {
             const char *m_fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS agent_manifests_fts USING fts5(name, role, instructions, tools);";
@@ -422,25 +456,6 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     // Delete existing duplicate with identical topic, wing, and room to prevent pollution
     sqlite3_stmt *del_stmt;
 
-    /* agent_memory_fts is a separate table with its own rowids. Deleting only
-       from agent_memory left the FTS copy behind, so the JOIN on rowid in
-       belya_agent_search_memory started matching unrelated rows as soon as a
-       topic was updated. Clear the index entry first, while the old row is
-       still there to select it by. */
-    if (agent->has_fts5) {
-        const char *del_fts_sql =
-            "DELETE FROM agent_memory_fts WHERE rowid IN "
-            "(SELECT rowid FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?);";
-        sqlite3_stmt *del_fts = NULL;
-        if (sqlite3_prepare_v2(agent->db, del_fts_sql, -1, &del_fts, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(del_fts, 1, topic, -1, SQLITE_STATIC);
-            sqlite3_bind_text(del_fts, 2, w, -1, SQLITE_STATIC);
-            sqlite3_bind_text(del_fts, 3, r, -1, SQLITE_STATIC);
-            sqlite3_step(del_fts);
-            sqlite3_finalize(del_fts);
-        }
-    }
-
     const char *del_sql = "DELETE FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?;";
     if (sqlite3_prepare_v2(agent->db, del_sql, -1, &del_stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(del_stmt, 1, topic, -1, SQLITE_STATIC);
@@ -451,7 +466,6 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     }
 
     sqlite3_stmt *stmt;
-    sqlite3_int64 new_rowid = 0;
     const char *sql = "INSERT INTO agent_memory (topic, content, wing, room, salience, access_count) VALUES (?, ?, ?, ?, 1.0, 0);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, topic, -1, SQLITE_STATIC);
@@ -460,22 +474,9 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
         sqlite3_bind_text(stmt, 4, r, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
-        new_rowid = sqlite3_last_insert_rowid(agent->db);
     }
 
-    if (agent->has_fts5) {
-        /* Bind the SAME rowid the row got in agent_memory, so the JOIN is sound. */
-        const char *fts_insert = "INSERT INTO agent_memory_fts (rowid, topic, content) VALUES (?, ?, ?);";
-        if (sqlite3_prepare_v2(agent->db, fts_insert, -1, &stmt, NULL) == SQLITE_OK) {
-            char fts_top[512];
-            snprintf(fts_top, sizeof(fts_top), "%s %s %s", w, r, topic);
-            sqlite3_bind_int64(stmt, 1, new_rowid);
-            sqlite3_bind_text(stmt, 2, fts_top, -1, SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 3, content, -1, SQLITE_STATIC);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
-    }
+    /* the FTS row is written by the agent_memory_ai trigger */
 
     char log_summary[256];
     snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, topic);
