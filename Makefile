@@ -8,7 +8,7 @@ endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -16,7 +16,7 @@ DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c test_suite.c
 TEST_TARGET = belya_test
 LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
 LOOP_TARGET = build/test_agent_loop
@@ -50,6 +50,10 @@ $(TEST_TARGET): $(TEST_SRCS)
 
 # Authorisation table tests: permission_classify() is pure; the gate is checked
 # against a real harness in both permission modes.
+test-sandbox: | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -D_POSIX_C_SOURCE=200809L -I. -o $(BUILD_DIR)/test_sandbox tests/test_sandbox.c sandbox.c
+	./$(BUILD_DIR)/test_sandbox
+
 test-perms: $(PERMS_TARGET)
 	./$(PERMS_TARGET)
 
