@@ -217,6 +217,9 @@ void belya_harness_set_exec_backend(BelyaHarness *h, BelyaExecBackend backend, c
 char *belya_harness_exec_remote(BelyaHarness *h, const char *cmd, int *exit_code);
 char *belya_remote_exec_piped(BelyaExecBackend backend, const char *target, const char *workdir, const char *cmd, int *exit_code);
 
+// Sovereign Multi-Agent Software Company Engine
+char *belya_company_handle_command(BelyaHarness *harness, const char *cmd_args);
+
 extern const char *g_active_custom_script_path;
 
 #endif

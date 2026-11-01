@@ -2,6 +2,7 @@
 #include "telegram_adapter.h"
 #include "belya_channel.h"
 #include "minifrontmatter.h"
+#include "belya_company.h"
 #include <assert.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -2809,6 +2810,7 @@ static void test_phase4_plan_mode_and_worktrees(void) {
     assert(strstr(wt_leave, "Left git worktree") != NULL);
     free(wt_leave);
     assert(h->in_worktree == false);
+    system("git branch -D wt_test_phase4_branch >/dev/null 2>&1");
 
     char restored_cwd[4096];
     assert(getcwd(restored_cwd, sizeof(restored_cwd)) != NULL);
@@ -3343,6 +3345,96 @@ static void test_championship_presets_and_stage_telemetry(void) {
     printf("  -> Dubai Championship UAE Falcon Presets & Stage Telemetry PASSED\n");
 }
 
+static void test_belya_company_system(void) {
+    printf("[Test] Sovereign Multi-Agent Software Company Architecture & Full SDLC...\n");
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, "test_company_master.sqlite", "Company Master");
+    assert(agent != NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    unlink("test_company_db.sqlite");
+    BelyaCompany *company = belya_company_init(h, "test_company_db.sqlite");
+    assert(company != NULL);
+
+    // 1. Load team roster
+    size_t loaded = belya_company_load_roster(company, "agents");
+    assert(loaded >= 16);
+
+    // 2. Validate critical roles exist
+    const CompanyAgentStatus *fe = belya_company_get_agent(company, "frontend_engineer");
+    assert(fe != NULL);
+    assert(strcmp(fe->name, "frontend_engineer") == 0);
+
+    const CompanyAgentStatus *be = belya_company_get_agent(company, "backend_engineer");
+    assert(be != NULL);
+
+    const CompanyAgentStatus *sec = belya_company_get_agent(company, "cybersecurity_engineer");
+    assert(sec != NULL);
+
+    const CompanyAgentStatus *qa = belya_company_get_agent(company, "qa_test_engineer");
+    assert(qa != NULL);
+
+    const CompanyAgentStatus *mon = belya_company_get_agent(company, "delivery_monitor");
+    assert(mon != NULL);
+
+    const CompanyAgentStatus *evo = belya_company_get_agent(company, "capability_evolver");
+    assert(evo != NULL);
+
+    // 3. Start company project
+    bool started = belya_company_start_project(company, "FinTech Global", "High-Speed Algorithmic Order Book Microservice");
+    assert(started == true);
+    assert(company->has_active_project == true);
+    assert(company->active_project.current_phase == COMPANY_PHASE_INIT);
+
+    // 4. Execute SDLC Phases
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_COMMERCIAL) == true);
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_PRODUCT_DESIGN) == true);
+    assert(company->active_project.total_tasks == 6);
+
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_ENGINEERING) == true);
+    assert(company->active_project.completed_tasks == 4);
+
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_SECURITY_QA) == true);
+    assert(company->active_project.security_cleared == true);
+    assert(company->active_project.qa_passed == true);
+    assert(company->active_project.completed_tasks == 6);
+
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_DEPLOY_DOCS) == true);
+    assert(belya_company_execute_phase(company, COMPANY_PHASE_DELIVERY_REVIEW) == true);
+    assert(company->active_project.client_accepted == true);
+    assert(company->active_project.current_phase == COMPANY_PHASE_COMPLETED);
+
+    // 5. Capability Evolver health telemetry
+    char *health = belya_company_monitor_health(company);
+    assert(health != NULL);
+    assert(strstr(health, "Agent Well-Being") != NULL);
+    assert(company->team_vmrss_mb < 50.0);
+    free(health);
+
+    // 6. Customer Delivery Director digest
+    char *digest = belya_company_generate_customer_digest(company);
+    assert(digest != NULL);
+    assert(strstr(digest, "FinTech Global") != NULL);
+    assert(strstr(digest, "100.0%") != NULL);
+    free(digest);
+
+    // 7. CLI / REPL Command Dispatcher
+    char *cmd_out = belya_company_handle_command(h, "status");
+    assert(cmd_out != NULL);
+    assert(strstr(cmd_out, "Company Roster") != NULL);
+    free(cmd_out);
+
+    belya_company_free(company);
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    unlink("test_company_master.sqlite");
+    unlink("test_company_db.sqlite");
+
+    printf("  -> Sovereign Multi-Agent Company Architecture & Full SDLC PASSED\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -3395,7 +3487,8 @@ int main(void) {
     test_phase7_omnichannel_and_remote_backends();
     test_gateway_preflight_probe();
     test_championship_presets_and_stage_telemetry();
-    printf("================ All Tests Passed Successfully (50/50 - 100%%) ================\n\n");
+    test_belya_company_system();
+    printf("================ All Tests Passed Successfully (51/51 - 100%%) ================\n\n");
     return 0;
 }
 

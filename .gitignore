@@ -18,6 +18,8 @@ test_sample.txt
 test_broken.c
 .belya_history
 .belya/tools/
+.belya/worktrees/
+.belya/mcp/
 
 # OS / Editor Artifacts
 .DS_Store

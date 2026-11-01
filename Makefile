@@ -8,7 +8,7 @@ endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -16,13 +16,13 @@ DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c test_suite.c
 TEST_TARGET = belya_test
 
-BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c benchmark_runner.c
+BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
-SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c company_simulation.c
+SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c jev_client.c model_adapter.c belya_agent.c belya_harness.c telegram_adapter.c belya_channel.c belya_company.c company_simulation.c
 SIM_TARGET = company_simulation
 
 all: $(TARGET)
@@ -55,6 +55,10 @@ sim: $(SIM_TARGET)
 
 $(SIM_TARGET): $(SIM_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SIM_SRCS) $(LIBS)
+
+test_asan: $(TEST_SRCS)
+	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -o belya_test_asan $(TEST_SRCS) $(LIBS)
+	./belya_test_asan
 
 # deploy: publish the built artifact to the path the service actually runs, respecting the
 # immutable flag, and restart ONLY when the content really changed (H3/H4).

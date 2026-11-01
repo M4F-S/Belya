@@ -929,13 +929,7 @@ static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *ke
         const char *path_start = strchr(host_start, '/');
         if (path_start) {
             size_t host_len = (size_t)(path_start - ep);
-            if (host_len < sizeof(target_url) - 16) {
-                memcpy(target_url, ep, host_len);
-                target_url[host_len] = '\0';
-                strcat(target_url, "/api/tags");
-            } else {
-                snprintf(target_url, sizeof(target_url), "%s", ep);
-            }
+            snprintf(target_url, sizeof(target_url), "%.*s/api/tags", (int)host_len, ep);
         } else {
             snprintf(target_url, sizeof(target_url), "%s/api/tags", ep);
         }
@@ -947,13 +941,7 @@ static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *ke
         char *cc = strstr(ep, "/chat/completions");
         if (cc) {
             size_t base_len = (size_t)(cc - ep);
-            if (base_len < sizeof(target_url) - 16) {
-                memcpy(target_url, ep, base_len);
-                target_url[base_len] = '\0';
-                strcat(target_url, "/models");
-            } else {
-                snprintf(target_url, sizeof(target_url), "%s", ep);
-            }
+            snprintf(target_url, sizeof(target_url), "%.*s/models", (int)base_len, ep);
         } else {
             snprintf(target_url, sizeof(target_url), "%s", ep);
         }
@@ -962,13 +950,7 @@ static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *ke
         char *cc = strstr(ep, "/chat/completions");
         if (cc) {
             size_t base_len = (size_t)(cc - ep);
-            if (base_len < sizeof(target_url) - 16) {
-                memcpy(target_url, ep, base_len);
-                target_url[base_len] = '\0';
-                strcat(target_url, "/models");
-            } else {
-                snprintf(target_url, sizeof(target_url), "%s", ep);
-            }
+            snprintf(target_url, sizeof(target_url), "%.*s/models", (int)base_len, ep);
         } else {
             snprintf(target_url, sizeof(target_url), "%s", ep);
         }

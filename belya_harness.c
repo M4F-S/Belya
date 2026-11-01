@@ -1088,7 +1088,8 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
         if (*match_count >= 100) break;
         if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
         if (dir->d_name[0] == '.') continue;
-        if (strcmp(dir->d_name, "node_modules") == 0 || strcmp(dir->d_name, "build") == 0) continue;
+        if (strcmp(dir->d_name, "node_modules") == 0 || strcmp(dir->d_name, "build") == 0 ||
+            strstr(dir->d_name, ".dSYM") != NULL) continue;
 
         char sub_path[4096];
         snprintf(sub_path, sizeof(sub_path), "%s/%s", dir_path, dir->d_name);
@@ -1104,10 +1105,15 @@ static void search_files_recursive(const char *dir_path, const char *pattern, co
                 if (fnmatch(glob_pat, dir->d_name, 0) != 0) continue;
             }
 
+            if (strstr(dir->d_name, ".sqlite") != NULL) {
+                continue;
+            }
+
             const char *ext = strrchr(dir->d_name, '.');
             if (ext && (strcmp(ext, ".o") == 0 || strcmp(ext, ".a") == 0 ||
                         strcmp(ext, ".so") == 0 || strcmp(ext, ".dylib") == 0 ||
-                        strcmp(ext, ".png") == 0 || strcmp(ext, ".sqlite") == 0)) {
+                        strcmp(ext, ".png") == 0 || strcmp(ext, ".wal") == 0 ||
+                        strcmp(ext, ".shm") == 0)) {
                 continue;
             }
 
@@ -2219,16 +2225,20 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
 
 // Late-2026 Phase 3: Mythos Variant Security Analysis
 
-/* H16: a needle that sits inside a string literal is text, not a call. Without this the
-   audit matched its own pattern literals below and reported three phantom "legacy string
-   manipulation" findings on every run. */
+/* H16: a needle that sits inside a string literal or is part of a larger identifier
+   (e.g. "fgets(" matching "gets(") is not a call to the vulnerable function. */
 static bool token_is_code(const char *line, const char *needle) {
     const char *p = line;
+    size_t needle_len = strlen(needle);
     while ((p = strstr(p, needle)) != NULL) {
-        if (p == line) return true;
-        char prev = p[-1];
-        if (prev != '"' && prev != '\'') return true;   /* a real call site */
-        p++;                                             /* inside a literal - keep looking */
+        if (p > line) {
+            char prev = p[-1];
+            if (isalnum((unsigned char)prev) || prev == '_' || prev == '"' || prev == '\'') {
+                p += needle_len;
+                continue;
+            }
+        }
+        return true;   /* a real call site */
     }
     return false;
 }
@@ -2400,6 +2410,18 @@ bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***
     }
 
     // 2. Intent Classification for Subagent Pipeline
+    bool is_company = (str_contains_ci(p, "software company") || str_contains_ci(p, "enterprise company") ||
+                       str_contains_ci(p, "sdlc project") || str_contains_ci(p, "simulate company") ||
+                       str_contains_ci(p, "company simulation"));
+    bool is_frontend_flow = (str_contains_ci(p, "frontend flow") || str_contains_ci(p, "ui component pipeline") ||
+                             str_contains_ci(p, "client ui feature"));
+    bool is_backend_flow = (str_contains_ci(p, "backend flow") || str_contains_ci(p, "microservice pipeline") ||
+                            str_contains_ci(p, "rest api endpoint pipeline"));
+    bool is_wellbeing = (str_contains_ci(p, "agent wellbeing") || str_contains_ci(p, "evolution officer") ||
+                         str_contains_ci(p, "health monitor"));
+    bool is_delivery_rep = (str_contains_ci(p, "delivery digest") || str_contains_ci(p, "customer progress report") ||
+                            str_contains_ci(p, "executive client report"));
+
     bool is_test = (str_contains_ci(p, "test") || str_contains_ci(p, "benchmark") || str_contains_ci(p, "verify"));
     bool is_review = (str_contains_ci(p, "review") || str_contains_ci(p, "audit") || str_contains_ci(p, "diff"));
     bool is_research = (str_contains_ci(p, "explain") || str_contains_ci(p, "how does") || str_contains_ci(p, "what is") || str_contains_ci(p, "investigate") || str_contains_ci(p, "research") || str_contains_ci(p, "find "));
@@ -2407,7 +2429,70 @@ bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***
     char **pipeline = NULL;
     size_t count = 0;
 
-    if (is_review && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
+    if (is_company) {
+        count = 10;
+        pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
+        pipeline[0] = xstrdup("account_executive");
+        pipeline[1] = xstrdup("product_manager");
+        pipeline[2] = xstrdup("ui_ux_designer");
+        pipeline[3] = xstrdup("frontend_engineer");
+        pipeline[4] = xstrdup("backend_engineer");
+        pipeline[5] = xstrdup("cybersecurity_engineer");
+        pipeline[6] = xstrdup("qa_test_engineer");
+        pipeline[7] = xstrdup("devops_cloud_engineer");
+        pipeline[8] = xstrdup("technical_writer");
+        pipeline[9] = xstrdup("delivery_monitor");
+    } else if (is_frontend_flow && !is_test && !is_review) {
+        count = 5;
+        pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
+        pipeline[0] = xstrdup("product_manager");
+        pipeline[1] = xstrdup("ui_ux_designer");
+        pipeline[2] = xstrdup("frontend_engineer");
+        pipeline[3] = xstrdup("qa_test_engineer");
+        pipeline[4] = xstrdup("delivery_monitor");
+    } else if (is_backend_flow && !is_test && !is_review) {
+        count = 6;
+        pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
+        pipeline[0] = xstrdup("product_manager");
+        pipeline[1] = xstrdup("backend_engineer");
+        pipeline[2] = xstrdup("data_engineer");
+        pipeline[3] = xstrdup("cybersecurity_engineer");
+        pipeline[4] = xstrdup("qa_test_engineer");
+        pipeline[5] = xstrdup("delivery_monitor");
+    } else if (is_wellbeing) {
+        count = 1;
+        pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
+        pipeline[0] = xstrdup("capability_evolver");
+    } else if (is_delivery_rep) {
+        count = 1;
+        pipeline = malloc(sizeof(char *) * count);
+        if (!pipeline) {
+            *out_pipeline = NULL;
+            *out_count = 0;
+            return false;
+        }
+        pipeline[0] = xstrdup("delivery_monitor");
+    } else if (is_review && !str_contains_ci(p, "fix") && !str_contains_ci(p, "implement")) {
         count = 1;
         pipeline = malloc(sizeof(char *) * count);
         if (!pipeline) {
@@ -4108,11 +4193,16 @@ char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
     int sys_mk = system("mkdir -p .belya/worktrees");
     (void)sys_mk;
 
+    char rm_stale[8192];
+    snprintf(rm_stale, sizeof(rm_stale), "git worktree remove --force \"%s\" >/dev/null 2>&1; rm -rf \"%s\"", wt_path, wt_path);
+    int sys_cl = system(rm_stale);
+    (void)sys_cl;
+
     char cmd[8192];
-    snprintf(cmd, sizeof(cmd), "git worktree add -b \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
+    snprintf(cmd, sizeof(cmd), "git worktree add -B \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
     int rc = system(cmd);
     if (rc != 0) {
-        snprintf(cmd, sizeof(cmd), "git worktree add \"%s\" HEAD >/dev/null 2>&1", wt_path);
+        snprintf(cmd, sizeof(cmd), "git worktree add \"%s\" \"%s\" >/dev/null 2>&1", wt_path, wt_id);
         rc = system(cmd);
     }
 
@@ -5356,6 +5446,7 @@ static void print_help(BelyaHarness *h) {
     printf("  /cwd [path]      View or change working directory\n");
     printf("  /mcp <command>   Connect to an external MCP stdio server\n");
     printf("  /agency [task]   Execute task via Belya Agency multi-agent pipeline (or list subagents)\n");
+    printf("  /company [task]  Execute enterprise SDLC company simulation or view team status\n");
     printf("  /tasks [filter]  List active tasks from SQLite task board\n");
     printf("  /cron            List scheduled recurring background cron jobs\n");
     printf("  /dream           Trigger cross-session memory consolidation sweep\n");
@@ -5392,7 +5483,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/rollback", "/export", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/probe", "/cost",
             "/tasks", "/cron", "/dream", "/plan", "/bg",
-            "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", NULL
+            "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", "/company", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -5730,7 +5821,7 @@ void belya_harness_repl(BelyaHarness *h) {
                     }
                 }
                 clean_m[c_idx] = '\0';
-                if (clean_m[0] == '\0') strcpy(clean_m, "qwen2.5-coder:7b");
+                if (clean_m[0] == '\0') snprintf(clean_m, sizeof(clean_m), "%s", "qwen2.5-coder:7b");
 
                 free(h->agent->gateway->endpoint);
                 h->agent->gateway->endpoint = xstrdup("http://localhost:11434/v1/chat/completions");
@@ -5829,6 +5920,16 @@ void belya_harness_repl(BelyaHarness *h) {
                         for (size_t i = 0; i < count; i++) free(pipeline[i]);
                         free(pipeline);
                     }
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/company", 8) == 0) {
+                const char *cmd_args = strlen(input_buf) > 8 ? input_buf + 8 : "";
+                while (*cmd_args == ' ') cmd_args++;
+                char *resp = belya_company_handle_command(h, cmd_args);
+                if (resp) {
+                    printf("\n%s\n", resp);
+                    free(resp);
                 }
                 continue;
             }

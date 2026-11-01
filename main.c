@@ -36,6 +36,7 @@ int main(int argc, char **argv) {
 
     bool telegram_mode = false;
     bool agency_mode = false;
+    bool company_mode = false;
     const char *resume_session_id = NULL;
     const char *headless_prompt = NULL;
     bool no_probe = false;
@@ -56,6 +57,7 @@ int main(int argc, char **argv) {
             printf("  -o, --omnichannel          Alias for --telegram omnichannel daemon mode\n");
             printf("  -d, --docker <container>   Execute bash commands inside Docker sandbox container\n");
             printf("  -a, --agency [prompt]      Execute task via Belya Agency multi-agent pipeline\n");
+            printf("  -c, --company [task]       Execute enterprise SDLC company simulation or team status\n");
             printf("  -r, --resume <session_id>  Resume saved conversation session\n");
             printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
             printf("  --no-probe                 Skip gateway pre-flight health & authentication probe\n");
@@ -82,6 +84,11 @@ int main(int argc, char **argv) {
             setenv("DOCKER_CONTAINER", argv[++i], 1);
         } else if (strcmp(argv[i], "--agency") == 0 || strcmp(argv[i], "-a") == 0) {
             agency_mode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                headless_prompt = argv[++i];
+            }
+        } else if (strcmp(argv[i], "--company") == 0 || strcmp(argv[i], "-c") == 0) {
+            company_mode = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 headless_prompt = argv[++i];
             }
@@ -229,6 +236,13 @@ int main(int argc, char **argv) {
         }
         telegram_bot_run(bot, harness);
         telegram_bot_free(bot);
+    } else if (company_mode) {
+        printf("Executing Belya Sovereign Software Company Simulation (Model: %s)...\n\n", model);
+        char *resp = belya_company_handle_command(harness, headless_prompt ? headless_prompt : "Autonomous Enterprise Software Development");
+        if (resp) {
+            printf("\n%s\n", resp);
+            free(resp);
+        }
     } else if (headless_prompt) {
         if (agency_mode) {
             printf("Executing Belya Agency Multi-Agent Pipeline (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
