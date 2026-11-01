@@ -6,6 +6,13 @@ else
     DEAD_STRIP = -Wl,--gc-sections
 endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
+
+# Debian/Ubuntu ship libcurl's headers under the multiarch triplet
+# (/usr/include/x86_64-linux-gnu/curl/curl.h), not /usr/include/curl. Without
+# this the host build says "curl/curl.h: No such file" while the package is
+# installed, which pushed every verification into a container.
+MULTIARCH := $(shell $(CC) -print-multiarch 2>/dev/null)
+CPPFLAGS += $(if $(MULTIARCH),-I/usr/include/$(MULTIARCH))
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3
 
 SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c main.c
@@ -50,7 +57,7 @@ $(TEST_TARGET): $(TEST_SRCS)
 
 # Authorisation table tests: permission_classify() is pure; the gate is checked
 # against a real harness in both permission modes.
-test-retry:
+test-retry: $(TARGET)
 	BELYA_BIN=$$(pwd)/$(BUILD_DIR)/belya python3 tests/test_retry.py
 
 test-sandbox: | $(BUILD_DIR)
@@ -154,3 +161,9 @@ drift:
 
 prd-lock:
 	python3 tools/drift_check.py --update-lock
+
+# One command for the whole gate, runnable on any host with the dev headers
+# (Debian/Ubuntu: libcurl4-openssl-dev libsqlite3-dev) or inside the pinned
+# image via Dockerfile.verify. This is what CI should call.
+verify: $(TARGET) test test-mock test-perms test-tgrender test-tgsend test-sandbox test-retry test-compaction test-tools
+	@echo "verify: all targets passed"
