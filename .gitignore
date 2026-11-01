@@ -34,6 +34,7 @@ docs/*
 !docs/PRD.md
 !docs/PRD.lock
 !docs/PRD-CHANGELOG.md
+!docs/BELYA_ALMAZ_NOTION_DOCUMENTATION.md
 
 # Evolution outputs
 reports/

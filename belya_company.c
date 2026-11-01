@@ -61,8 +61,11 @@ BelyaCompany *belya_company_init(BelyaHarness *harness, const char *db_path) {
     int rc = sqlite3_open(company->db_path, &company->company_db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[Company] Warning: Failed to open company database '%s' (err: %s)\n",
-                company->db_path, sqlite3_errmsg(company->company_db));
-        company->company_db = NULL;
+                company->db_path, company->company_db ? sqlite3_errmsg(company->company_db) : "unknown");
+        if (company->company_db) {
+            sqlite3_close(company->company_db);
+            company->company_db = NULL;
+        }
     } else {
         sqlite3_exec(company->company_db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
         sqlite3_exec(company->company_db, "PRAGMA synchronous = NORMAL;", NULL, NULL, NULL);
@@ -189,7 +192,7 @@ static void company_log_telemetry(BelyaCompany *company, int64_t pid, const char
 }
 
 bool belya_company_start_project(BelyaCompany *company, const char *client_name, const char *mission) {
-    if (!company || !client_name || !mission) return false;
+    if (!company || !client_name || !mission || strlen(client_name) == 0 || strlen(mission) == 0) return false;
 
     memset(&company->active_project, 0, sizeof(CompanyProject));
     snprintf(company->active_project.client_name, sizeof(company->active_project.client_name), "%s", client_name);
@@ -306,8 +309,15 @@ bool belya_company_execute_phase(BelyaCompany *company, CompanyPhase phase) {
             bool sec_clean = sec_rep && strstr(sec_rep, "0 security variant") != NULL;
             free(sec_rep);
             company->active_project.security_cleared = sec_clean;
-            printf("     ==> Security Audit Verdict: \033[1;32mPASSED (0 vulnerabilities)\033[0m\n");
-            company_log_telemetry(company, pid, "cybersecurity_engineer", "audit_passed", "Zero security variants detected");
+            if (sec_clean) {
+                printf("     ==> Security Audit Verdict: \033[1;32mPASSED (0 vulnerabilities)\033[0m\n");
+                company_log_telemetry(company, pid, "cybersecurity_engineer", "audit_passed", "Zero security variants detected");
+                if (master_agent) belya_agent_task_update(master_agent, 5, "completed", "Security sweep clean");
+            } else {
+                printf("     ==> Security Audit Verdict: \033[1;31mFAILED (vulnerabilities detected)\033[0m\n");
+                company_log_telemetry(company, pid, "cybersecurity_engineer", "audit_failed", "Security variants detected in codebase");
+                if (master_agent) belya_agent_task_update(master_agent, 5, "failed", "Security sweep detected vulnerabilities");
+            }
 
             printf("  🧪 [QA & Test Engineer]: Running full verification suite under AddressSanitizer...\n");
             company->active_project.qa_passed = true;
@@ -315,8 +325,9 @@ bool belya_company_execute_phase(BelyaCompany *company, CompanyPhase phase) {
             company_log_telemetry(company, pid, "qa_test_engineer", "tests_passed", "100% test battery passed without sanitizer faults");
 
             if (master_agent) {
-                belya_agent_task_update(master_agent, 5, "completed", "Security sweep clean");
                 belya_agent_task_update(master_agent, 6, "completed", "QA verified 100%");
+            }
+            if (sec_clean) {
                 company->active_project.completed_tasks = 6;
             }
             break;
@@ -337,10 +348,16 @@ bool belya_company_execute_phase(BelyaCompany *company, CompanyPhase phase) {
             printf("%s\n", digest);
             free(digest);
 
-            company->active_project.client_accepted = true;
-            company->active_project.current_phase = COMPANY_PHASE_COMPLETED;
             company->active_project.end_time = time(NULL);
-            company_log_telemetry(company, pid, "delivery_monitor", "milestone_accepted", "Client approved final delivery digest");
+            if (company->active_project.security_cleared && company->active_project.qa_passed) {
+                company->active_project.client_accepted = true;
+                company->active_project.current_phase = COMPANY_PHASE_COMPLETED;
+                company_log_telemetry(company, pid, "delivery_monitor", "milestone_accepted", "Client approved final delivery digest");
+            } else {
+                company->active_project.client_accepted = false;
+                company->active_project.current_phase = COMPANY_PHASE_FAILED;
+                company_log_telemetry(company, pid, "delivery_monitor", "milestone_rejected", "Delivery blocked: security or QA gating failed");
+            }
             break;
         }
 
@@ -378,10 +395,20 @@ char *belya_company_run_sdlc(BelyaCompany *company, const char *client_name, con
     }
 
     DynString rep = dyn_str_new();
-    dyn_str_appendf(&rep, "✅ Enterprise Project '%s' successfully completed by all 16 company agents.\n",
-                    company->active_project.client_name);
-    dyn_str_appendf(&rep, "Milestones Delivered: %d/%d tasks (100.0%%) | Security Cleared: YES | QA Passed: YES | Client Accepted: YES\n",
-                    company->active_project.completed_tasks, company->active_project.total_tasks);
+    if (company->active_project.current_phase == COMPANY_PHASE_COMPLETED) {
+        dyn_str_appendf(&rep, "✅ Enterprise Project '%s' successfully completed by all 16 company agents.\n",
+                        company->active_project.client_name);
+        dyn_str_appendf(&rep, "Milestones Delivered: %d/%d tasks (100.0%%) | Security Cleared: YES | QA Passed: YES | Client Accepted: YES\n",
+                        company->active_project.completed_tasks, company->active_project.total_tasks);
+    } else {
+        dyn_str_appendf(&rep, "❌ Enterprise Project '%s' delivery incomplete (current phase: %s).\n",
+                        company->active_project.client_name, belya_company_phase_name(company->active_project.current_phase));
+        dyn_str_appendf(&rep, "Milestones Delivered: %d/%d tasks | Security Cleared: %s | QA Passed: %s | Client Accepted: %s\n",
+                        company->active_project.completed_tasks, company->active_project.total_tasks,
+                        company->active_project.security_cleared ? "YES" : "NO",
+                        company->active_project.qa_passed ? "YES" : "NO",
+                        company->active_project.client_accepted ? "YES" : "NO");
+    }
     return rep.data;
 }
 
@@ -451,8 +478,10 @@ char *belya_company_generate_customer_digest(BelyaCompany *company) {
     dyn_str_append(&ds, "║                                                                                  ║\n");
     dyn_str_append(&ds, "║ Team Health & Governance Radar:                                                  ║\n");
     dyn_str_appendf(&ds, "║  • Active Process Footprint: %5.2f MiB VmRSS (16 Agents running in C99 envelope)   ║\n", company->team_vmrss_mb);
-    dyn_str_append(&ds, "║  • Security Invariant Audit: CLEAN (Zero vulnerabilities detected)               ║\n");
-    dyn_str_append(&ds, "║  • Delivery Verdict: READY FOR PRODUCTION CLIENT ACCEPTANCE                      ║\n");
+    dyn_str_appendf(&ds, "║  • Security Invariant Audit: %-51.51s ║\n",
+                    proj->security_cleared ? "CLEAN (Zero vulnerabilities detected)" : "FAILED (Vulnerabilities detected)");
+    dyn_str_appendf(&ds, "║  • Delivery Verdict: %-59.59s ║\n",
+                    proj->client_accepted ? "READY FOR PRODUCTION CLIENT ACCEPTANCE" : "BLOCKED: PENDING SECURITY/QA CLEARANCE");
     dyn_str_append(&ds, "╚══════════════════════════════════════════════════════════════════════════════════╝\n");
 
     return ds.data;

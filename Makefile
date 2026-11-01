@@ -129,6 +129,19 @@ test_asan: $(TEST_SRCS)
 	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -o belya_test_asan $(TEST_SRCS) $(LIBS)
 	./belya_test_asan
 
+ADV_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_company_adversarial.c
+ADV_TARGET = $(BUILD_DIR)/test_company_adversarial
+
+test-company-adv: $(ADV_TARGET)
+	./$(ADV_TARGET)
+
+$(ADV_TARGET): $(ADV_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(ADV_SRCS) $(LIBS)
+
+test-company-adv-asan: $(ADV_SRCS) | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_company_adversarial_asan $(ADV_SRCS) $(LIBS)
+	./$(BUILD_DIR)/test_company_adversarial_asan
+
 # deploy: publish the built artifact to the path the service actually runs, respecting the
 # immutable flag, and restart ONLY when the content really changed (H3/H4).
 deploy: $(TARGET)
