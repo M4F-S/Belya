@@ -370,7 +370,15 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
             if (http_code == 429) {
                 if (stream_ctx.retry_after_sec > 0) {
                     long ra = stream_ctx.retry_after_sec;
-                    if (ra > 30) ra = 30;
+                    /* Cap so a silly value cannot stall a turn; overridable so
+                       the cap itself is testable. */
+                    long cap = 30;
+                    const char *cap_env = getenv("BELYA_RETRY_AFTER_CAP");
+                    if (cap_env && *cap_env) {
+                        long v = strtol(cap_env, NULL, 10);
+                        if (v > 0) cap = v;
+                    }
+                    if (ra > cap) ra = cap;
                     sleep((unsigned)ra);
                     sleep_sec = 1;      /* already waited; do not add more */
                 } else if (sleep_sec < 4) {
