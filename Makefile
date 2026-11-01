@@ -50,6 +50,9 @@ $(TEST_TARGET): $(TEST_SRCS)
 
 # Authorisation table tests: permission_classify() is pure; the gate is checked
 # against a real harness in both permission modes.
+test-retry:
+	BELYA_BIN=$$(pwd)/$(BUILD_DIR)/belya python3 tests/test_retry.py
+
 test-sandbox: | $(BUILD_DIR)
 	$(CC) -Wall -Wextra -Werror -O1 -std=c99 -D_POSIX_C_SOURCE=200809L -I. -o $(BUILD_DIR)/test_sandbox tests/test_sandbox.c sandbox.c
 	./$(BUILD_DIR)/test_sandbox
