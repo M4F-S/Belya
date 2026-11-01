@@ -7,7 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
-static volatile bool g_telegram_interrupted = false;
+static volatile sig_atomic_t g_telegram_interrupted = false;
 
 static void telegram_sig_handler(int sig) {
     (void)sig;
@@ -111,9 +111,18 @@ TelegramBot *telegram_bot_init(const char *bot_token, const char *allowed_chat_i
 bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char *text) {
     if (!bot || !chat_id || !text || strlen(text) == 0) return false;
 
+    /* Several callers hand us strings that already contain Telegram HTML while
+       sending with no parse_mode, so users were shown the raw tags. Decide here,
+       at the single choke point, and fall back to plain text if Telegram rejects
+       the markup (unbalanced tags, unsupported nesting) rather than lose it. */
+    bool html_like = strstr(text, "<b>") || strstr(text, "</b>") ||
+                     strstr(text, "<code>") || strstr(text, "<pre>") ||
+                     strstr(text, "<i>") || strstr(text, "<tg-spoiler>");
+
     JsonValue *payload = json_create_object();
     json_obj_add(payload, "chat_id", json_create_string(chat_id));
     json_obj_add(payload, "text", json_create_string(text));
+    if (html_like) json_obj_add(payload, "parse_mode", json_create_string("HTML"));
 
     JsonValue *resp = telegram_http_post(bot, "sendMessage", payload);
     json_free(payload);
@@ -121,7 +130,17 @@ bool telegram_bot_send_message(TelegramBot *bot, const char *chat_id, const char
     if (!resp) return false;
     bool ok = json_obj_get_bool(resp, "ok", false);
     json_free(resp);
-    return ok;
+    if (ok || !html_like) return ok;
+
+    JsonValue *plain = json_create_object();
+    json_obj_add(plain, "chat_id", json_create_string(chat_id));
+    json_obj_add(plain, "text", json_create_string(text));
+    JsonValue *r2 = telegram_http_post(bot, "sendMessage", plain);
+    json_free(plain);
+    if (!r2) return false;
+    bool ok2 = json_obj_get_bool(r2, "ok", false);
+    json_free(r2);
+    return ok2;
 }
 
 double telegram_bot_send_status_message(TelegramBot *bot, const char *chat_id, const char *text) {
@@ -760,14 +779,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                 if (strcmp(text, "/timeline") == 0) {
                     char *tl = belya_agent_get_timeline(harness->agent, 10);
-                    telegram_bot_send_chunks(bot, chat_id_str, tl);
+                    telegram_bot_send_chunks(bot, chat_id_str, tl ? tl : "No timeline entries yet.");
                     free(tl);
                     continue;
                 }
 
                 if (strcmp(text, "/sessions") == 0) {
                     char *sess_list = belya_agent_list_sessions(harness->agent);
-                    telegram_bot_send_chunks(bot, chat_id_str, sess_list);
+                    telegram_bot_send_chunks(bot, chat_id_str, sess_list ? sess_list : "No sessions recorded yet.");
                     free(sess_list);
                     continue;
                 }
@@ -805,7 +824,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
                 if (strcmp(text, "/reflect") == 0) {
                     char *ref = belya_agent_reflect_and_distill(harness->agent);
-                    telegram_bot_send_chunks(bot, chat_id_str, ref);
+                    telegram_bot_send_chunks(bot, chat_id_str, ref ? ref : "No reflection available yet.");
                     free(ref);
                     continue;
                 }
@@ -1004,6 +1023,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                             }
 
                             JsonValue *args_parsed = json_parse(tc->arguments_json);
+                            if (!args_parsed) {
+                                /* Truncated stream, unescaped quote, or a null
+                                   arguments field: dispatching with empty args
+                                   runs the tool against nothing. Refuse instead. */
+                                belya_agent_add_tool_result(harness->agent, tc->id, tc->name,
+                                    "Error: tool call arguments were not valid JSON (possibly truncated); nothing was executed.");
+                                continue;
+                            }
                             char *obs = NULL;
                             g_active_custom_script_path = matched->custom_script_path;
                             if (matched->mcp_client) {

@@ -187,9 +187,11 @@ static bool command_is_destructive(const char *cmd) {
 /* ------------------------------------------------------------- classify */
 
 static bool is_read_tool(const char *t) {
+    /* fetch_url is deliberately absent: it is read-only only for GET, and that
+     * depends on the call's arguments, not on the tool's name. */
     return strcmp(t, "read_file") == 0 || strcmp(t, "list_dir") == 0 ||
            strcmp(t, "search_files") == 0 || strcmp(t, "git_status") == 0 ||
-           strcmp(t, "git_diff") == 0 || strcmp(t, "fetch_url") == 0;
+           strcmp(t, "git_diff") == 0;
 }
 
 static bool is_write_tool(const char *t) {
@@ -235,7 +237,25 @@ PermTier permission_classify(const char *tool_name, const char *args_json) {
         return PERM_TIER_ALLOW;
     }
 
+    if (strcmp(tool_name, "fetch_url") == 0) {
+        /* GET is a read. Anything that can carry a body can ship workspace
+           contents to an arbitrary host, so it asks. */
+        if (args_json &&
+            (str_contains_ci(args_json, "\"POST\"") || str_contains_ci(args_json, "\"PUT\"") ||
+             str_contains_ci(args_json, "\"PATCH\"") || str_contains_ci(args_json, "\"DELETE\"")))
+            return PERM_TIER_ASK;
+        return PERM_TIER_ALLOW;
+    }
+
     if (strcmp(tool_name, "define_tool") == 0) return PERM_TIER_ASK;
+
+    /* Force-push rewrites shared history: no approve button, turbo or not. */
+    if (strcmp(tool_name, "git") == 0 && args_json &&
+        (str_contains_ci(args_json, "push --force") || str_contains_ci(args_json, "push -f")))
+        return PERM_TIER_DENY;
+
+    /* Leaving plan mode is how a sandboxed turn escapes its own sandbox. */
+    if (strcmp(tool_name, "exit_plan_mode") == 0) return PERM_TIER_ASK;
 
     if (is_inert_tool(tool_name)) return PERM_TIER_ALLOW;
 
