@@ -2592,7 +2592,13 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
         json_arr_add(tools_arr, t);
     }
 
-    ModelGatewayResponse resp = agent->gateway->chat_complete(agent->gateway, messages_arr, tools_arr);
+    ModelGatewayResponse resp;
+    memset(&resp, 0, sizeof(ModelGatewayResponse));
+    if (agent->gateway && agent->gateway->chat_complete) {
+        resp = agent->gateway->chat_complete(agent->gateway, messages_arr, tools_arr);
+    } else {
+        resp.content = xstrdup("Error: Model gateway is not configured or offline.");
+    }
 
     // Accumulate token economics
     agent->total_prompt_tokens += resp.prompt_tokens;
@@ -2769,7 +2775,13 @@ ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char 
     }
 
     // Explicitly pass tools_schema = NULL to force conversational synthesis
-    ModelGatewayResponse resp = agent->gateway->chat_complete(agent->gateway, messages_arr, NULL);
+    ModelGatewayResponse resp;
+    memset(&resp, 0, sizeof(ModelGatewayResponse));
+    if (agent->gateway && agent->gateway->chat_complete) {
+        resp = agent->gateway->chat_complete(agent->gateway, messages_arr, NULL);
+    } else {
+        resp.content = xstrdup("Error: Model gateway is not configured or offline.");
+    }
 
     agent->total_prompt_tokens += resp.prompt_tokens;
     agent->total_completion_tokens += resp.completion_tokens;

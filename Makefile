@@ -132,6 +132,9 @@ test_asan: $(TEST_SRCS)
 ADV_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_company_adversarial.c
 ADV_TARGET = $(BUILD_DIR)/test_company_adversarial
 
+CRUCIBLE_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_crucible_adversarial.c
+CRUCIBLE_TARGET = $(BUILD_DIR)/test_crucible_adversarial
+
 test-company-adv: $(ADV_TARGET)
 	./$(ADV_TARGET)
 
@@ -141,6 +144,16 @@ $(ADV_TARGET): $(ADV_SRCS) | $(BUILD_DIR)
 test-company-adv-asan: $(ADV_SRCS) | $(BUILD_DIR)
 	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_company_adversarial_asan $(ADV_SRCS) $(LIBS)
 	./$(BUILD_DIR)/test_company_adversarial_asan
+
+test-crucible: $(CRUCIBLE_TARGET)
+	./$(CRUCIBLE_TARGET)
+
+$(CRUCIBLE_TARGET): $(CRUCIBLE_SRCS) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -I. -o $@ $(CRUCIBLE_SRCS) $(LIBS)
+
+test-crucible-asan: $(CRUCIBLE_SRCS) | $(BUILD_DIR)
+	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_crucible_adversarial_asan $(CRUCIBLE_SRCS) $(LIBS)
+	./$(BUILD_DIR)/test_crucible_adversarial_asan
 
 # deploy: publish the built artifact to the path the service actually runs, respecting the
 # immutable flag, and restart ONLY when the content really changed (H3/H4).
