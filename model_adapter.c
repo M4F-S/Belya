@@ -31,6 +31,7 @@ typedef struct {
     bool printed_reasoning_header;
     bool printed_content_header;
     long retry_after_sec;   /* from the Retry-After header, 0 when absent */
+    bool inside_think_tag;
 } StreamContext;
 
 /* Providers say how long to wait on 429. Ignoring it earns another 429. */
@@ -63,44 +64,119 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
         }
     }
 
+    JsonValue *delta = NULL;
     JsonValue *choices = json_obj_get(root, "choices");
     if (choices && choices->type == JSON_ARRAY && choices->u.array.count > 0) {
         JsonValue *choice = choices->u.array.items[0];
-        JsonValue *delta = json_obj_get(choice, "delta");
-        if (delta) {
-            // 1. Reasoning Tokens
-            const char *reasoning = json_obj_get_str(delta, "reasoning_content");
-            if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
-            if (!reasoning) reasoning = json_obj_get_str(delta, "reasoning");
-            if (reasoning && strlen(reasoning) > 0) {
-                dyn_str_append(&ctx->accum_reasoning, reasoning);
-                if (ctx->gw->stream_cb) {
-                    ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
-                } else if (stream_echo_enabled()) {
-                    if (!ctx->printed_reasoning_header) {
-                        printf("\n\033[0;36m[Reasoning]:\033[0m\n");
-                        ctx->printed_reasoning_header = true;
-                    }
-                    printf("\033[0;36m%s\033[0m", reasoning);
-                    fflush(stdout);
-                }
-            }
+        delta = json_obj_get(choice, "delta");
+    } else {
+        delta = json_obj_get(root, "delta");
+    }
 
-            // 2. Content Tokens
-            const char *content = json_obj_get_str(delta, "content");
-            if (content && strlen(content) > 0) {
-                dyn_str_append(&ctx->accum_content, content);
-                if (ctx->gw->stream_cb) {
-                    ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
-                } else if (stream_echo_enabled()) {
-                    if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
-                        printf("\n\n\033[1;34m[Belya]\033[0m\n");
-                        ctx->printed_content_header = true;
+    if (delta) {
+        // 1. Reasoning Tokens (DeepSeek, Claude 3.7 Thinking, OpenRouter)
+        const char *reasoning = json_obj_get_str(delta, "reasoning_content");
+        if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
+        if (!reasoning) reasoning = json_obj_get_str(delta, "reasoning");
+        if (reasoning && strlen(reasoning) > 0) {
+            dyn_str_append(&ctx->accum_reasoning, reasoning);
+            if (ctx->gw->stream_cb) {
+                ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
+            } else if (stream_echo_enabled()) {
+                if (!ctx->printed_reasoning_header) {
+                    printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                    ctx->printed_reasoning_header = true;
+                }
+                printf("\033[0;36m%s\033[0m", reasoning);
+                fflush(stdout);
+            }
+        }
+
+        // 2. Content Tokens (with DeepSeek <think> / </think> tag isolation)
+        const char *content = json_obj_get_str(delta, "content");
+        if (!content) content = json_obj_get_str(delta, "text");
+        if (content && strlen(content) > 0) {
+            const char *cp = content;
+            while (*cp) {
+                if (!ctx->inside_think_tag) {
+                    const char *t_start = strstr(cp, "<think>");
+                    if (t_start) {
+                        if (t_start > cp) {
+                            dyn_str_append_len(&ctx->accum_content, cp, (size_t)(t_start - cp));
+                            if (ctx->gw->stream_cb) {
+                                char *pchunk = malloc((size_t)(t_start - cp) + 1);
+                                if (pchunk) {
+                                    memcpy(pchunk, cp, (size_t)(t_start - cp));
+                                    pchunk[t_start - cp] = '\0';
+                                    ctx->gw->stream_cb(pchunk, false, ctx->gw->stream_userdata);
+                                    free(pchunk);
+                                }
+                            } else if (stream_echo_enabled()) {
+                                if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
+                                    printf("\n\n\033[1;34m[Belya]\033[0m\n");
+                                    ctx->printed_content_header = true;
+                                }
+                                fwrite(cp, 1, (size_t)(t_start - cp), stdout);
+                                fflush(stdout);
+                            }
+                        }
+                        ctx->inside_think_tag = true;
+                        cp = t_start + 7; // skip "<think>"
+                    } else {
+                        dyn_str_append(&ctx->accum_content, cp);
+                        if (ctx->gw->stream_cb) {
+                            ctx->gw->stream_cb(cp, false, ctx->gw->stream_userdata);
+                        } else if (stream_echo_enabled()) {
+                            if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
+                                printf("\n\n\033[1;34m[Belya]\033[0m\n");
+                                ctx->printed_content_header = true;
+                            }
+                            printf("%s", cp);
+                            fflush(stdout);
+                        }
+                        break;
                     }
-                    printf("%s", content);
-                    fflush(stdout);
+                } else {
+                    const char *t_end = strstr(cp, "</think>");
+                    if (t_end) {
+                        if (t_end > cp) {
+                            dyn_str_append_len(&ctx->accum_reasoning, cp, (size_t)(t_end - cp));
+                            if (ctx->gw->stream_cb) {
+                                char *rchunk = malloc((size_t)(t_end - cp) + 1);
+                                if (rchunk) {
+                                    memcpy(rchunk, cp, (size_t)(t_end - cp));
+                                    rchunk[t_end - cp] = '\0';
+                                    ctx->gw->stream_cb(rchunk, true, ctx->gw->stream_userdata);
+                                    free(rchunk);
+                                }
+                            } else if (stream_echo_enabled()) {
+                                if (!ctx->printed_reasoning_header) {
+                                    printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                                    ctx->printed_reasoning_header = true;
+                                }
+                                fwrite(cp, 1, (size_t)(t_end - cp), stdout);
+                                fflush(stdout);
+                            }
+                        }
+                        ctx->inside_think_tag = false;
+                        cp = t_end + 8; // skip "</think>"
+                    } else {
+                        dyn_str_append(&ctx->accum_reasoning, cp);
+                        if (ctx->gw->stream_cb) {
+                            ctx->gw->stream_cb(cp, true, ctx->gw->stream_userdata);
+                        } else if (stream_echo_enabled()) {
+                            if (!ctx->printed_reasoning_header) {
+                                printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                                ctx->printed_reasoning_header = true;
+                            }
+                            printf("\033[0;36m%s\033[0m", cp);
+                            fflush(stdout);
+                        }
+                        break;
+                    }
                 }
             }
+        }
 
             // 3. Tool Calls Delta
             JsonValue *tc_arr = json_obj_get(delta, "tool_calls");
@@ -175,7 +251,6 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 }
             }
         }
-    }
 
     json_free(root);
 }
@@ -237,6 +312,13 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         json_obj_add(payload, "options", opts);
     }
 
+    if (self->thinking_budget_tokens > 0) {
+        JsonValue *thk = json_create_object();
+        json_obj_add(thk, "type", json_create_string("enabled"));
+        json_obj_add(thk, "budget_tokens", json_create_number((double)self->thinking_budget_tokens));
+        json_obj_add(payload, "thinking", thk);
+    }
+
     char *json_body = json_serialize(payload);
 
     // Detach shared references safely by key before freeing root wrapper
@@ -270,14 +352,18 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         headers = curl_slist_append(headers, "Content-Type: application/json");
 
         char auth_header[512];
-        if (key && strlen(key) > 0 && strcmp(key, "none") != 0) {
+        if (ep && strstr(ep, "api.anthropic.com") != NULL) {
+            char anthropic_key[512];
+            snprintf(anthropic_key, sizeof(anthropic_key), "x-api-key: %s", (key && strcmp(key, "none") != 0) ? key : "");
+            headers = curl_slist_append(headers, anthropic_key);
+            headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+            if (self->prompt_caching) {
+                headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
+            }
+        } else if (key && strlen(key) > 0 && strcmp(key, "none") != 0) {
             snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", key);
             headers = curl_slist_append(headers, auth_header);
-        }
-
-        if (self->prompt_caching) {
-            // Only send anthropic prompt caching header for anthropic endpoints
-            if (ep && strstr(ep, "anthropic") != NULL) {
+            if (self->prompt_caching && ep && strstr(ep, "anthropic") != NULL) {
                 headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
             }
         }
@@ -867,6 +953,32 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
     return count;
 }
 
+ModelProtocolMode model_gateway_detect_protocol(const char *endpoint, const char *model) {
+    if (endpoint && strstr(endpoint, "api.anthropic.com") != NULL) {
+        return PROTOCOL_ANTHROPIC;
+    }
+    if (model) {
+        if (strstr(model, "claude") != NULL) {
+            return PROTOCOL_ANTHROPIC;
+        }
+        if (strstr(model, "hermes") != NULL) {
+            return PROTOCOL_HERMES;
+        }
+        if (strstr(model, "deepseek") != NULL || strstr(model, "r1") != NULL) {
+            return PROTOCOL_DEEPSEEK;
+        }
+    }
+    return PROTOCOL_OPENAI;
+}
+
+void model_gateway_set_protocol(ModelGateway *gw, ModelProtocolMode protocol) {
+    if (gw) gw->protocol = protocol;
+}
+
+void model_gateway_set_thinking_budget(ModelGateway *gw, int budget_tokens) {
+    if (gw) gw->thinking_budget_tokens = budget_tokens;
+}
+
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model) {
     if (!endpoint) return NULL;
     ModelGateway *gw = calloc(1, sizeof(ModelGateway));
@@ -887,6 +999,11 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->timeout_sec = 120;
     gw->max_retries = 3;
     gw->streaming = true;
+    gw->protocol = model_gateway_detect_protocol(gw->endpoint, gw->model);
+    const char *tb_env = getenv("MODEL_THINKING_BUDGET");
+    if (tb_env && atoi(tb_env) > 0) {
+        gw->thinking_budget_tokens = atoi(tb_env);
+    }
     const char *pc_env = getenv("PROMPT_CACHING");
     if (pc_env && (strcmp(pc_env, "true") == 0 || strcmp(pc_env, "1") == 0)) {
         gw->prompt_caching = true;

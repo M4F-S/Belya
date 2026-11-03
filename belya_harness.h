@@ -162,6 +162,9 @@ bool is_path_safe(const char *path);
 bool belya_harness_is_secret_path(const char *path);
 bool belya_harness_sockaddr_is_private(const struct sockaddr *sa);
 char *belya_troubleshooting_resolve(const char *error_trace, const char *troubleshooting_path);
+char *belya_harness_preflight_check(const char *path);
+size_t belya_harness_index_symbols(BelyaHarness *h, const char *dir_path);
+char *belya_harness_generate_repo_map(BelyaHarness *h, size_t max_tokens);
 void belya_harness_free(BelyaHarness *h);
 
 // Late-2026 Phase 3: AST Symbol Graph Navigation & ROMA Task Trees

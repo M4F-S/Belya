@@ -8,6 +8,7 @@
 #include "common.h"
 
 #include "belya_agent.h"
+#include "belya_harness.h"
 #include "minifrontmatter.h"
 #include <time.h>
 #include <ctype.h>
@@ -2446,6 +2447,14 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                         }
                     }
                     fclose(gh);
+                }
+
+                if (agent->user_data) {
+                    char *repo_map = belya_harness_generate_repo_map((BelyaHarness *)agent->user_data, 350);
+                    if (repo_map) {
+                        dyn_str_appendf(&dynamic_part, "\n=== Architecture & Symbol Skeleton ===\n%s\n", repo_map);
+                        free(repo_map);
+                    }
                 }
             }
 

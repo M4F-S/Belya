@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <fnmatch.h>
@@ -122,30 +123,148 @@ static inline bool is_safe_shell_path(const char *p) {
     return true;
 }
 
-static char *preflight_syntax_check(const char *path) {
-    if (!path || !is_safe_shell_path(path)) return NULL;
+char *belya_harness_preflight_check(const char *path) {
+    if (!path) return NULL;
     const char *ext = strrchr(path, '.');
     if (!ext) return NULL;
-    if (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0 &&
-        strcmp(ext, ".cpp") != 0 && strcmp(ext, ".cc") != 0) {
+
+    const char *cmd_prog = NULL;
+    char *const *argv_ptr = NULL;
+
+    char *const c_argv[] = {"gcc", "-fsyntax-only", "-std=c99", "-Wall", (char *)path, NULL};
+    char *const cpp_argv[] = {"g++", "-fsyntax-only", "-Wall", (char *)path, NULL};
+    char *const py_argv[] = {"python3", "-m", "py_compile", (char *)path, NULL};
+    char *const js_argv[] = {"node", "--check", (char *)path, NULL};
+    char *const rs_argv[] = {"rustc", "--emit=metadata", "-o", "/dev/null", (char *)path, NULL};
+    char *const go_argv[] = {"go", "vet", (char *)path, NULL};
+
+    if (strcmp(ext, ".c") == 0 || strcmp(ext, ".h") == 0) {
+        cmd_prog = "gcc";
+        argv_ptr = c_argv;
+    } else if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0) {
+        cmd_prog = "g++";
+        argv_ptr = cpp_argv;
+    } else if (strcmp(ext, ".py") == 0) {
+        cmd_prog = "python3";
+        argv_ptr = py_argv;
+    } else if (strcmp(ext, ".js") == 0 || strcmp(ext, ".mjs") == 0) {
+        cmd_prog = "node";
+        argv_ptr = js_argv;
+    } else if (strcmp(ext, ".rs") == 0) {
+        cmd_prog = "rustc";
+        argv_ptr = rs_argv;
+    } else if (strcmp(ext, ".go") == 0) {
+        cmd_prog = "go";
+        argv_ptr = go_argv;
+    } else if (strcmp(ext, ".json") == 0) {
+        FILE *jf = fopen(path, "rb");
+        if (jf) {
+            fseek(jf, 0, SEEK_END);
+            long jlen = ftell(jf);
+            fseek(jf, 0, SEEK_SET);
+            if (jlen > 0 && jlen < 500000) {
+                char *jbuf = malloc(jlen + 1);
+                if (jbuf) {
+                    size_t r = fread(jbuf, 1, jlen, jf);
+                    jbuf[r] = '\0';
+                    JsonValue *jv = json_parse(jbuf);
+                    free(jbuf);
+                    fclose(jf);
+                    if (!jv) {
+                        DynString diag = dyn_str_new();
+                        dyn_str_appendf(&diag, "JSON Syntax Error: Failed to parse %s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": \"Malformed JSON syntax\"\n}", path, path);
+                        return diag.data;
+                    }
+                    json_free(jv);
+                    return NULL;
+                }
+            }
+            fclose(jf);
+        }
+        return NULL;
+    } else {
         return NULL;
     }
 
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd), "gcc -fsyntax-only -std=c99 -Wall \"%s\" 2>&1", path);
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) return NULL;
 
-    FILE *p = popen(cmd, "r");
-    if (!p) return NULL;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+
+        execvp(cmd_prog, argv_ptr);
+        _exit(127); // Toolchain binary missing, exit cleanly
+    }
+
+    close(pipe_fds[1]);
+
+    struct pollfd pfd;
+    pfd.fd = pipe_fds[0];
+    pfd.events = POLLIN;
 
     DynString raw_out = dyn_str_new();
     char buf[512];
-    while (fgets(buf, sizeof(buf), p)) {
-        dyn_str_append(&raw_out, buf);
-        if (raw_out.len > 8000) break;
-    }
-    int status = pclose(p);
+    int timeout_ms = 2000;
 
-    if (status == 0 || raw_out.len == 0) {
+    while (timeout_ms > 0) {
+        int poll_res = poll(&pfd, 1, 100);
+        if (poll_res > 0) {
+            if (pfd.revents & POLLIN) {
+                ssize_t n = read(pipe_fds[0], buf, sizeof(buf) - 1);
+                if (n <= 0) break;
+                buf[n] = '\0';
+                dyn_str_append(&raw_out, buf);
+                if (raw_out.len > 8000) break;
+            } else if (pfd.revents & (POLLHUP | POLLERR)) {
+                break;
+            }
+        } else if (poll_res == 0) {
+            timeout_ms -= 100;
+        } else {
+            if (errno == EINTR) continue;
+            break;
+        }
+    }
+
+    close(pipe_fds[0]);
+
+    int status = 0;
+    if (timeout_ms <= 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        dyn_str_free(&raw_out);
+        return NULL;
+    }
+
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        dyn_str_free(&raw_out);
+        return NULL;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        dyn_str_free(&raw_out);
+        return NULL;
+    }
+
+    if (raw_out.len == 0) {
         dyn_str_free(&raw_out);
         return NULL;
     }
@@ -157,6 +276,10 @@ static char *preflight_syntax_check(const char *path) {
     dyn_str_free(&raw_out);
 
     return diag.data;
+}
+
+static inline char *preflight_syntax_check(const char *path) {
+    return belya_harness_preflight_check(path);
 }
 
 bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_name) {
@@ -1416,7 +1539,7 @@ static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
 
 char *belya_ansi_diff_colorize(const char *raw_diff) {
     if (!raw_diff) return NULL;
-    if (getenv("NO_COLOR") != NULL) {
+    if (getenv("NO_COLOR") != NULL || !isatty(STDOUT_FILENO)) {
         return xstrdup(raw_diff);
     }
     DynString ds = dyn_str_new();
@@ -1742,7 +1865,165 @@ static char *tool_exec_backend(BelyaAgent *agent, const JsonValue *args) {
     }
 }
 
+static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *target = json_obj_get_str(args, "target_test");
+    const char *framework = json_obj_get_str(args, "framework");
+
+    const char *runner_prog = NULL;
+    char *const *argv_ptr = NULL;
+
+    char *const make_argv[] = {"make", "test", NULL};
+    char *const pytest_argv[] = {"pytest", "-x", "-q", "--no-header", (char *)(target ? target : "."), NULL};
+    char *const cargo_argv[] = {"cargo", "test", "--quiet", "--", (char *)(target ? target : ""), NULL};
+    char *const npm_argv[] = {"npm", "test", "--", "--watchAll=false", "--ci", "--bail", NULL};
+    char *const ctest_argv[] = {"ctest", "--output-on-failure", NULL};
+    char *const go_argv[] = {"go", "test", "./...", NULL};
+
+    if (framework && strcmp(framework, "pytest") == 0) {
+        runner_prog = "pytest"; argv_ptr = pytest_argv;
+    } else if (framework && strcmp(framework, "cargo") == 0) {
+        runner_prog = "cargo"; argv_ptr = cargo_argv;
+    } else if (framework && strcmp(framework, "npm") == 0) {
+        runner_prog = "npm"; argv_ptr = npm_argv;
+    } else if (framework && strcmp(framework, "ctest") == 0) {
+        runner_prog = "ctest"; argv_ptr = ctest_argv;
+    } else if (framework && strcmp(framework, "go") == 0) {
+        runner_prog = "go"; argv_ptr = go_argv;
+    } else if (framework && strcmp(framework, "make") == 0) {
+        runner_prog = "make"; argv_ptr = make_argv;
+    } else {
+        if (access("Makefile", F_OK) == 0) {
+            runner_prog = "make"; argv_ptr = make_argv;
+        } else if (access("Cargo.toml", F_OK) == 0) {
+            runner_prog = "cargo"; argv_ptr = cargo_argv;
+        } else if (access("package.json", F_OK) == 0) {
+            runner_prog = "npm"; argv_ptr = npm_argv;
+        } else if (access("CMakeLists.txt", F_OK) == 0) {
+            runner_prog = "ctest"; argv_ptr = ctest_argv;
+        } else if (access("go.mod", F_OK) == 0) {
+            runner_prog = "go"; argv_ptr = go_argv;
+        } else if (access("pytest.ini", F_OK) == 0 || access("pyproject.toml", F_OK) == 0 || access("tests", F_OK) == 0) {
+            runner_prog = "pytest"; argv_ptr = pytest_argv;
+        } else {
+            return xstrdup("Error: Could not automatically detect test runner (no Makefile, Cargo.toml, package.json, CMakeLists.txt, or pyproject.toml found). Specify framework parameter.");
+        }
+    }
+
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) return xstrdup("Error: Failed to create pipe for test runner.");
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return xstrdup("Error: Failed to fork test runner process.");
+    }
+
+    if (pid == 0) {
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+
+        execvp(runner_prog, argv_ptr);
+        _exit(127);
+    }
+
+    close(pipe_fds[1]);
+
+    DynString raw_out = dyn_str_new();
+    char buf[512];
+    struct pollfd pfd;
+    pfd.fd = pipe_fds[0];
+    pfd.events = POLLIN;
+
+    int timeout_ms = 45000;
+    while (timeout_ms > 0) {
+        int poll_res = poll(&pfd, 1, 200);
+        if (poll_res > 0) {
+            if (pfd.revents & POLLIN) {
+                ssize_t n = read(pipe_fds[0], buf, sizeof(buf) - 1);
+                if (n <= 0) break;
+                buf[n] = '\0';
+                dyn_str_append(&raw_out, buf);
+                if (raw_out.len > 50000) break;
+            } else if (pfd.revents & (POLLHUP | POLLERR)) {
+                break;
+            }
+        } else if (poll_res == 0) {
+            timeout_ms -= 200;
+        } else {
+            if (errno == EINTR) continue;
+            break;
+        }
+    }
+    close(pipe_fds[0]);
+
+    int status = 0;
+    if (timeout_ms <= 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+        dyn_str_free(&raw_out);
+        return xstrdup("Error: Test execution timed out (exceeded 45.0s limit). Process terminated.");
+    }
+
+    waitpid(pid, &status, 0);
+
+    bool passed = (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    DynString result = dyn_str_new();
+    dyn_str_appendf(&result, "=== Test Execution Result: %s (Exit Code %d) ===\n", passed ? "PASSED (100% Green)" : "FAILED", exit_code);
+
+    if (raw_out.len <= 3500) {
+        dyn_str_append(&result, raw_out.data);
+    } else {
+        size_t line_count = 0;
+        for (size_t i = 0; i < raw_out.len; i++) {
+            if (raw_out.data[i] == '\n') line_count++;
+        }
+        if (line_count > 50) {
+            const char *p = raw_out.data;
+            for (int l = 0; l < 15 && *p; l++) {
+                p = strchr(p, '\n');
+                if (p) p++;
+                else break;
+            }
+            if (p) {
+                dyn_str_append_len(&result, raw_out.data, (size_t)(p - raw_out.data));
+                dyn_str_appendf(&result, "\n[... %zu lines of test output omitted ...]\n\n", line_count - 50);
+                const char *tail = raw_out.data + raw_out.len - 1;
+                int tail_lines = 0;
+                while (tail > p && tail_lines < 35) {
+                    if (*tail == '\n') tail_lines++;
+                    tail--;
+                }
+                if (*tail == '\n') tail++;
+                dyn_str_append(&result, tail);
+            } else {
+                dyn_str_append_len(&result, raw_out.data, 3500);
+            }
+        } else {
+            dyn_str_append_len(&result, raw_out.data, 3500);
+            dyn_str_append(&result, "\n[... Output truncated ...]");
+        }
+    }
+
+    dyn_str_free(&raw_out);
+    return result.data;
+}
+
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
+    if (!agent || !agent->gateway || !agent->gateway->endpoint) {
+        return xstrdup("Error: Model gateway is offline or unconfigured.");
+    }
     const char *task = json_obj_get_str(args, "task");
     const char *instructions = json_obj_get_str(args, "instructions");
     double max_turns_num = json_obj_get_num(args, "max_turns", 5);
@@ -1800,7 +2081,8 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
                 BelyaRegisteredTool *matched = NULL;
                 for (size_t t = 0; t < sub_harness->tool_count; t++) {
                     if (strcmp(sub_harness->tools[t].name, tc->name) == 0 &&
-                        strcmp(tc->name, "spawn_subagent") != 0) {
+                        strcmp(tc->name, "spawn_subagent") != 0 &&
+                        strcmp(tc->name, "dispatch_agent") != 0) {
                         matched = &sub_harness->tools[t];
                         break;
                     }
@@ -1857,8 +2139,9 @@ static bool str_contains_ci(const char *haystack, const char *needle) {
 }
 
 char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *role_name, const char *task, const char *extra_context) {
-    if (!parent_harness || !parent_harness->agent || !role_name || !task) {
-        return xstrdup("Error: Invalid arguments for subagent dispatch.");
+    if (!parent_harness || !parent_harness->agent || !parent_harness->agent->gateway ||
+        !parent_harness->agent->gateway->endpoint || !role_name || !task) {
+        return xstrdup("Error: Invalid arguments or model gateway offline for subagent dispatch.");
     }
 
     // 1. Resolve agent manifest
@@ -2004,11 +2287,17 @@ char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *r
     bool rolled_back = false;
     if (has_write && git_repo_available && is_valid_hex_sha(snapshot_sha)) {
         if (subagent_failed) {
-            char reset_cmd[1024];
-            snprintf(reset_cmd, sizeof(reset_cmd),
-                     "git -C \"%.900s\" checkout -- . 2>/dev/null", parent_harness->cwd);
-            int ret = system(reset_cmd);
-            (void)ret;
+            char *const git_argv[] = {"git", "-C", (char *)parent_harness->cwd, "checkout", "--", ".", NULL};
+            pid_t rpid = fork();
+            if (rpid == 0) {
+                int null_fd = open("/dev/null", O_WRONLY);
+                if (null_fd >= 0) { dup2(null_fd, STDOUT_FILENO); dup2(null_fd, STDERR_FILENO); close(null_fd); }
+                execvp("git", git_argv);
+                _exit(1);
+            } else if (rpid > 0) {
+                int rst = 0;
+                waitpid(rpid, &rst, 0);
+            }
             rolled_back = true;
 
             char log_msg[256];
@@ -2102,7 +2391,13 @@ size_t belya_harness_index_symbols(BelyaHarness *h, const char *dir_path) {
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
         const char *ext = strrchr(ent->d_name, '.');
-        if (!ext || (strcmp(ext, ".c") != 0 && strcmp(ext, ".h") != 0)) continue;
+        if (!ext) continue;
+        bool is_c = (strcmp(ext, ".c") == 0 || strcmp(ext, ".h") == 0 || strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0);
+        bool is_py = (strcmp(ext, ".py") == 0);
+        bool is_js = (strcmp(ext, ".js") == 0 || strcmp(ext, ".ts") == 0 || strcmp(ext, ".mjs") == 0 || strcmp(ext, ".tsx") == 0);
+        bool is_rs = (strcmp(ext, ".rs") == 0);
+        bool is_go = (strcmp(ext, ".go") == 0);
+        if (!is_c && !is_py && !is_js && !is_rs && !is_go) continue;
 
         char fpath[1024];
         snprintf(fpath, sizeof(fpath), "%s/%s", target, ent->d_name);
@@ -2120,6 +2415,164 @@ size_t belya_harness_index_symbols(BelyaHarness *h, const char *dir_path) {
             while (*trim == ' ' || *trim == '\t') trim++;
             if (*trim == '\0') continue;
 
+            // Python symbols
+            if (is_py) {
+                if (strncmp(trim, "def ", 4) == 0) {
+                    char *s = trim + 4;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "FUNC_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                } else if (strncmp(trim, "class ", 6) == 0) {
+                    char *s = trim + 6;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "CLASS_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                }
+            }
+
+            // Rust symbols
+            if (is_rs) {
+                if (strncmp(trim, "fn ", 3) == 0 || strstr(trim, " pub fn ") != NULL) {
+                    char *s = strstr(trim, "fn ");
+                    s += 3;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "FUNC_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                } else if (strncmp(trim, "struct ", 7) == 0 || strstr(trim, " pub struct ") != NULL) {
+                    char *s = strstr(trim, "struct ");
+                    s += 7;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "STRUCT_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                }
+            }
+
+            // JavaScript / TypeScript symbols
+            if (is_js) {
+                if (strncmp(trim, "function ", 9) == 0 || strstr(trim, "export function ") != NULL) {
+                    char *s = strstr(trim, "function ");
+                    s += 9;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "FUNC_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                } else if (strncmp(trim, "class ", 6) == 0 || strstr(trim, "export class ") != NULL) {
+                    char *s = strstr(trim, "class ");
+                    s += 6;
+                    while (*s == ' ' || *s == '\t') s++;
+                    char sym[128] = {0};
+                    int si = 0;
+                    while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                    sym[si] = '\0';
+                    if (si > 0) {
+                        sqlite3_reset(stmt);
+                        sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_text(stmt, 3, "CLASS_DEF", -1, SQLITE_STATIC);
+                        sqlite3_bind_int(stmt, 4, lineno);
+                        sqlite3_bind_int(stmt, 5, lineno);
+                        sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                        if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                    }
+                    continue;
+                }
+            }
+
+            // Go symbols
+            if (is_go) {
+                if (strncmp(trim, "func ", 5) == 0) {
+                    char *s = trim + 5;
+                    while (*s == ' ' || *s == '\t') s++;
+                    if (*s == '(') {
+                        // Method with receiver: func (r *Receiver) Method()
+                        s = strchr(s, ')');
+                        if (s) { s++; while (*s == ' ' || *s == '\t') s++; }
+                    }
+                    if (s) {
+                        char sym[128] = {0};
+                        int si = 0;
+                        while (*s && (isalnum((unsigned char)*s) || *s == '_') && si < 127) sym[si++] = *s++;
+                        sym[si] = '\0';
+                        if (si > 0) {
+                            sqlite3_reset(stmt);
+                            sqlite3_bind_text(stmt, 1, fpath, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 2, sym, -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 3, "FUNC_DEF", -1, SQLITE_STATIC);
+                            sqlite3_bind_int(stmt, 4, lineno);
+                            sqlite3_bind_int(stmt, 5, lineno);
+                            sqlite3_bind_text(stmt, 6, trim, -1, SQLITE_TRANSIENT);
+                            if (sqlite3_step(stmt) == SQLITE_DONE) count++;
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // C/C++ symbols
             // 1. MACRO
             if (strncmp(trim, "#define", 7) == 0 && (trim[7] == ' ' || trim[7] == '\t')) {
                 char *m = trim + 7;
@@ -2237,6 +2690,65 @@ size_t belya_harness_index_symbols(BelyaHarness *h, const char *dir_path) {
     sqlite3_finalize(stmt);
     sqlite3_exec(db, "COMMIT;", 0, 0, 0);
     return count;
+}
+
+char *belya_harness_generate_repo_map(BelyaHarness *h, size_t max_tokens) {
+    if (!h || !h->agent || !h->agent->db) return NULL;
+    sqlite3 *db = h->agent->db;
+
+    sqlite3_stmt *cnt_stmt = NULL;
+    int total_syms = 0;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM symbols;", -1, &cnt_stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+            total_syms = sqlite3_column_int(cnt_stmt, 0);
+        }
+        sqlite3_finalize(cnt_stmt);
+    }
+    if (total_syms == 0) {
+        belya_harness_index_symbols(h, ".");
+    }
+
+    const char *sql = "SELECT file_path, symbol_name, kind FROM symbols "
+                      "WHERE kind IN ('FUNC_DEF', 'CLASS_DEF', 'STRUCT_DEF') "
+                      "ORDER BY file_path, start_line LIMIT 60;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+
+    DynString ds = dyn_str_new();
+    dyn_str_append(&ds, "=== Compressed Repository Architecture Map ===\n");
+
+    char last_file[512] = {0};
+    int file_sym_count = 0;
+    int total_printed = 0;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *fpath = (const char *)sqlite3_column_text(stmt, 0);
+        const char *sym = (const char *)sqlite3_column_text(stmt, 1);
+        if (!fpath || !sym) continue;
+
+        if (strcmp(last_file, fpath) != 0) {
+            if (last_file[0] != '\0') dyn_str_append(&ds, "\n");
+            snprintf(last_file, sizeof(last_file), "%s", fpath);
+            dyn_str_appendf(&ds, "  %s: %s", fpath, sym);
+            file_sym_count = 1;
+        } else if (file_sym_count < 6) {
+            dyn_str_appendf(&ds, ", %s", sym);
+            file_sym_count++;
+        } else if (file_sym_count == 6) {
+            dyn_str_append(&ds, ", ...");
+            file_sym_count++;
+        }
+        total_printed++;
+        if (total_printed >= 40 || ds.len >= max_tokens * 4) break;
+    }
+    sqlite3_finalize(stmt);
+    dyn_str_append(&ds, "\n");
+
+    if (total_printed == 0) {
+        dyn_str_free(&ds);
+        return NULL;
+    }
+    return ds.data;
 }
 
 char *belya_harness_goto_definition(BelyaHarness *h, const char *symbol_name) {
@@ -3995,6 +4507,21 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(eb_props, "target", eb_tgt);
     json_obj_add(eb_params, "properties", eb_props);
     REGISTER_IF_PERMITTED("exec_backend", "Query or switch execution backend (local, Docker container, or SSH host)", eb_params, PERM_ALLOW, tool_exec_backend);
+
+    // 42. run_test_cycle (Autonomous SWE Verification Loop)
+    JsonValue *rtc_params = json_create_object();
+    json_obj_add(rtc_params, "type", json_create_string("object"));
+    JsonValue *rtc_props = json_create_object();
+    JsonValue *rtc_tgt = json_create_object();
+    json_obj_add(rtc_tgt, "type", json_create_string("string"));
+    json_obj_add(rtc_tgt, "description", json_create_string("Optional specific test file, pattern, or test target name"));
+    json_obj_add(rtc_props, "target_test", rtc_tgt);
+    JsonValue *rtc_fw = json_create_object();
+    json_obj_add(rtc_fw, "type", json_create_string("string"));
+    json_obj_add(rtc_fw, "description", json_create_string("Optional framework: 'auto', 'make', 'pytest', 'cargo', 'npm', 'ctest', 'go'"));
+    json_obj_add(rtc_props, "framework", rtc_fw);
+    json_obj_add(rtc_params, "properties", rtc_props);
+    REGISTER_IF_PERMITTED("run_test_cycle", "Run the project test suite autonomously (auto-detects make, pytest, cargo, npm, ctest, go test). Returns structured pass/fail trace.", rtc_params, PERM_ALLOW, tool_run_test_cycle);
 
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {

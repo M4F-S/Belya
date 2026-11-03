@@ -3439,6 +3439,107 @@ static void test_belya_company_system(void) {
     printf("  -> Sovereign Multi-Agent Company Architecture & Full SDLC PASSED\n");
 }
 
+void test_sota_parity_pillars(void) {
+    printf("[Test] SOTA Parity & Dominance Pillars (Multi-Model, Auto-Test Driver, Repo Map, Safe Preflight)...\n");
+
+    // 1. Multi-Model Protocol Detection & Adaptive Mode
+    assert(model_gateway_detect_protocol("https://api.anthropic.com/v1/messages", "claude-3-5-sonnet") == PROTOCOL_ANTHROPIC);
+    assert(model_gateway_detect_protocol("https://openrouter.ai/api/v1/chat/completions", "anthropic/claude-3.5-sonnet") == PROTOCOL_ANTHROPIC);
+    assert(model_gateway_detect_protocol("http://localhost:11434/v1/chat/completions", "hermes-3-llama-3.1-8b") == PROTOCOL_HERMES);
+    assert(model_gateway_detect_protocol("https://api.deepseek.com/v1/chat/completions", "deepseek-reasoner") == PROTOCOL_DEEPSEEK);
+    assert(model_gateway_detect_protocol("https://api.openai.com/v1/chat/completions", "gpt-4o") == PROTOCOL_OPENAI);
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    assert(gw != NULL);
+    assert(gw->protocol == PROTOCOL_HERMES);
+    model_gateway_set_thinking_budget(gw, 2048);
+    assert(gw->thinking_budget_tokens == 2048);
+
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "SOTA Test");
+    assert(agent != NULL);
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    // 2. Multi-Language Syntax Preflight (POSIX fork/execvp with timeout & non-shell execution)
+    // Test Python syntax preflight
+    FILE *fp = fopen("test_syntax_broken.py", "w");
+    assert(fp != NULL);
+    fprintf(fp, "def broken_func(\n    print('missing paren')\n");
+    fclose(fp);
+
+    char *py_err = belya_harness_preflight_check("test_syntax_broken.py");
+    assert(py_err != NULL);
+    assert(strlen(py_err) > 0);
+    free(py_err);
+    unlink("test_syntax_broken.py");
+
+    // Valid Python
+    fp = fopen("test_syntax_valid.py", "w");
+    assert(fp != NULL);
+    fprintf(fp, "def valid_func(x, y):\n    return x + y\n");
+    fclose(fp);
+    char *py_clean = belya_harness_preflight_check("test_syntax_valid.py");
+    assert(py_clean == NULL);
+    unlink("test_syntax_valid.py");
+
+    // Test JSON syntax preflight
+    fp = fopen("test_broken.json", "w");
+    assert(fp != NULL);
+    fprintf(fp, "{ \"key\": unquoted_val }\n");
+    fclose(fp);
+    char *json_err = belya_harness_preflight_check("test_broken.json");
+    assert(json_err != NULL);
+    free(json_err);
+    unlink("test_broken.json");
+
+    // 3. Multi-Language Symbol Indexing & Architecture Skeleton (Repo Map)
+    fp = fopen("test_module.py", "w");
+    assert(fp != NULL);
+    fprintf(fp, "class DataProcessor:\n    def __init__(self):\n        pass\n    def process_data(self, item):\n        return item * 2\n\ndef standalone_utility():\n    pass\n");
+    fclose(fp);
+
+    size_t syms = belya_harness_index_symbols(h, ".");
+    assert(syms > 0);
+
+    char *def_proc = belya_harness_goto_definition(h, "DataProcessor");
+    assert(def_proc != NULL);
+    assert(strstr(def_proc, "DataProcessor") != NULL);
+    free(def_proc);
+
+    char *def_util = belya_harness_goto_definition(h, "standalone_utility");
+    assert(def_util != NULL);
+    assert(strstr(def_util, "standalone_utility") != NULL);
+    free(def_util);
+
+    // Repo Map generation within token budget
+    char *repo_map = belya_harness_generate_repo_map(h, 350);
+    assert(repo_map != NULL);
+    assert(strstr(repo_map, "Compressed Repository Architecture Map") != NULL);
+    free(repo_map);
+    unlink("test_module.py");
+
+    // 4. Autonomous SWE Verification Loop (tool_run_test_cycle)
+    bool has_test_cycle_tool = false;
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "run_test_cycle") == 0) {
+            has_test_cycle_tool = true;
+            JsonValue *cycle_args = json_create_object();
+            json_obj_add(cycle_args, "command", json_create_string("echo 'Test Suite Passed: 100%'"));
+            char *test_res = h->tools[t].callback(agent, cycle_args);
+            assert(test_res != NULL);
+            assert(strstr(test_res, "PASSED") != NULL || strstr(test_res, "Output") != NULL);
+            free(test_res);
+            json_free(cycle_args);
+            break;
+        }
+    }
+    assert(has_test_cycle_tool);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> SOTA Parity & Dominance Pillars PASSED (52/52)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -3492,7 +3593,8 @@ int main(void) {
     test_gateway_preflight_probe();
     test_championship_presets_and_stage_telemetry();
     test_belya_company_system();
-    printf("================ All Tests Passed Successfully (51/51 - 100%%) ================\n\n");
+    test_sota_parity_pillars();
+    printf("================ All Tests Passed Successfully (52/52 - 100%%) ================\n\n");
     return 0;
 }
 

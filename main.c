@@ -1,5 +1,24 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
+#include <signal.h>
+#include <unistd.h>
+
+static void cleanup_terminal(void) {
+    if (isatty(STDOUT_FILENO)) {
+        const char *reset_seq = "\033[?25h\033[0m\n";
+        (void)write(STDOUT_FILENO, reset_seq, strlen(reset_seq));
+    }
+}
+
+static void sigint_handler(int sig) {
+    cleanup_terminal();
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(sig, &sa, NULL);
+    raise(sig);
+}
 
 static void load_env_file(const char *path) {
     FILE *fp = fopen(path, "r");
@@ -28,6 +47,15 @@ static void load_env_file(const char *path) {
 }
 
 int main(int argc, char **argv) {
+    atexit(cleanup_terminal);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
     load_env_file(".env");
 
     // Unbuffered stdout for systemd journal visibility
