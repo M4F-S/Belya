@@ -2456,7 +2456,8 @@ static void test_mythos_variant_analysis(void) {
 static void test_phase1_diff_colorizer_and_ask_user(void) {
     printf("[Test] Phase 1: Stateful Diff Colorizer, ask_user & Signal-Safe Modal...\n");
 
-    // 1. Test Stateful ANSI Diff Colorizer
+    // 1. Test Stateful ANSI Diff Colorizer (force color for non-tty/redirected test runs)
+    setenv("FORCE_COLOR", "1", 1);
     const char *sample_diff = 
         "diff --git a/test.c b/test.c\n"
         "--- a/test.c\n"
@@ -2474,6 +2475,7 @@ static void test_phase1_diff_colorizer_and_ask_user(void) {
     assert(strstr(colored, "\033[31m----i;") != NULL);
     assert(strstr(colored, "\033[1;36m--- a/test.c") != NULL);
     free(colored);
+    unsetenv("FORCE_COLOR");
 
     // 2. Test NO_COLOR suppression
     setenv("NO_COLOR", "1", 1);

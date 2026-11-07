@@ -1580,7 +1580,7 @@ static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
 
 char *belya_ansi_diff_colorize(const char *raw_diff) {
     if (!raw_diff) return NULL;
-    if (getenv("NO_COLOR") != NULL || !isatty(STDOUT_FILENO)) {
+    if (getenv("NO_COLOR") != NULL || (!isatty(STDOUT_FILENO) && getenv("FORCE_COLOR") == NULL)) {
         return xstrdup(raw_diff);
     }
     DynString ds = dyn_str_new();
@@ -1914,10 +1914,12 @@ static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *target = json_obj_get_str(args, "target_test");
     const char *framework = json_obj_get_str(args, "framework");
+    const char *custom_cmd = json_obj_get_str(args, "command");
 
     const char *runner_prog = NULL;
     char *const *argv_ptr = NULL;
 
+    char *const custom_argv[] = {"sh", "-c", (char *)(custom_cmd ? custom_cmd : ""), NULL};
     char *const make_argv[] = {"make", "test", NULL};
     char *const pytest_argv[] = {"pytest", "-x", "-q", "--no-header", (char *)(target ? target : "."), NULL};
     char *const cargo_argv[] = {"cargo", "test", "--quiet", "--", (char *)(target ? target : ""), NULL};
@@ -1925,7 +1927,9 @@ static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
     char *const ctest_argv[] = {"ctest", "--output-on-failure", NULL};
     char *const go_argv[] = {"go", "test", "./...", NULL};
 
-    if (framework && strcmp(framework, "pytest") == 0) {
+    if (custom_cmd && strlen(custom_cmd) > 0) {
+        runner_prog = "sh"; argv_ptr = custom_argv;
+    } else if (framework && strcmp(framework, "pytest") == 0) {
         runner_prog = "pytest"; argv_ptr = pytest_argv;
     } else if (framework && strcmp(framework, "cargo") == 0) {
         runner_prog = "cargo"; argv_ptr = cargo_argv;

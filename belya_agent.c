@@ -569,6 +569,28 @@ static char *sanitize_fts5_query(const char *raw) {
     return ds.data;
 }
 
+/* P2: a single agent_memory row can hold an entire archived transcript. The
+   recall path previously interpolated the whole `content` column into model
+   context, so one oversized row could flood the turn budget. Cap the knowledge
+   text per entry, backing off to a UTF-8 boundary so a multi-byte codepoint is
+   never split, and mark the elision so the model knows text was removed. */
+#define MEMORY_ENTRY_CONTENT_CAP 800
+
+static void append_content_capped(DynString *out, const char *txt) {
+    if (!txt) return;
+    size_t n = strlen(txt);
+    if (n <= MEMORY_ENTRY_CONTENT_CAP) {
+        dyn_str_append(out, txt);
+        return;
+    }
+    size_t cut = MEMORY_ENTRY_CONTENT_CAP;
+    /* Back off over UTF-8 continuation bytes (0b10xxxxxx) to a lead byte. */
+    while (cut > 0 && ((unsigned char)txt[cut] & 0xC0) == 0x80) cut--;
+    if (cut == 0) cut = MEMORY_ENTRY_CONTENT_CAP; /* malformed UTF-8: cap anyway */
+    dyn_str_appendf(out, "%.*s", (int)cut, txt);
+    dyn_str_appendf(out, "\n...[truncated %zu of %zu bytes]", n - cut, n);
+}
+
 char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
     if (!agent->db) return xstrdup("Memory database not active.");
     DynString out = dyn_str_new();
@@ -595,8 +617,10 @@ char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
                 double sal = sqlite3_column_double(stmt, 5);
                 int acc = sqlite3_column_int(stmt, 6);
 
-                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: %s\n\n",
-                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "", txt ? txt : "");
+                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: ",
+                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "");
+                append_content_capped(&out, txt);
+                dyn_str_append(&out, "\n\n");
 
                 // Update recency & salience boost
                 sqlite3_stmt *up_stmt;
@@ -636,8 +660,10 @@ char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
                 double sal = sqlite3_column_double(stmt, 5);
                 int acc = sqlite3_column_int(stmt, 6);
 
-                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: %s\n\n",
-                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "", txt ? txt : "");
+                dyn_str_appendf(&out, "=== Memory Entry [Wing: %s | Room: %s | Salience: %.1f | Hits: %d] ===\nTopic: %s\nKnowledge: ",
+                    w ? w : "default", r ? r : "general", sal, acc + 1, top ? top : "");
+                append_content_capped(&out, txt);
+                dyn_str_append(&out, "\n\n");
 
                 // Update recency
                 sqlite3_stmt *up_stmt;
