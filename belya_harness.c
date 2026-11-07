@@ -716,6 +716,12 @@ bool is_path_jailed(const char *path, const char *workspace_root, bool is_write)
 
     // If writing: strictly forbidden outside workspace root
     if (is_write) {
+        /* H24: never write through a symlink. A dangling link whose target is
+           outside the workspace passes the parent-directory check because
+           realpath() fails on it, and fopen() then follows the link. */
+        struct stat lst;
+        if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode)) return false;
+
         char resolved[4096];
         if (realpath(path, resolved)) {
             if (strncmp(resolved, canonical_root, root_len) == 0 &&
@@ -732,7 +738,18 @@ bool is_path_jailed(const char *path, const char *workspace_root, bool is_write)
 
         char *last_slash = strrchr(temp_path, '/');
         if (!last_slash) {
-            // Relative path in current working directory (which is inside workspace root)
+            /* H24: a bare relative name used to be trusted because the CWD was
+               assumed to be the workspace. tool_bash can cd anywhere and the
+               CWD is process-global, so prove the CWD is inside the root
+               before trusting a relative name. */
+            char cwd_buf[4096];
+            char cwd_real[4096];
+            if (!getcwd(cwd_buf, sizeof(cwd_buf))) return false;
+            if (!realpath(cwd_buf, cwd_real)) return false;
+            if (strncmp(cwd_real, canonical_root, root_len) != 0 ||
+                (cwd_real[root_len] != '/' && cwd_real[root_len] != '\0')) {
+                return false;
+            }
             return true;
         }
 
