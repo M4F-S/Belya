@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE 1
+#define _BSD_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
@@ -201,9 +203,11 @@ LspClient *lsp_client_spawn(LspServerType type, const char *root_dir) {
     c->server_type = type;
     c->next_request_id = 1;
     if (root_dir) {
-        strncpy(c->root_dir, root_dir, sizeof(c->root_dir) - 1);
+        snprintf(c->root_dir, sizeof(c->root_dir), "%s", root_dir);
     } else {
-        getcwd(c->root_dir, sizeof(c->root_dir));
+        if (!getcwd(c->root_dir, sizeof(c->root_dir))) {
+            snprintf(c->root_dir, sizeof(c->root_dir), ".");
+        }
     }
 
     return c;

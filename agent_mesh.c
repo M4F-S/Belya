@@ -263,7 +263,7 @@ bool agent_mesh_start(AgentMesh *mesh) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, mesh->socket_path, sizeof(addr.sun_path) - 1);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", mesh->socket_path);
 
     if (cli_fd >= 0 && connect(cli_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
         // Successfully connected to existing mesh server as client
@@ -352,7 +352,7 @@ char *agent_mesh_consult(AgentMesh *mesh, const char *target, const char *action
         struct sockaddr_un addr;
         memset(&addr, 0, sizeof(addr));
         addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, mesh->socket_path, sizeof(addr.sun_path) - 1);
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", mesh->socket_path);
         if (cli_fd >= 0 && connect(cli_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
             mesh->peer_fd = cli_fd;
             mesh->running = true;
