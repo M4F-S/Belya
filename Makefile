@@ -170,7 +170,11 @@ deploy: $(TARGET)
 	    exit 1; \
 	  fi; \
 	  echo "[deploy] installing $(TARGET) -> $(DEPLOY_BIN)"; \
-	  if [ -e "$(DEPLOY_BIN)" ]; then cp -a "$(DEPLOY_BIN)" "$(DEPLOY_BIN).lkg"; fi; \
+	  if [ -e "$(DEPLOY_BIN)" ]; then \
+	    chattr -i "$(DEPLOY_BIN).lkg" 2>/dev/null || true; \
+	    cp -a "$(DEPLOY_BIN)" "$(DEPLOY_BIN).lkg"; \
+	    chattr +i "$(DEPLOY_BIN).lkg" 2>/dev/null || true; \
+	  fi; \
 	  install -m 0755 "$(TARGET)" "$(DEPLOY_BIN).new"; \
 	  mv -f "$(DEPLOY_BIN).new" "$(DEPLOY_BIN)"; \
 	  chattr +i "$(DEPLOY_BIN)" 2>/dev/null || true; \
