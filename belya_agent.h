@@ -104,8 +104,10 @@ bool belya_agent_create_checkpoint(BelyaAgent *agent, const char *label);
 bool belya_agent_rollback_to_checkpoint(BelyaAgent *agent, const char *checkpoint_id);
 char *belya_agent_list_checkpoints(BelyaAgent *agent);
 
-// Trajectory Exporter (OpenAI Fine-Tune JSONL Format)
+// Trajectory Exporters (OpenAI Fine-Tune, ShareGPT/Hermes, and Hermes DPO Format)
 bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, const char *out_path);
+bool belya_agent_export_sharegpt(BelyaAgent *agent, const char *session_id, const char *out_path);
+bool belya_agent_export_dpo(BelyaAgent *agent, const char *session_id, const char *out_path);
 
 // Historical Conversation Memory Search
 char *belya_agent_search_conversations(BelyaAgent *agent, const char *query);
