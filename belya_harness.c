@@ -3087,11 +3087,15 @@ static bool g_shadow_cleanup_registered = false;
 void belya_shadow_worktree_cleanup_all(void) {
     for (size_t i = 0; i < BELYA_MAX_SHADOW_WORKTREES; i++) {
         if (g_active_shadow_worktrees[i][0] != '\0') {
-            char rm_cmd[8192];
-            snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; rm -rf \"%s\"",
-                     g_active_shadow_worktrees[i], g_active_shadow_worktrees[i]);
-            int rc = system(rm_cmd);
-            (void)rc;
+            char rm_cmd[4096];
+            snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1",
+                     g_active_shadow_worktrees[i]);
+            int rc1 = system(rm_cmd);
+            (void)rc1;
+            snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf \"%.2000s\"",
+                     g_active_shadow_worktrees[i]);
+            int rc2 = system(rm_cmd);
+            (void)rc2;
             g_active_shadow_worktrees[i][0] = '\0';
         }
     }
@@ -3193,8 +3197,8 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
 
     if (!worker_agent) {
         if (worker_gw) model_gateway_free(worker_gw);
-        char cleanup_cmd[8192];
-        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        char cleanup_cmd[4096];
+        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
         int sys_cl = system(cleanup_cmd);
         (void)sys_cl;
         belya_shadow_worktree_unregister(wt_path);
@@ -3205,8 +3209,8 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
     if (!worker_harness) {
         belya_agent_free(worker_agent);
         if (worker_gw) model_gateway_free(worker_gw);
-        char cleanup_cmd[8192];
-        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        char cleanup_cmd[4096];
+        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
         int sys_cl = system(cleanup_cmd);
         (void)sys_cl;
         belya_shadow_worktree_unregister(wt_path);
@@ -3319,13 +3323,13 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
         int rc_d = system(diff_cmd);
         (void)rc_d;
 
-        char apply_cmd[8192];
-        snprintf(apply_cmd, sizeof(apply_cmd), "git -C \"%s\" apply --whitespace=nowarn \"%s\" >/dev/null 2>&1", saved_cwd, patch_file);
+        char apply_cmd[4096];
+        snprintf(apply_cmd, sizeof(apply_cmd), "git -C \"%.2000s\" apply --whitespace=nowarn \"%.1000s\" >/dev/null 2>&1", saved_cwd, patch_file);
         int apply_rc = system(apply_cmd);
         (void)apply_rc;
 
-        char rm_cmd[8192];
-        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        char rm_cmd[4096];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
         int rc_rm = system(rm_cmd);
         (void)rc_rm;
         unlink(patch_file);
@@ -3339,8 +3343,8 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
         execution_success = true;
     } else {
         // 8. Failure Path: Silent Zero-Noise Worktree Teardown
-        char rm_cmd[8192];
-        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        char rm_cmd[4096];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
         int rc_rm = system(rm_cmd);
         (void)rc_rm;
         belya_shadow_worktree_unregister(wt_path);
@@ -5545,16 +5549,19 @@ char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
     int sys_mk = system("mkdir -p .belya/worktrees");
     (void)sys_mk;
 
-    char rm_stale[8192];
-    snprintf(rm_stale, sizeof(rm_stale), "git worktree remove --force \"%s\" >/dev/null 2>&1; rm -rf \"%s\"", wt_path, wt_path);
-    int sys_cl = system(rm_stale);
-    (void)sys_cl;
+    char rm_stale[4096];
+    snprintf(rm_stale, sizeof(rm_stale), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1", wt_path);
+    int sys_cl1 = system(rm_stale);
+    (void)sys_cl1;
+    snprintf(rm_stale, sizeof(rm_stale), "rm -rf \"%.2000s\"", wt_path);
+    int sys_cl2 = system(rm_stale);
+    (void)sys_cl2;
 
-    char cmd[8192];
-    snprintf(cmd, sizeof(cmd), "git worktree add -B \"%s\" \"%s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "git worktree add -B \"%.256s\" \"%.2000s\" HEAD >/dev/null 2>&1", wt_id, wt_path);
     int rc = system(cmd);
     if (rc != 0) {
-        snprintf(cmd, sizeof(cmd), "git worktree add \"%s\" \"%s\" >/dev/null 2>&1", wt_path, wt_id);
+        snprintf(cmd, sizeof(cmd), "git worktree add \"%.2000s\" \"%.256s\" >/dev/null 2>&1", wt_path, wt_id);
         rc = system(cmd);
     }
 
@@ -5600,8 +5607,8 @@ char *belya_harness_leave_worktree(BelyaHarness *h, bool keep) {
     h->in_worktree = false;
 
     if (!keep) {
-        char rm_cmd[8192];
-        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1", prev_wt_path);
+        char rm_cmd[4096];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1", prev_wt_path);
         int sys_rm = system(rm_cmd);
         (void)sys_rm;
     }

@@ -8,6 +8,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+
 void test_dyn_string(void) {
     printf("[Test] DynString Operations...\n");
     DynString ds = dyn_str_new();
@@ -2812,7 +2816,8 @@ static void test_phase4_plan_mode_and_worktrees(void) {
     assert(strstr(wt_leave, "Left git worktree") != NULL);
     free(wt_leave);
     assert(h->in_worktree == false);
-    system("git branch -D wt_test_phase4_branch >/dev/null 2>&1");
+    int sys_rc_br = system("git branch -D wt_test_phase4_branch >/dev/null 2>&1");
+    (void)sys_rc_br;
 
     char restored_cwd[4096];
     assert(getcwd(restored_cwd, sizeof(restored_cwd)) != NULL);
