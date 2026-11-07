@@ -7211,7 +7211,7 @@ void belya_harness_repl(BelyaHarness *h) {
                     if (found) {
                         printf("%s\n", found);
                     } else {
-                        printf("No .agentrules, AGENT.md, or CLAUDE.md found in repository root.\n\n");
+                        printf("No BELYARULES.md, Belya.md, .agentrules, AGENTS.md, or CLAUDE.md found in repository root.\n\n");
                     }
                 }
                 continue;
@@ -8010,6 +8010,18 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
     if (h->stage_mode) {
         printf("\033[1;36m[STAGE TURN SUMMARY]\033[0m Turn Duration: \033[1;32m%.1f ms\033[0m | Prompt Tokens: %zu | Completion Tokens: %zu | Peak RSS: \033[1;32m%.2f MB\033[0m\n\n",
                h->last_turn_latency_ms, h->agent->total_prompt_tokens, h->agent->total_completion_tokens, belya_get_current_rss_mb());
+    }
+
+    // Closed-loop skill evolution: auto-synthesize skills upon resolving multi-step or modified runs
+    if ((step_idx >= 3 || h->files_modified_in_turn) && h->agent && h->agent->db_path[0] &&
+        strncmp(h->agent->db_path, "test_", 5) != 0 && strcmp(h->agent->db_path, ":memory:") != 0) {
+        char *auto_skill = belya_agent_reflect_and_distill(h->agent);
+        if (auto_skill) {
+            if (h->stage_mode) {
+                printf("\033[1;32m[Closed-Loop Evolution]: %s\033[0m\n", auto_skill);
+            }
+            free(auto_skill);
+        }
     }
 
     if (h->tui_hud_enabled && isatty(STDOUT_FILENO) && !getenv("BELYA_HEADLESS") && !getenv("BELYA_TEST_MODE")) {

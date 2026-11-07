@@ -1,0 +1,51 @@
+{
+  "version": "1.0",
+  "protocol": "RFC-8615",
+  "skills": [
+    {
+      "name": "safe-refactor-guard",
+      "description": "Atomic multi-file refactoring, AST call-graph verification, preflight compilation check, and rollback guard.",
+      "path": "/.well-known/agent-skills/safe-refactor-guard/SKILL.md"
+    },
+    {
+      "name": "benchmark-profiler",
+      "description": "Rigorous latency, resident memory (RSS), and performance profiling for systems software.",
+      "path": "/.well-known/agent-skills/benchmark-profiler/SKILL.md"
+    },
+    {
+      "name": "interactive-diff-review",
+      "description": "Guarded patch inspection, regression analysis, memory safety review, and pre-commit diff auditing.",
+      "path": "/.well-known/agent-skills/interactive-diff-review/SKILL.md"
+    },
+    {
+      "name": "git-workflow",
+      "description": "Strict git repository workflow, atomic commits, rollback guards, and semantic version tagging.",
+      "path": "/.well-known/agent-skills/git-workflow/SKILL.md"
+    },
+    {
+      "name": "c99-safety",
+      "description": "Zero-tolerance C99 memory safety, bounds checking, and deterministic resource deallocation.",
+      "path": "/.well-known/agent-skills/c99-safety/SKILL.md"
+    },
+    {
+      "name": "vps-deploy",
+      "description": "Protocols for deploying updates to Belya and Almaz daemons on remote VPS.",
+      "path": "/.well-known/agent-skills/vps-deploy/SKILL.md"
+    },
+    {
+      "name": "arena-evolution",
+      "description": "Autonomous 4-phase audit, mutation, benchmark, and reflection protocol for self-evolution.",
+      "path": "/.well-known/agent-skills/arena-evolution/SKILL.md"
+    },
+    {
+      "name": "codebase-onboarding",
+      "description": "Rapid autonomous repository reconnaissance, architecture mapping, and codebase onboarding.",
+      "path": "/.well-known/agent-skills/codebase-onboarding/SKILL.md"
+    },
+    {
+      "name": "web-research",
+      "description": "Autonomous documentation retrieval, API endpoint exploration, and web research using native REST tools.",
+      "path": "/.well-known/agent-skills/web-research/SKILL.md"
+    }
+  ]
+}
