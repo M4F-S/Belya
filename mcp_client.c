@@ -151,6 +151,15 @@ MCPClient *mcp_client_start(const char *command_line) {
     return client;
 }
 
+static JsonValue *json_deep_copy(const JsonValue *v) {
+    if (!v) return NULL;
+    char *s = json_serialize(v);
+    if (!s) return NULL;
+    JsonValue *copy = json_parse(s);
+    free(s);
+    return copy;
+}
+
 JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *params) {
     if (!client || !client->connected) return NULL;
 
@@ -163,7 +172,15 @@ JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *
     json_obj_add(req, "id", json_create_number(client->request_id++));
     json_obj_add(req, "method", json_create_string(method));
     if (params) {
-        json_obj_add(req, "params", params);
+        /* H25: json_obj_add() takes ownership and req is freed below, before
+           the caller is done with params. Hand over a private copy so the
+           caller's tree is never owned (and never double-freed) here. */
+        JsonValue *params_copy = json_deep_copy(params);
+        if (!params_copy) {
+            json_free(req);
+            return NULL;
+        }
+        json_obj_add(req, "params", params_copy);
     }
 
     char *req_str = json_serialize(req);
@@ -213,20 +230,16 @@ char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonV
 
     JsonValue *params = json_create_object();
     json_obj_add(params, "name", json_create_string(tool_name));
-    bool allocated_args = false;
-    if (arguments) {
-        json_obj_add(params, "arguments", (JsonValue *)arguments);
-    } else {
-        json_obj_add(params, "arguments", json_create_object());
-        allocated_args = true;
+    /* H25: the caller still owns `arguments`; pass a copy and let json_free
+       below release only what this function allocated. */
+    JsonValue *args_copy = arguments ? json_deep_copy(arguments) : json_create_object();
+    if (!args_copy) {
+        json_free(params);
+        return xstrdup("Error: failed to copy MCP tool arguments.");
     }
+    json_obj_add(params, "arguments", args_copy);
 
     JsonValue *resp = mcp_client_request(client, "tools/call", params);
-
-    // Detach arguments if shared; if we allocated it, let json_free clean it up
-    if (!allocated_args) {
-        params->u.object.members[1].value = NULL;
-    }
     json_free(params);
 
     if (!resp) return xstrdup("Error: MCP server request timed out or returned empty response.");

@@ -359,6 +359,51 @@ void test_harness_tools_and_patches(void) {
     }
     json_free(p_args);
 
+    // 4b. A bare relative path must not escape when the process cwd moves (H24).
+    {
+        char saved_cwd[4096];
+        unlink("/tmp/sb_jail_probe.txt"); /* stale artifact from an earlier RED run */
+        assert(getcwd(saved_cwd, sizeof(saved_cwd)) != NULL);
+        assert(chdir("/tmp") == 0);
+        JsonValue *j_args = json_create_object();
+        json_obj_add(j_args, "path", json_create_string("sb_jail_probe.txt"));
+        json_obj_add(j_args, "content", json_create_string("escaped"));
+        for (size_t t = 0; t < h->tool_count; t++) {
+            if (strcmp(h->tools[t].name, "write_file") == 0) {
+                char *obs = h->tools[t].callback(agent, j_args);
+                assert(obs != NULL);
+                assert(strstr(obs, "Path traversal denied") != NULL);
+                free(obs);
+                break;
+            }
+        }
+        json_free(j_args);
+        assert(access("/tmp/sb_jail_probe.txt", F_OK) != 0);
+        assert(chdir(saved_cwd) == 0);
+    }
+
+    // 4c. A symlink pointing outside the workspace must not be written through.
+    {
+        unlink("sb_link.txt");
+        unlink("/tmp/sb_link_target.txt");
+        assert(symlink("/tmp/sb_link_target.txt", "sb_link.txt") == 0);
+        JsonValue *l_args = json_create_object();
+        json_obj_add(l_args, "path", json_create_string("sb_link.txt"));
+        json_obj_add(l_args, "content", json_create_string("escaped"));
+        for (size_t t = 0; t < h->tool_count; t++) {
+            if (strcmp(h->tools[t].name, "write_file") == 0) {
+                char *obs = h->tools[t].callback(agent, l_args);
+                assert(obs != NULL);
+                assert(strstr(obs, "Path traversal denied") != NULL);
+                free(obs);
+                break;
+            }
+        }
+        json_free(l_args);
+        assert(access("/tmp/sb_link_target.txt", F_OK) != 0);
+        unlink("sb_link.txt");
+    }
+
     // 5. Search files
     JsonValue *s_args = json_create_object();
     json_obj_add(s_args, "pattern", json_create_string("Charlie"));
