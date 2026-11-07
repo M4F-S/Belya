@@ -17,7 +17,7 @@
 
 struct AgentMesh {
     char agent_name[64];
-    char socket_path[256];
+    char socket_path[104];
     bool is_server;
     int listen_fd;
     int peer_fd;
