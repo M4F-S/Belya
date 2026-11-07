@@ -287,8 +287,8 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
         );
     }
 
-    // Check for repository guidelines (.agentrules / AGENT.md / AGENTS.md / GEMINI.md / CLAUDE.md)
-    const char *rules_files[] = {".agentrules", "AGENT.md", "AGENTS.md", "GEMINI.md", "CLAUDE.md", NULL};
+    // Check for repository guidelines (BELYARULES.md / Belya.md / .agentrules / AGENT.md / AGENTS.md / GEMINI.md / CLAUDE.md)
+    const char *rules_files[] = {"BELYARULES.md", "Belya.md", "BELYA.md", "belya.md", ".agentrules", "AGENT.md", "AGENTS.md", "GEMINI.md", "CLAUDE.md", NULL};
     for (int rf = 0; rules_files[rf]; rf++) {
         FILE *rfp = fopen(rules_files[rf], "r");
         if (rfp) {
@@ -1201,6 +1201,27 @@ char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
     if (strlen(topic) > 60) {
         topic[57] = '.'; topic[58] = '.'; topic[59] = '.'; topic[60] = '\0';
     }
+
+    // Auto-generate clean slug name for disk persistence into skills/<slug>/SKILL.md
+    char slug[64] = "auto_";
+    size_t s_idx = 5;
+    const char *raw_prompt = (agent->messages[1].content) ? agent->messages[1].content : "workflow";
+    for (size_t p = 0; raw_prompt[p] && s_idx < sizeof(slug) - 1; p++) {
+        char ch = raw_prompt[p];
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+            slug[s_idx++] = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+        } else if (s_idx > 5 && slug[s_idx - 1] != '_') {
+            slug[s_idx++] = '_';
+        }
+    }
+    while (s_idx > 5 && slug[s_idx - 1] == '_') s_idx--;
+    slug[s_idx] = '\0';
+    if (s_idx <= 5) {
+        snprintf(slug, sizeof(slug), "auto_skill_%ld", (long)time(NULL));
+    }
+
+    // Closed-Loop Evolution: Save and mirror to skills/<slug>/SKILL.md (for persistent DBs)
+    belya_agent_save_skill(agent, slug, raw_prompt, topic, skill.data);
 
     belya_agent_persist_memory(agent, topic, skill.data);
     dyn_str_free(&skill);
@@ -2214,6 +2235,144 @@ bool belya_agent_export_trajectory(BelyaAgent *agent, const char *session_id, co
     char summary[512];
     snprintf(summary, sizeof(summary), "Trajectory exported to %s", out_path);
     belya_agent_log_timeline(agent, "trajectory_exported", summary);
+    return true;
+}
+
+bool belya_agent_export_sharegpt(BelyaAgent *agent, const char *session_id, const char *out_path) {
+    if (!agent) return false;
+
+    char default_path[256];
+    if (!out_path || strlen(out_path) == 0) {
+        time_t now = time(NULL);
+        struct tm *tm = gmtime(&now);
+        strftime(default_path, sizeof(default_path), "sharegpt_%Y%m%d_%H%M%S.jsonl", tm);
+        out_path = default_path;
+    }
+
+    FILE *f = fopen(out_path, "a");
+    if (!f) return false;
+
+    JsonValue *root = json_create_object();
+    JsonValue *convs_arr = json_create_array();
+
+    if (session_id && strlen(session_id) > 0 && agent->db) {
+        sqlite3_stmt *stmt;
+        const char *sql = "SELECT role, content FROM session_messages WHERE session_id = ? ORDER BY idx ASC;";
+        if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_STATIC);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *role = (const char *)sqlite3_column_text(stmt, 0);
+                const char *content = (const char *)sqlite3_column_text(stmt, 1);
+
+                const char *from_role = "gpt";
+                if (!role || strcmp(role, "system") == 0) from_role = "system";
+                else if (strcmp(role, "user") == 0) from_role = "human";
+                else if (strcmp(role, "assistant") == 0) from_role = "gpt";
+                else if (strcmp(role, "tool") == 0) from_role = "tool";
+
+                JsonValue *m = json_create_object();
+                json_obj_add(m, "from", json_create_string(from_role));
+                json_obj_add(m, "value", json_create_string(content ? content : ""));
+                json_arr_add(convs_arr, m);
+            }
+            sqlite3_finalize(stmt);
+        }
+    } else {
+        for (size_t i = 0; i < agent->msg_count; i++) {
+            const char *from_role = "gpt";
+            if (!agent->messages[i].role || strcmp(agent->messages[i].role, "system") == 0) from_role = "system";
+            else if (strcmp(agent->messages[i].role, "user") == 0) from_role = "human";
+            else if (strcmp(agent->messages[i].role, "assistant") == 0) from_role = "gpt";
+            else if (strcmp(agent->messages[i].role, "tool") == 0) from_role = "tool";
+
+            JsonValue *m = json_create_object();
+            json_obj_add(m, "from", json_create_string(from_role));
+            json_obj_add(m, "value", json_create_string(agent->messages[i].content ? agent->messages[i].content : ""));
+            json_arr_add(convs_arr, m);
+        }
+    }
+
+    json_obj_add(root, "conversations", convs_arr);
+    char *serialized = json_serialize(root);
+    if (serialized) {
+        fprintf(f, "%s\n", serialized);
+        free(serialized);
+    }
+    json_free(root);
+    fclose(f);
+
+    char summary[512];
+    snprintf(summary, sizeof(summary), "ShareGPT trajectory exported to %s", out_path);
+    belya_agent_log_timeline(agent, "sharegpt_exported", summary);
+    return true;
+}
+
+bool belya_agent_export_dpo(BelyaAgent *agent, const char *session_id, const char *out_path) {
+    if (!agent) return false;
+    (void)session_id;
+
+    char default_path[256];
+    if (!out_path || strlen(out_path) == 0) {
+        time_t now = time(NULL);
+        struct tm *tm = gmtime(&now);
+        strftime(default_path, sizeof(default_path), "dpo_%Y%m%d_%H%M%S.jsonl", tm);
+        out_path = default_path;
+    }
+
+    FILE *f = fopen(out_path, "a");
+    if (!f) return false;
+
+    int emitted_pairs = 0;
+
+    // Scan agent messages to extract preference triples (prompt, chosen, rejected)
+    for (size_t i = 0; i < agent->msg_count; i++) {
+        if (!agent->messages[i].role || strcmp(agent->messages[i].role, "user") != 0) continue;
+        const char *prompt_text = agent->messages[i].content ? agent->messages[i].content : "";
+
+        const char *chosen_text = NULL;
+        const char *rejected_text = NULL;
+
+        // Inspect subsequent assistant and tool responses for failure-recovery or final solution
+        for (size_t j = i + 1; j < agent->msg_count; j++) {
+            if (agent->messages[j].role && strcmp(agent->messages[j].role, "user") == 0) break;
+
+            if (agent->messages[j].role && strcmp(agent->messages[j].role, "tool") == 0) {
+                const char *tc = agent->messages[j].content;
+                if (tc && (strstr(tc, "Error:") || strstr(tc, "FAILED") || strstr(tc, "denied"))) {
+                    // Preceding assistant turn produced a rejected attempt
+                    if (j > 0 && agent->messages[j - 1].role && strcmp(agent->messages[j - 1].role, "assistant") == 0) {
+                        rejected_text = agent->messages[j - 1].content;
+                    }
+                }
+            } else if (agent->messages[j].role && strcmp(agent->messages[j].role, "assistant") == 0) {
+                chosen_text = agent->messages[j].content;
+            }
+        }
+
+        if (!chosen_text) continue;
+        if (!rejected_text) {
+            rejected_text = "I am unable to complete this request or resolve the specified task.";
+        }
+
+        JsonValue *pair = json_create_object();
+        json_obj_add(pair, "prompt", json_create_string(prompt_text));
+        json_obj_add(pair, "chosen", json_create_string(chosen_text));
+        json_obj_add(pair, "rejected", json_create_string(rejected_text));
+
+        char *serialized = json_serialize(pair);
+        if (serialized) {
+            fprintf(f, "%s\n", serialized);
+            free(serialized);
+            emitted_pairs++;
+        }
+        json_free(pair);
+    }
+
+    fclose(f);
+
+    char summary[512];
+    snprintf(summary, sizeof(summary), "DPO dataset (%d pairs) exported to %s", emitted_pairs, out_path);
+    belya_agent_log_timeline(agent, "dpo_exported", summary);
     return true;
 }
 

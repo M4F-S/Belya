@@ -1,7 +1,90 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
+#include "minifrontmatter.h"
 #include <signal.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+static int belya_export_skills_catalogue(void) {
+    const char *skills_dir = "skills";
+    DIR *d = opendir(skills_dir);
+    if (!d) {
+        printf("Error: Could not open '%s' directory for skills export.\n", skills_dir);
+        return 1;
+    }
+
+    mkdir(".well-known", 0755);
+    mkdir(".well-known/agent-skills", 0755);
+
+    DynString json = dyn_str_new();
+    dyn_str_append(&json, "{\n  \"version\": \"1.0\",\n  \"protocol\": \"RFC-8615\",\n  \"skills\": [\n");
+
+    struct dirent *entry;
+    int count = 0;
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+        char skill_md[1024];
+        struct stat st;
+        snprintf(skill_md, sizeof(skill_md), "%s/%.200s/SKILL.md", skills_dir, entry->d_name);
+        if (stat(skill_md, &st) != 0) {
+            snprintf(skill_md, sizeof(skill_md), "%s/%.200s", skills_dir, entry->d_name);
+            if (stat(skill_md, &st) != 0 || !strstr(entry->d_name, ".md")) continue;
+        }
+
+        FILE *f = fopen(skill_md, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > 500000) { fclose(f); continue; }
+
+        char *buf = malloc(sz + 1);
+        if (!buf) { fclose(f); continue; }
+        size_t nr = fread(buf, 1, sz, f);
+        buf[nr] = '\0';
+        fclose(f);
+
+        Frontmatter *fm = frontmatter_parse(buf);
+        const char *fm_name = fm ? frontmatter_get_scalar(fm, "name") : NULL;
+        const char *fm_desc = fm ? frontmatter_get_scalar(fm, "description") : NULL;
+        const char *name = fm_name ? fm_name : entry->d_name;
+        const char *desc = fm_desc ? fm_desc : name;
+
+        char dest_dir[512];
+        snprintf(dest_dir, sizeof(dest_dir), ".well-known/agent-skills/%.200s", name);
+        mkdir(dest_dir, 0755);
+        char dest_file[1024];
+        snprintf(dest_file, sizeof(dest_file), "%s/SKILL.md", dest_dir);
+        FILE *df = fopen(dest_file, "w");
+        if (df) {
+            fwrite(buf, 1, nr, df);
+            fclose(df);
+        }
+
+        if (count > 0) dyn_str_append(&json, ",\n");
+        dyn_str_appendf(&json, "    {\n      \"name\": \"%s\",\n      \"description\": \"%s\",\n      \"path\": \"/.well-known/agent-skills/%s/SKILL.md\"\n    }",
+                        name, desc, name);
+        count++;
+
+        if (fm) frontmatter_free(fm);
+        free(buf);
+    }
+    closedir(d);
+
+    dyn_str_append(&json, "\n  ]\n}\n");
+
+    FILE *jf = fopen(".well-known/agent-skills/index.json", "w");
+    if (jf) {
+        fwrite(json.data, 1, strlen(json.data), jf);
+        fclose(jf);
+    }
+    dyn_str_free(&json);
+
+    printf("✓ Successfully exported %d skills to .well-known/agent-skills/index.json (RFC 8615)\n", count);
+    return 0;
+}
 
 static void cleanup_terminal(void) {
     if (isatty(STDOUT_FILENO)) {
@@ -90,12 +173,29 @@ int main(int argc, char **argv) {
             printf("  -r, --resume <session_id>  Resume saved conversation session\n");
             printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
             printf("  --no-probe                 Skip gateway pre-flight health & authentication probe\n");
+            printf("  --export-skills            Export RFC 8615 skills discovery catalogue to .well-known/agent-skills/ and exit\n");
+            printf("  --export-sharegpt <file>   Export trajectory in ShareGPT / Hermes format and exit\n");
+            printf("  --export-dpo <file>        Export trajectory in Hermes DPO preference format and exit\n");
             printf("  --headless <prompt>        Alias for --prompt\n");
             printf("  --eval <prompt>            Alias for --prompt\n\n");
             return 0;
         } else if (strcmp(argv[i], "--presets") == 0) {
             model_presets_print_list();
             return 0;
+        } else if (strcmp(argv[i], "--export-skills") == 0) {
+            return belya_export_skills_catalogue();
+        } else if (strcmp(argv[i], "--export-sharegpt") == 0 && i + 1 < argc) {
+            const char *outf = argv[++i];
+            BelyaAgent *ag = belya_agent_init(NULL, "belya_memory.sqlite", NULL);
+            bool ok = belya_agent_export_sharegpt(ag, NULL, outf);
+            belya_agent_free(ag);
+            return ok ? 0 : 1;
+        } else if (strcmp(argv[i], "--export-dpo") == 0 && i + 1 < argc) {
+            const char *outf = argv[++i];
+            BelyaAgent *ag = belya_agent_init(NULL, "belya_memory.sqlite", NULL);
+            bool ok = belya_agent_export_dpo(ag, NULL, outf);
+            belya_agent_free(ag);
+            return ok ? 0 : 1;
         } else if ((strcmp(argv[i], "--preset") == 0 || strcmp(argv[i], "-P") == 0) && i + 1 < argc) {
             preset_name = argv[++i];
         } else if (strcmp(argv[i], "--probe") == 0) {
