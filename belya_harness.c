@@ -1468,19 +1468,38 @@ static bool search_files_ripgrep(const char *rg_bin, const char *path, const cha
     close(pipe_fds[1]);
     char buf[1024];
     ssize_t bytes_read;
-    int matches = 0;
+    DynString raw = dyn_str_new();
     while ((bytes_read = read(pipe_fds[0], buf, sizeof(buf) - 1)) > 0) {
         buf[bytes_read] = '\0';
-        for (ssize_t b = 0; b < bytes_read; b++) {
-            if (buf[b] == '\n') matches++;
-        }
-        dyn_str_append(out, buf);
-        if (matches >= 100) break;
+        dyn_str_append(&raw, buf);
+        if (raw.len > 262144) break;
     }
     close(pipe_fds[0]);
 
     int status = 0;
     waitpid(pid, &status, 0);
+
+    /* H23: the ripgrep fast path must apply the same secret-path filter as the
+       built-in walker. Without it, whether a search can read .env/.ssh/
+       credentials.json depends on whether ripgrep happens to be installed.
+       rg --no-heading --line-number emits one "path:line:text" per line. */
+    int matches = 0;
+    if (raw.data) {
+        char *saveptr = NULL;
+        for (char *line = strtok_r(raw.data, "\n", &saveptr); line && matches < 100;
+             line = strtok_r(NULL, "\n", &saveptr)) {
+            char path_buf[4096];
+            const char *sep = strchr(line, ':');
+            size_t plen = sep ? (size_t)(sep - line) : strlen(line);
+            if (plen >= sizeof(path_buf)) plen = sizeof(path_buf) - 1;
+            memcpy(path_buf, line, plen);
+            path_buf[plen] = '\0';
+            if (is_secret_path(path_buf)) continue;
+            dyn_str_appendf(out, "%s\n", line);
+            matches++;
+        }
+    }
+    dyn_str_free(&raw);
 
     *match_count = matches;
     return (WIFEXITED(status) && (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 1));

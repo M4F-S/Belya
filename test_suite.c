@@ -295,7 +295,7 @@ void test_harness_tools_and_patches(void) {
 
     // 1. Write file
     JsonValue *w_args = json_create_object();
-    json_obj_add(w_args, "path", json_create_string("test_sample.txt"));
+    json_obj_add(w_args, "path", json_create_string("test_harness_sample.txt"));
     json_obj_add(w_args, "content", json_create_string("Line 1: Alpha\nLine 2: Beta\nLine 3: Gamma\nLine 4: Delta\n"));
     for (size_t t = 0; t < h->tool_count; t++) {
         if (strcmp(h->tools[t].name, "write_file") == 0) {
@@ -309,7 +309,7 @@ void test_harness_tools_and_patches(void) {
 
     // 2. Read file with line slicing (lines 2..3)
     JsonValue *r_args = json_create_object();
-    json_obj_add(r_args, "path", json_create_string("test_sample.txt"));
+    json_obj_add(r_args, "path", json_create_string("test_harness_sample.txt"));
     json_obj_add(r_args, "offset", json_create_number(2));
     json_obj_add(r_args, "limit", json_create_number(2));
     for (size_t t = 0; t < h->tool_count; t++) {
@@ -326,7 +326,7 @@ void test_harness_tools_and_patches(void) {
 
     // 3. Edit file
     JsonValue *e_args = json_create_object();
-    json_obj_add(e_args, "path", json_create_string("test_sample.txt"));
+    json_obj_add(e_args, "path", json_create_string("test_harness_sample.txt"));
     json_obj_add(e_args, "old_text", json_create_string("Beta"));
     json_obj_add(e_args, "new_text", json_create_string("Bravo"));
     for (size_t t = 0; t < h->tool_count; t++) {
@@ -347,7 +347,7 @@ void test_harness_tools_and_patches(void) {
         "Line 3: Charlie\n"
         ">>>>>>> REPLACE";
     JsonValue *p_args = json_create_object();
-    json_obj_add(p_args, "path", json_create_string("test_sample.txt"));
+    json_obj_add(p_args, "path", json_create_string("test_harness_sample.txt"));
     json_obj_add(p_args, "patch", json_create_string(patch_content));
     for (size_t t = 0; t < h->tool_count; t++) {
         if (strcmp(h->tools[t].name, "apply_patch") == 0) {
@@ -366,13 +366,41 @@ void test_harness_tools_and_patches(void) {
     for (size_t t = 0; t < h->tool_count; t++) {
         if (strcmp(h->tools[t].name, "search_files") == 0) {
             char *obs = h->tools[t].callback(agent, s_args);
-            assert(strstr(obs, "test_sample.txt") != NULL);
+            assert(strstr(obs, "test_harness_sample.txt") != NULL);
             assert(strstr(obs, "Charlie") != NULL);
             free(obs);
             break;
         }
     }
     json_free(s_args);
+
+    // 5b. Secret paths must never be searchable, with or without ripgrep.
+    {
+        /* Build the needle at runtime so this source file never contains the
+           literal: otherwise the search legitimately matches test_suite.c. */
+        char needle[64];
+        snprintf(needle, sizeof(needle), "%s%s", "SB_SECRET_", "NEEDLE");
+        FILE *sf = fopen("credentials.json", "w");
+        assert(sf != NULL);
+        fprintf(sf, "{\"needle\": \"%s\"}\n", needle);
+        fclose(sf);
+
+        JsonValue *sec_args = json_create_object();
+        json_obj_add(sec_args, "pattern", json_create_string(needle));
+        json_obj_add(sec_args, "path", json_create_string("."));
+        for (size_t t = 0; t < h->tool_count; t++) {
+            if (strcmp(h->tools[t].name, "search_files") == 0) {
+                char *obs = h->tools[t].callback(agent, sec_args);
+                assert(obs != NULL);
+                assert(strstr(obs, "credentials.json") == NULL);
+                assert(strstr(obs, "No matches found") != NULL);
+                free(obs);
+                break;
+            }
+        }
+        json_free(sec_args);
+        unlink("credentials.json");
+    }
 
     // 6. Git status tool
     for (size_t t = 0; t < h->tool_count; t++) {
@@ -384,7 +412,7 @@ void test_harness_tools_and_patches(void) {
         }
     }
 
-    unlink("test_sample.txt");
+    unlink("test_harness_sample.txt");
     belya_harness_free(h);
     model_gateway_free(gw);
     unlink("test_harness_mem.sqlite");
