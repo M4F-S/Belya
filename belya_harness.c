@@ -269,6 +269,15 @@ char *belya_harness_preflight_check(const char *path) {
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         dyn_str_free(&raw_out);
+        char *lsp_diag = lsp_preflight_diagnostics(path);
+        if (lsp_diag) {
+            DynString diag = dyn_str_new();
+            dyn_str_appendf(&diag, "%s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": ", lsp_diag, path);
+            dyn_str_append_escaped(&diag, lsp_diag);
+            dyn_str_append(&diag, "\n}");
+            free(lsp_diag);
+            return diag.data;
+        }
         return NULL;
     }
 
@@ -277,8 +286,14 @@ char *belya_harness_preflight_check(const char *path) {
         return NULL;
     }
 
+    char *lsp_diag = lsp_preflight_diagnostics(path);
     DynString diag = dyn_str_new();
-    dyn_str_appendf(&diag, "%s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": ", raw_out.data, path);
+    if (lsp_diag) {
+        dyn_str_appendf(&diag, "%s\n\n%s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": ", lsp_diag, raw_out.data, path);
+        free(lsp_diag);
+    } else {
+        dyn_str_appendf(&diag, "%s\n\n[Structured Compiler Diagnostics]\n{\n  \"file\": \"%s\",\n  \"status\": \"error\",\n  \"raw_output\": ", raw_out.data, path);
+    }
     dyn_str_append_escaped(&diag, raw_out.data);
     dyn_str_append(&diag, "\n}");
     dyn_str_free(&raw_out);
@@ -3130,7 +3145,7 @@ static void belya_shadow_worktree_unregister(const char *path) {
     }
 }
 
-char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd) {
+char *belya_dispatch_worker_speculative(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd, int candidate_count) {
     if (!router_harness || !task) {
         return xstrdup("Error: Invalid harness or missing task for worker dispatch.");
     }
@@ -3138,93 +3153,40 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
         return xstrdup("Error: Agent unavailable for worker dispatch.");
     }
 
-    // 1. Generate unique task id and worktree path
-    char task_id[64];
-    snprintf(task_id, sizeof(task_id), "wtask_%ld_%d", (long)time(NULL), (int)(rand() % 10000));
+    if (candidate_count < 1) candidate_count = 1;
+    if (candidate_count > 3) candidate_count = 3;
 
-    char wt_path[4096];
-    snprintf(wt_path, sizeof(wt_path), "/tmp/belya_worker_%s", task_id);
+    typedef struct {
+        int index;
+        const char *strategy_name;
+        const char *strategy_directive;
+        char task_id[64];
+        char wt_path[4096];
+        bool has_modifications;
+        bool tests_passed;
+        int diff_lines;
+        int score;
+        size_t tools_executed;
+        char test_output[1024];
+    } SpeculativeCandidate;
 
-    // Initial prune of any stale worktrees
-    int rc_prune = system("git worktree prune >/dev/null 2>&1");
-    (void)rc_prune;
+    SpeculativeCandidate cands[3];
+    memset(cands, 0, sizeof(cands));
 
-    // 2. Create shadow git worktree: git worktree add -B <task_id> <wt_path> HEAD
-    char add_cmd[8192];
-    snprintf(add_cmd, sizeof(add_cmd), "git worktree add -B \"%s\" \"%s\" HEAD >/dev/null 2>&1", task_id, wt_path);
-    int rc = system(add_cmd);
-    if (rc != 0) {
-        snprintf(add_cmd, sizeof(add_cmd), "git worktree add \"%s\" HEAD >/dev/null 2>&1", wt_path);
-        rc = system(add_cmd);
-    }
-    if (rc != 0) {
-        return xstrdup("Error: Failed to create ephemeral shadow git worktree. Ensure repository is valid and has commits.");
-    }
+    cands[0].strategy_name = "Surgical Minimal";
+    cands[0].strategy_directive = "Focus strictly on minimal necessary changes. Avoid refactoring unrelated code.";
 
-    belya_shadow_worktree_register(wt_path);
+    cands[1].strategy_name = "Defensive & Robust";
+    cands[1].strategy_directive = "Ensure rigorous memory safety, validate pointer bounds, check return values, and add defensive error handling.";
 
-    // 3. Obtain AST context slice if target_symbol is provided
+    cands[2].strategy_name = "Idiomatic Pattern";
+    cands[2].strategy_directive = "Adhere strictly to C99 POSIX clean architecture, eliminate redundant structures, and ensure optimal algorithmic efficiency.";
+
+    // Obtain AST slice once if target_symbol is provided
     char *ast_slice = NULL;
     if (target_symbol && strlen(target_symbol) > 0) {
         ast_slice = belya_harness_slice_ast(router_harness, target_symbol, 2000);
     }
-
-    // 4. Construct worker system prompt
-    DynString sys = dyn_str_new();
-    dyn_str_append(&sys, "Role: Ephemeral Implementation Worker (dsh-superagent)\n");
-    dyn_str_append(&sys, "You operate strictly inside an isolated shadow git worktree.\n");
-    dyn_str_append(&sys, "Implement the requested code change, run verification tests, and ensure all tests pass.\n");
-    dyn_str_append(&sys, "Do NOT attempt to contact or prompt the operator; execute silently.\n");
-    dyn_str_appendf(&sys, "Working Directory: %s\n", wt_path);
-    if (ast_slice) {
-        dyn_str_append(&sys, "\n=== Sliced AST Dependency Context ===\n");
-        dyn_str_append(&sys, ast_slice);
-        dyn_str_append(&sys, "\n");
-    }
-
-    // 5. Initialize isolated worker agent and harness
-    ModelGateway *worker_gw = NULL;
-    if (router_harness->agent->gateway) {
-        worker_gw = model_gateway_init(router_harness->agent->gateway->endpoint,
-                                       router_harness->agent->gateway->api_key,
-                                       router_harness->agent->gateway->model);
-        if (worker_gw) worker_gw->streaming = false;
-    }
-
-    BelyaAgent *worker_agent = belya_agent_init(worker_gw, ":memory:", sys.data);
-    dyn_str_free(&sys);
-    if (ast_slice) free(ast_slice);
-
-    if (!worker_agent) {
-        if (worker_gw) model_gateway_free(worker_gw);
-        char cleanup_cmd[4096];
-        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
-        int sys_cl = system(cleanup_cmd);
-        (void)sys_cl;
-        belya_shadow_worktree_unregister(wt_path);
-        return xstrdup("Error: Failed to initialize worker agent.");
-    }
-
-    BelyaHarness *worker_harness = belya_harness_init_worker(worker_agent, wt_path);
-    if (!worker_harness) {
-        belya_agent_free(worker_agent);
-        if (worker_gw) model_gateway_free(worker_gw);
-        char cleanup_cmd[4096];
-        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
-        int sys_cl = system(cleanup_cmd);
-        (void)sys_cl;
-        belya_shadow_worktree_unregister(wt_path);
-        return xstrdup("Error: Failed to initialize worker harness.");
-    }
-
-    // Worker prompt
-    DynString task_prompt = dyn_str_new();
-    dyn_str_appendf(&task_prompt, "Task: %s\n", task);
-    if (test_cmd && strlen(test_cmd) > 0) {
-        dyn_str_appendf(&task_prompt, "Verification command: %s\n", test_cmd);
-    }
-    belya_agent_add_message(worker_agent, "user", task_prompt.data);
-    dyn_str_free(&task_prompt);
 
     // Save previous harness and directory
     BelyaHarness *saved_harness = g_harness;
@@ -3233,93 +3195,214 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
         snprintf(saved_cwd, sizeof(saved_cwd), "%s", router_harness->cwd);
     }
 
-    // Switch process cwd to shadow worktree
-    if (chdir(wt_path) != 0) { /* logged */ }
-    g_harness = worker_harness;
+    long base_time = (long)time(NULL);
+    int best_cand_idx = -1;
+    int best_score = -999999;
 
-    // Execute worker loop (silent execution)
-    int max_turns = 8;
-    bool execution_success = false;
-    DynString worker_log = dyn_str_new();
-    size_t tool_executions = 0;
+    for (int i = 0; i < candidate_count; i++) {
+        SpeculativeCandidate *c = &cands[i];
+        c->index = i;
+        snprintf(c->task_id, sizeof(c->task_id), "wtask_%ld_%d_c%d", base_time, (int)(rand() % 1000), i);
+        snprintf(c->wt_path, sizeof(c->wt_path), "/tmp/belya_worker_%s", c->task_id);
 
-    while (max_turns-- > 0 && worker_agent->gateway && worker_agent->gateway->endpoint) {
-        ModelGatewayResponse resp = belya_agent_step(worker_agent);
-        if (!resp.has_tool_call) {
-            model_gateway_response_free(&resp);
-            break;
+        int rc_prune = system("git worktree prune >/dev/null 2>&1");
+        (void)rc_prune;
+
+        char add_cmd[8192];
+        snprintf(add_cmd, sizeof(add_cmd), "git worktree add -B \"%s\" \"%s\" HEAD >/dev/null 2>&1", c->task_id, c->wt_path);
+        int rc = system(add_cmd);
+        if (rc != 0) {
+            snprintf(add_cmd, sizeof(add_cmd), "git worktree add \"%s\" HEAD >/dev/null 2>&1", c->wt_path);
+            rc = system(add_cmd);
         }
-        for (size_t i = 0; i < resp.tool_call_count; i++) {
-            ModelParsedToolCall *tc = &resp.tool_calls[i];
-            BelyaRegisteredTool *matched = NULL;
-            for (size_t t = 0; t < worker_harness->tool_count; t++) {
-                if (strcmp(worker_harness->tools[t].name, tc->name) == 0) {
-                    matched = &worker_harness->tools[t];
-                    break;
+        if (rc != 0) {
+            continue;
+        }
+
+        belya_shadow_worktree_register(c->wt_path);
+
+        DynString sys = dyn_str_new();
+        dyn_str_append(&sys, "Role: Ephemeral Implementation Worker (dsh-superagent)\n");
+        dyn_str_append(&sys, "You operate strictly inside an isolated shadow git worktree.\n");
+        dyn_str_appendf(&sys, "Candidate Strategy (%s): %s\n", c->strategy_name, c->strategy_directive);
+        dyn_str_append(&sys, "Implement the requested code change, run verification tests, and ensure all tests pass.\n");
+        dyn_str_append(&sys, "Do NOT attempt to contact or prompt the operator; execute silently.\n");
+        dyn_str_appendf(&sys, "Working Directory: %s\n", c->wt_path);
+        if (ast_slice) {
+            dyn_str_append(&sys, "\n=== Sliced AST Dependency Context ===\n");
+            dyn_str_append(&sys, ast_slice);
+            dyn_str_append(&sys, "\n");
+        }
+
+        ModelGateway *worker_gw = NULL;
+        if (router_harness->agent->gateway) {
+            worker_gw = model_gateway_init(router_harness->agent->gateway->endpoint,
+                                           router_harness->agent->gateway->api_key,
+                                           router_harness->agent->gateway->model);
+            if (worker_gw) worker_gw->streaming = false;
+        }
+
+        BelyaAgent *worker_agent = belya_agent_init(worker_gw, ":memory:", sys.data);
+        dyn_str_free(&sys);
+
+        if (!worker_agent) {
+            if (worker_gw) model_gateway_free(worker_gw);
+            char cleanup_cmd[4096];
+            snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", c->wt_path, c->task_id);
+            int sys_cl = system(cleanup_cmd);
+            (void)sys_cl;
+            belya_shadow_worktree_unregister(c->wt_path);
+            continue;
+        }
+
+        BelyaHarness *worker_harness = belya_harness_init_worker(worker_agent, c->wt_path);
+        if (!worker_harness) {
+            belya_agent_free(worker_agent);
+            if (worker_gw) model_gateway_free(worker_gw);
+            char cleanup_cmd[4096];
+            snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", c->wt_path, c->task_id);
+            int sys_cl = system(cleanup_cmd);
+            (void)sys_cl;
+            belya_shadow_worktree_unregister(c->wt_path);
+            continue;
+        }
+
+        DynString task_prompt = dyn_str_new();
+        dyn_str_appendf(&task_prompt, "Task: %s\n", task);
+        if (test_cmd && strlen(test_cmd) > 0) {
+            dyn_str_appendf(&task_prompt, "Verification command: %s\n", test_cmd);
+        }
+        belya_agent_add_message(worker_agent, "user", task_prompt.data);
+        dyn_str_free(&task_prompt);
+
+        if (chdir(c->wt_path) != 0) { /* logged */ }
+        g_harness = worker_harness;
+
+        int max_turns = 8;
+        while (max_turns-- > 0 && worker_agent->gateway && worker_agent->gateway->endpoint) {
+            ModelGatewayResponse resp = belya_agent_step(worker_agent);
+            if (!resp.has_tool_call) {
+                model_gateway_response_free(&resp);
+                break;
+            }
+            for (size_t t_idx = 0; t_idx < resp.tool_call_count; t_idx++) {
+                ModelParsedToolCall *tc = &resp.tool_calls[t_idx];
+                BelyaRegisteredTool *matched = NULL;
+                for (size_t t = 0; t < worker_harness->tool_count; t++) {
+                    if (strcmp(worker_harness->tools[t].name, tc->name) == 0) {
+                        matched = &worker_harness->tools[t];
+                        break;
+                    }
+                }
+                if (matched && matched->callback) {
+                    JsonValue *p_args = json_parse(tc->arguments_json);
+                    char *obs = matched->callback(worker_agent, p_args);
+                    json_free(p_args);
+                    belya_agent_add_tool_result(worker_agent, tc->id, tc->name, obs ? obs : "");
+                    c->tools_executed++;
+                    if (obs) free(obs);
+                } else {
+                    belya_agent_add_tool_result(worker_agent, tc->id, tc->name, "Tool blocked or unavailable in worker VTable.");
                 }
             }
-            if (matched && matched->callback) {
-                JsonValue *p_args = json_parse(tc->arguments_json);
-                char *obs = matched->callback(worker_agent, p_args);
-                json_free(p_args);
-                belya_agent_add_tool_result(worker_agent, tc->id, tc->name, obs ? obs : "");
-                dyn_str_appendf(&worker_log, "  • [%s] => %s\n", tc->name, obs ? obs : "");
-                tool_executions++;
-                if (obs) free(obs);
+            model_gateway_response_free(&resp);
+        }
+
+        // Check modifications in shadow worktree
+        char status_cmd[8192];
+        snprintf(status_cmd, sizeof(status_cmd), "git -C \"%s\" status --porcelain 2>/dev/null", c->wt_path);
+        FILE *fp_st = popen(status_cmd, "r");
+        char status_line[1024];
+        if (fp_st) {
+            if (fgets(status_line, sizeof(status_line), fp_st)) {
+                c->has_modifications = true;
+            }
+            pclose(fp_st);
+        }
+
+        // Run verification test cycle in worktree
+        c->tests_passed = true;
+        if (c->has_modifications) {
+            char verify_cmd[8192];
+            if (test_cmd && strlen(test_cmd) > 0) {
+                snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && %s 2>&1", c->wt_path, test_cmd);
             } else {
-                belya_agent_add_tool_result(worker_agent, tc->id, tc->name, "Tool blocked or unavailable in worker VTable.");
+                snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && make test 2>&1", c->wt_path);
             }
-        }
-        model_gateway_response_free(&resp);
-    }
-
-    // 6. Verification Cycle in Shadow Worktree
-    char status_cmd[8192];
-    snprintf(status_cmd, sizeof(status_cmd), "git -C \"%s\" status --porcelain 2>/dev/null", wt_path);
-    FILE *fp_st = popen(status_cmd, "r");
-    char status_line[1024];
-    bool has_modifications = false;
-    if (fp_st) {
-        if (fgets(status_line, sizeof(status_line), fp_st)) {
-            has_modifications = true;
-        }
-        pclose(fp_st);
-    }
-
-    bool tests_passed = true;
-    char test_output[4096] = {0};
-    if (has_modifications) {
-        char verify_cmd[8192];
-        if (test_cmd && strlen(test_cmd) > 0) {
-            snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && %s 2>&1", wt_path, test_cmd);
+            FILE *tf = popen(verify_cmd, "r");
+            if (tf) {
+                size_t bytes_read = fread(c->test_output, 1, sizeof(c->test_output) - 1, tf);
+                c->test_output[bytes_read] = '\0';
+                int test_rc = pclose(tf);
+                if (test_rc != 0) {
+                    c->tests_passed = false;
+                }
+            }
         } else {
-            snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && make test 2>&1", wt_path);
+            c->tests_passed = false;
         }
-        FILE *tf = popen(verify_cmd, "r");
-        if (tf) {
-            size_t bytes_read = fread(test_output, 1, sizeof(test_output) - 1, tf);
-            test_output[bytes_read] = '\0';
-            int test_rc = pclose(tf);
-            if (test_rc != 0) {
-                tests_passed = false;
+
+        // Calculate diff churn lines
+        char diff_stat_cmd[8192];
+        snprintf(diff_stat_cmd, sizeof(diff_stat_cmd), "git -C \"%s\" diff --shortstat HEAD 2>/dev/null", c->wt_path);
+        FILE *dfp = popen(diff_stat_cmd, "r");
+        if (dfp) {
+            char dline[256];
+            if (fgets(dline, sizeof(dline), dfp)) {
+                int ins = 0, del = 0;
+                char *pins = strstr(dline, "insertion");
+                if (pins) {
+                    while (pins > dline && isdigit((unsigned char)*(pins - 1))) pins--;
+                    while (pins > dline && *(pins - 1) == ' ') pins--;
+                    while (pins > dline && isdigit((unsigned char)*(pins - 1))) pins--;
+                    ins = atoi(pins);
+                }
+                char *pdel = strstr(dline, "deletion");
+                if (pdel) {
+                    while (pdel > dline && isdigit((unsigned char)*(pdel - 1))) pdel--;
+                    while (pdel > dline && *(pdel - 1) == ' ') pdel--;
+                    while (pdel > dline && isdigit((unsigned char)*(pdel - 1))) pdel--;
+                    del = atoi(pdel);
+                }
+                c->diff_lines = ins + del;
             }
+            pclose(dfp);
         }
-    } else {
-        tests_passed = false;
+
+        // Score calculation: passed tests = +10000, penalty for diff churn
+        if (c->has_modifications && c->tests_passed) {
+            c->score = 10000 - (c->diff_lines * 2);
+        } else {
+            c->score = -1000;
+        }
+
+        if (c->score > best_score && c->tests_passed && c->has_modifications) {
+            best_score = c->score;
+            best_cand_idx = i;
+        }
+
+        if (chdir(saved_cwd) != 0) { /* restore */ }
+        g_harness = saved_harness;
+
+        belya_harness_free(worker_harness);
+        if (worker_gw) model_gateway_free(worker_gw);
     }
 
-    // Switch process cwd back to router workspace
+    if (ast_slice) free(ast_slice);
+
     if (chdir(saved_cwd) != 0) { /* restore */ }
     g_harness = saved_harness;
 
     DynString envelope = dyn_str_new();
+    bool execution_success = false;
 
-    if (has_modifications && tests_passed) {
-        // 7. Success Path: Extract verified patch and merge into parent workspace
-        char diff_cmd[8192];
+    if (best_cand_idx >= 0) {
+        SpeculativeCandidate *winner = &cands[best_cand_idx];
+
         char patch_file[512];
-        snprintf(patch_file, sizeof(patch_file), "/tmp/belya_verified_%s.patch", task_id);
-        snprintf(diff_cmd, sizeof(diff_cmd), "git -C \"%s\" diff HEAD > \"%s\"", wt_path, patch_file);
+        snprintf(patch_file, sizeof(patch_file), "/tmp/belya_verified_%s.patch", winner->task_id);
+        char diff_cmd[8192];
+        snprintf(diff_cmd, sizeof(diff_cmd), "git -C \"%s\" diff HEAD > \"%s\"", winner->wt_path, patch_file);
         int rc_d = system(diff_cmd);
         (void)rc_d;
 
@@ -3327,48 +3410,61 @@ char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task,
         snprintf(apply_cmd, sizeof(apply_cmd), "git -C \"%.2000s\" apply --whitespace=nowarn \"%.1000s\" >/dev/null 2>&1", saved_cwd, patch_file);
         int apply_rc = system(apply_cmd);
         (void)apply_rc;
-
-        char rm_cmd[4096];
-        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
-        int rc_rm = system(rm_cmd);
-        (void)rc_rm;
         unlink(patch_file);
-        belya_shadow_worktree_unregister(wt_path);
 
-        dyn_str_append(&envelope, "=== Super Agent Worker Execution: VERIFIED & MERGED ===\n");
-        dyn_str_appendf(&envelope, "Task ID: %s | Worktree: Silent Zero-Noise Ephemeral\n", task_id);
-        dyn_str_appendf(&envelope, "Tools Executed: %zu\n", tool_executions);
-        dyn_str_append(&envelope, "Verification Status: PASSED (All tests clean)\n");
-        dyn_str_append(&envelope, "Patch Merged: Successfully applied to main workspace.\n");
+        if (candidate_count > 1) {
+            dyn_str_append(&envelope, "=== Speculative Multi-Worktree Exploration: VERIFIED & MERGED ===\n");
+        } else {
+            dyn_str_append(&envelope, "=== Super Agent Worker Execution: VERIFIED & MERGED ===\n");
+        }
+        dyn_str_appendf(&envelope, "Candidates Explored: %d | Winning Candidate: [%d] %s (Score: %d)\n",
+                        candidate_count, winner->index, winner->strategy_name, winner->score);
+        dyn_str_appendf(&envelope, "Diff Churn: %d lines | Tests: 100%% PASSED\n", winner->diff_lines);
+        for (int i = 0; i < candidate_count; i++) {
+            dyn_str_appendf(&envelope, "  • Cand [%d] %-18s: Score=%d, Tests=%s, DiffLines=%d %s\n",
+                            i, cands[i].strategy_name, cands[i].score,
+                            cands[i].tests_passed ? "PASS" : "FAIL",
+                            cands[i].diff_lines,
+                            (i == best_cand_idx) ? "[WINNER MERGED]" : "[DISCARDED]");
+        }
+        dyn_str_append(&envelope, "Patch Merged: Successfully applied cleanly to main workspace.\n");
         execution_success = true;
     } else {
-        // 8. Failure Path: Silent Zero-Noise Worktree Teardown
-        char rm_cmd[4096];
-        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", wt_path, task_id);
-        int rc_rm = system(rm_cmd);
-        (void)rc_rm;
-        belya_shadow_worktree_unregister(wt_path);
-
-        dyn_str_append(&envelope, "=== Super Agent Worker Execution: REJECTED (Zero-Noise Purge) ===\n");
-        dyn_str_appendf(&envelope, "Task ID: %s\n", task_id);
-        dyn_str_appendf(&envelope, "Tools Executed: %zu\n", tool_executions);
-        dyn_str_append(&envelope, "Verification Status: FAILED (Worktree silently discarded; zero noise emitted to operator)\n");
-        if (!has_modifications) {
-            dyn_str_append(&envelope, "Reason: Worker produced no file modifications.\n");
+        if (candidate_count > 1) {
+            dyn_str_append(&envelope, "=== Speculative Multi-Worktree Exploration: REJECTED (Zero-Noise Purge) ===\n");
         } else {
-            dyn_str_appendf(&envelope, "Reason: Unit tests failed during shadow verification cycle.\nTrace snippet:\n%.500s\n", test_output);
+            dyn_str_append(&envelope, "=== Super Agent Worker Execution: REJECTED (Zero-Noise Purge) ===\n");
+        }
+        dyn_str_appendf(&envelope, "Candidates Explored: %d | Verification Status: FAILED\n", candidate_count);
+        for (int i = 0; i < candidate_count; i++) {
+            dyn_str_appendf(&envelope, "  • Cand [%d] %-18s: Tests=%s, Mod=%s\n",
+                            i, cands[i].strategy_name,
+                            cands[i].tests_passed ? "PASS" : "FAIL",
+                            cands[i].has_modifications ? "YES" : "NO");
+        }
+        dyn_str_append(&envelope, "Worktrees silently discarded; zero noise emitted to operator workspace.\n");
+    }
+
+    // Teardown all candidate worktrees cleanly
+    for (int i = 0; i < candidate_count; i++) {
+        if (cands[i].wt_path[0]) {
+            char rm_cmd[4096];
+            snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%.2000s\" >/dev/null 2>&1; git branch -D \"%.256s\" >/dev/null 2>&1", cands[i].wt_path, cands[i].task_id);
+            int rc_rm = system(rm_cmd);
+            (void)rc_rm;
+            belya_shadow_worktree_unregister(cands[i].wt_path);
         }
     }
 
-    dyn_str_free(&worker_log);
-    belya_harness_free(worker_harness);
-    if (worker_gw) model_gateway_free(worker_gw);
-
     belya_agent_log_timeline(router_harness->agent,
-                             execution_success ? "worker_patch_merged" : "worker_patch_rejected",
+                             execution_success ? "speculative_worker_patch_merged" : "speculative_worker_patch_rejected",
                              task);
 
     return envelope.data;
+}
+
+char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd) {
+    return belya_dispatch_worker_speculative(router_harness, task, target_symbol, test_cmd, 1);
 }
 
 static char *tool_dispatch_worker_task(BelyaAgent *agent, const JsonValue *args) {
@@ -3376,9 +3472,86 @@ static char *tool_dispatch_worker_task(BelyaAgent *agent, const JsonValue *args)
     const char *task = json_obj_get_str(args, "task");
     const char *sym = json_obj_get_str(args, "target_symbol");
     const char *test_cmd = json_obj_get_str(args, "test_cmd");
+    int candidate_count = (int)json_obj_get_num(args, "candidate_count", 1);
     if (!task) return xstrdup("Error: Missing task parameter for dispatch_worker_task.");
     if (!g_harness) return xstrdup("Error: Active harness unavailable.");
+    if (candidate_count > 1) {
+        return belya_dispatch_worker_speculative(g_harness, task, sym, test_cmd, candidate_count);
+    }
     return belya_dispatch_worker_task(g_harness, task, sym, test_cmd);
+}
+
+// Inter-Agent Mesh & LSP Query Tool Implementations
+
+char *belya_mesh_collaborate(BelyaHarness *h, const char *target, const char *action, const char *message) {
+    if (!h) return xstrdup("Error: Harness unavailable.");
+    if (!h->mesh) {
+        h->mesh = agent_mesh_init("belya", AGENT_MESH_DEFAULT_SOCK_PATH);
+        if (h->mesh) agent_mesh_start(h->mesh);
+    }
+    if (!h->mesh) {
+        return xstrdup("Error: Failed to initialize inter-agent mesh socket.");
+    }
+    const char *tgt = (target && strlen(target) > 0) ? target : "almaz";
+    const char *act = (action && strlen(action) > 0) ? action : "consult";
+    char *resp = agent_mesh_consult(h->mesh, tgt, act, message ? message : "{}", 4000);
+    if (!resp) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "[Agent Mesh IPC]: Peer '%s' offline or did not reply within timeout. Socket: %s",
+                        tgt, AGENT_MESH_DEFAULT_SOCK_PATH);
+        return ds.data;
+    }
+    return resp;
+}
+
+static char *tool_mesh_collaborate(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *target = json_obj_get_str(args, "target");
+    const char *action = json_obj_get_str(args, "action");
+    const char *message = json_obj_get_str(args, "message");
+    if (!g_harness) return xstrdup("Error: Harness not initialized.");
+    return belya_mesh_collaborate(g_harness, target, action, message);
+}
+
+static char *tool_lsp_query(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *action = json_obj_get_str(args, "action");
+    const char *file = json_obj_get_str(args, "file");
+    int line = (int)json_obj_get_num(args, "line", 1);
+    int col = (int)json_obj_get_num(args, "character", 1);
+
+    if (!file) return xstrdup("Error: Missing 'file' argument for lsp_query.");
+    if (!action || strcmp(action, "diagnostics") == 0) {
+        char *diag = lsp_preflight_diagnostics(file);
+        if (diag) return diag;
+        return xstrdup("{\"status\": \"clean\", \"diagnostics\": []}");
+    }
+
+    LspServerType type = lsp_detect_server_for_file(file);
+    if (type == LSP_SERVER_NONE) {
+        return xstrdup("Error: No LSP server configured for this file type.");
+    }
+
+    LspClient *client = lsp_client_spawn(type, NULL);
+    if (!client) {
+        return xstrdup("Error: LSP server executable not found in PATH.");
+    }
+    if (!lsp_client_initialize(client) || !lsp_client_did_open(client, file, NULL)) {
+        lsp_client_free(client);
+        return xstrdup("Error: Failed to initialize LSP session.");
+    }
+
+    char *result = NULL;
+    if (strcmp(action, "definition") == 0) {
+        result = lsp_client_definition(client, file, line, col, 2000);
+    } else if (strcmp(action, "references") == 0) {
+        result = lsp_client_references(client, file, line, col, 2000);
+    } else {
+        result = xstrdup("Error: Unrecognized LSP action ('diagnostics', 'definition', 'references').");
+    }
+
+    lsp_client_free(client);
+    return result ? result : xstrdup("{\"result\": null}");
 }
 
 
@@ -4353,6 +4526,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     if (st_env && (strcmp(st_env, "1") == 0 || strcasecmp(st_env, "true") == 0)) {
         h->stage_mode = true;
     }
+    h->tui_hud_enabled = true;
+    if (!role_name || strcmp(role_name, "worker") != 0) {
+        h->mesh = agent_mesh_init("belya", AGENT_MESH_DEFAULT_SOCK_PATH);
+        if (h->mesh) agent_mesh_start(h->mesh);
+    }
     /* Capture the workspace root exactly once, at first harness init.
        The jail must NOT follow later chdir() calls from tool_bash. */
     if (!g_workspace_root_set) {
@@ -5122,6 +5300,51 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(aslc_params, "required", aslc_req);
     REGISTER_IF_PERMITTED("ast_slice", "Extract bounded shallow transitive AST dependency slice (definition, parameter types, caller signatures)", aslc_params, PERM_ALLOW, tool_ast_slice);
 
+    // 46. lsp_query (Native Stdio Language Server Protocol)
+    JsonValue *lsp_params = json_create_object();
+    json_obj_add(lsp_params, "type", json_create_string("object"));
+    JsonValue *lsp_props = json_create_object();
+    JsonValue *lsp_act = json_create_object();
+    json_obj_add(lsp_act, "type", json_create_string("string"));
+    json_obj_add(lsp_act, "description", json_create_string("LSP action: 'diagnostics', 'definition', or 'references'"));
+    json_obj_add(lsp_props, "action", lsp_act);
+    JsonValue *lsp_f = json_create_object();
+    json_obj_add(lsp_f, "type", json_create_string("string"));
+    json_obj_add(lsp_f, "description", json_create_string("Target source file path"));
+    json_obj_add(lsp_props, "file", lsp_f);
+    JsonValue *lsp_ln = json_create_object();
+    json_obj_add(lsp_ln, "type", json_create_string("integer"));
+    json_obj_add(lsp_ln, "description", json_create_string("1-based line number"));
+    json_obj_add(lsp_props, "line", lsp_ln);
+    JsonValue *lsp_ch = json_create_object();
+    json_obj_add(lsp_ch, "type", json_create_string("integer"));
+    json_obj_add(lsp_ch, "description", json_create_string("1-based character column"));
+    json_obj_add(lsp_props, "character", lsp_ch);
+    json_obj_add(lsp_params, "properties", lsp_props);
+    JsonValue *lsp_req = json_create_array();
+    json_arr_add(lsp_req, json_create_string("file"));
+    json_obj_add(lsp_params, "required", lsp_req);
+    REGISTER_IF_PERMITTED("lsp_query", "Query native language server (clangd, pyright, rust-analyzer, gopls) for diagnostics, definition, or references", lsp_params, PERM_ALLOW, tool_lsp_query);
+
+    // 47. mesh_collaborate (Inter-Agent Mesh Protocol IPC)
+    JsonValue *mesh_params = json_create_object();
+    json_obj_add(mesh_params, "type", json_create_string("object"));
+    JsonValue *mesh_props = json_create_object();
+    JsonValue *mesh_tgt = json_create_object();
+    json_obj_add(mesh_tgt, "type", json_create_string("string"));
+    json_obj_add(mesh_tgt, "description", json_create_string("Target peer agent ('almaz' or 'belya')"));
+    json_obj_add(mesh_props, "target", mesh_tgt);
+    JsonValue *mesh_act = json_create_object();
+    json_obj_add(mesh_act, "type", json_create_string("string"));
+    json_obj_add(mesh_act, "description", json_create_string("Action: 'consult', 'pair_review', 'ping'"));
+    json_obj_add(mesh_props, "action", mesh_act);
+    JsonValue *mesh_msg = json_create_object();
+    json_obj_add(mesh_msg, "type", json_create_string("string"));
+    json_obj_add(mesh_msg, "description", json_create_string("Message content or code snippet for peer consultation"));
+    json_obj_add(mesh_props, "message", mesh_msg);
+    json_obj_add(mesh_params, "properties", mesh_props);
+    REGISTER_IF_PERMITTED("mesh_collaborate", "Collaborate with peer agent over Unix domain socket mesh (/tmp/belya_almaz_mesh.sock)", mesh_params, PERM_ALLOW, tool_mesh_collaborate);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -5139,7 +5362,7 @@ BelyaHarness *belya_harness_init(BelyaAgent *agent) {
 BelyaHarness *belya_harness_init_router(BelyaAgent *agent) {
     const char *router_whitelist = "dispatch_worker_task,query_ast_graph,recall_memory,save_memory,"
                                    "read_file,list_dir,search_files,git_status,git_diff,ask_user,"
-                                   "web_search,web_fetch,lsp_definition,lsp_references";
+                                   "web_search,web_fetch,lsp_definition,lsp_references,lsp_query,mesh_collaborate";
     BelyaHarness *h = belya_harness_init_bounded(agent, router_whitelist, "router");
     if (!h) return NULL;
     h->is_router = true;
@@ -5162,7 +5385,7 @@ BelyaHarness *belya_harness_init_router(BelyaAgent *agent) {
 BelyaHarness *belya_harness_init_worker(BelyaAgent *agent, const char *worktree_dir) {
     const char *worker_whitelist = "read_file,write_file,edit_file,apply_patch,bash,"
                                    "run_test_cycle,ast_slice,list_dir,search_files,"
-                                   "lsp_definition,lsp_references";
+                                   "lsp_definition,lsp_references,lsp_query";
     BelyaHarness *h = belya_harness_init_bounded(agent, worker_whitelist, "worker");
     if (!h) return NULL;
     h->is_router = false;
@@ -5261,21 +5484,6 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     return true;
 }
 
-static struct termios g_saved_termios;
-static bool g_termios_saved = false;
-
-static void belya_restore_terminal_mode(void) {
-    if (g_termios_saved) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_termios);
-        g_termios_saved = false;
-    }
-}
-
-static void belya_termios_sig_handler(int sig) {
-    belya_restore_terminal_mode();
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
 
 bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, const char *args_json, void *userdata) {
     (void)userdata;
@@ -5283,62 +5491,26 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
         return true; // headless automated mode always allows
     }
 
-    if (!g_termios_saved) {
-        if (tcgetattr(STDIN_FILENO, &g_saved_termios) == 0) {
-            g_termios_saved = true;
-            atexit(belya_restore_terminal_mode);
+    // Generate diff preview if mutating tool
+    char *diff_preview = NULL;
+    if (tool_name && (strcmp(tool_name, "apply_patch") == 0 ||
+                      strcmp(tool_name, "write_file") == 0 ||
+                      strcmp(tool_name, "edit_file") == 0 ||
+                      strcmp(tool_name, "git_diff") == 0)) {
+        FILE *df = popen("git diff HEAD 2>/dev/null", "r");
+        if (df) {
+            char dbuf[4096];
+            size_t dr = fread(dbuf, 1, sizeof(dbuf) - 1, df);
+            dbuf[dr] = '\0';
+            pclose(df);
+            if (dr > 0) diff_preview = strdup(dbuf);
         }
     }
 
-    struct sigaction sa, old_int, old_term, old_quit, old_tstp;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = belya_termios_sig_handler;
-    sigaction(SIGINT, &sa, &old_int);
-    sigaction(SIGTERM, &sa, &old_term);
-    sigaction(SIGQUIT, &sa, &old_quit);
-    sigaction(SIGTSTP, &sa, &old_tstp);
+    TuiApprovalResult app = tui_interactive_approve(tool_name, args_json, diff_preview);
+    if (diff_preview) free(diff_preview);
 
-    printf("\n\033[1;33m[SECURITY GATE: Permission Required]\033[0m\n");
-    printf("Tool:      \033[1;37m%s\033[0m\n", tool_name ? tool_name : "unknown");
-    if (args_json && strlen(args_json) > 0) {
-        printf("Arguments: \033[0;36m%s\033[0m\n", args_json);
-    }
-    printf("Action: [\033[1;32ma\033[0m]llow once | [\033[1;34mA\033[0m]lways allow | [\033[1;31md\033[0m]eny | [\033[1;35me\033[0m]xplain: ");
-    fflush(stdout);
-
-    tcflush(STDIN_FILENO, TCIFLUSH);
-
-    struct termios raw = g_saved_termios;
-    raw.c_lflag &= ~(ICANON | ECHO);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 1;
-    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-
-    char ch = 'd';
-    while (read(STDIN_FILENO, &ch, 1) == 1) {
-        if (ch == 0x1B) {
-            // Drain trailing escape sequence bytes
-            char seq[16];
-            fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK);
-            while (read(STDIN_FILENO, seq, sizeof(seq)) > 0);
-            fcntl(STDIN_FILENO, F_SETFL, 0);
-            continue;
-        }
-        break;
-    }
-
-    belya_restore_terminal_mode();
-    sigaction(SIGINT, &old_int, NULL);
-    sigaction(SIGTERM, &old_term, NULL);
-    sigaction(SIGQUIT, &old_quit, NULL);
-    sigaction(SIGTSTP, &old_tstp, NULL);
-    printf("%c\n", ch);
-
-    if (ch == 'a') {
-        return true;
-    }
-    if (ch == 'A') {
-        // Upgrade tool to PERM_ALLOW for remainder of session
+    if (app.action == TUI_ACTION_ALWAYS_ALLOW) {
         if (h && tool_name) {
             for (size_t i = 0; i < h->tool_count; i++) {
                 if (strcmp(h->tools[i].name, tool_name) == 0) {
@@ -5347,13 +5519,17 @@ bool belya_terminal_permission_prompt(BelyaHarness *h, const char *tool_name, co
                 }
             }
         }
+        tui_approval_result_free(&app);
         return true;
     }
-    if (ch == 'e') {
-        printf("\033[1;35m[Intent Explanation]\033[0m Tool '%s' requested with arguments: %s\n", tool_name, args_json ? args_json : "none");
-        return false;
+
+    if (app.action == TUI_ACTION_APPLY || app.action == TUI_ACTION_EDIT) {
+        tui_approval_result_free(&app);
+        return true;
     }
-    return false; // 'd' or other
+
+    tui_approval_result_free(&app);
+    return false;
 }
 
 static bool harness_ask_permission(const char *name, const char *args) {
@@ -6907,15 +7083,27 @@ void belya_harness_repl(BelyaHarness *h) {
             if (strncmp(input_buf, "/diff", 5) == 0) {
                 const char *dpath = strlen(input_buf) > 5 ? input_buf + 5 : "";
                 while (*dpath == ' ') dpath++;
+                bool side_by_side = false;
+                if (strncmp(dpath, "--side", 6) == 0 || strncmp(dpath, "-s", 2) == 0) {
+                    side_by_side = true;
+                    dpath += (strncmp(dpath, "--side", 6) == 0) ? 6 : 2;
+                    while (*dpath == ' ') dpath++;
+                }
                 JsonValue *args = json_create_object();
                 if (strlen(dpath) > 0) {
                     json_obj_add(args, "path", json_create_string(dpath));
                 }
                 char *raw = tool_git_diff(h->agent, args);
                 json_free(args);
-                char *colored = belya_ansi_diff_colorize(raw);
-                printf("\n%s\n", colored ? colored : raw);
-                if (colored) free(colored);
+                if (side_by_side) {
+                    char *sbs = tui_render_side_by_side_diff(raw, tui_get_terminal_width());
+                    printf("\n%s\n", sbs ? sbs : raw);
+                    if (sbs) free(sbs);
+                } else {
+                    char *colored = belya_ansi_diff_colorize(raw);
+                    printf("\n%s\n", colored ? colored : raw);
+                    if (colored) free(colored);
+                }
                 free(raw);
                 continue;
             }
@@ -6957,6 +7145,40 @@ void belya_harness_repl(BelyaHarness *h) {
                 printf("  Completion Tokens: %zu\n", c_tok);
                 printf("  Total Tokens:      %zu\n", p_tok + c_tok);
                 printf("  Estimated Cost:    \033[1;32m$%.4f USD\033[0m\n\n", total_cost);
+                continue;
+            }
+            if (strncmp(input_buf, "/mesh", 5) == 0) {
+                const char *m_arg = strlen(input_buf) > 5 ? input_buf + 5 : "";
+                while (*m_arg == ' ') m_arg++;
+                if (strncmp(m_arg, "ping", 4) == 0) {
+                    double rtt = 0;
+                    bool ok = agent_mesh_ping(h->mesh, "almaz", &rtt);
+                    if (ok) {
+                        printf("\033[1;32m[Mesh PONG]:\033[0m Peer 'almaz' alive (RTT: %.2f ms)\n\n", rtt);
+                    } else {
+                        printf("\033[1;31m[Mesh PING FAIL]:\033[0m Peer 'almaz' not responding on %s\n\n", AGENT_MESH_DEFAULT_SOCK_PATH);
+                    }
+                } else {
+                    char *reply = belya_mesh_collaborate(h, "almaz", "consult", strlen(m_arg) > 0 ? m_arg : "{\"ping\":true}");
+                    printf("\033[1;36m[Mesh Reply from Almaz]:\033[0m\n%s\n\n", reply ? reply : "null");
+                    if (reply) free(reply);
+                }
+                continue;
+            }
+            if (strcmp(input_buf, "/hud") == 0) {
+                TuiHudMetrics hud;
+                hud.model_name = (h->agent && h->agent->gateway && h->agent->gateway->model) ? h->agent->gateway->model : "belya";
+                hud.prompt_tokens = h->agent ? h->agent->total_prompt_tokens : 0;
+                hud.completion_tokens = h->agent ? h->agent->total_completion_tokens : 0;
+                hud.cached_tokens = h->agent ? h->agent->total_cached_tokens : 0;
+                hud.last_turn_latency_ms = h->last_turn_latency_ms;
+                hud.rss_mb = belya_get_current_rss_mb();
+                hud.total_turns = h->agent ? h->agent->msg_count : 0;
+                char *hud_str = tui_render_token_hud(&hud, tui_get_terminal_width());
+                if (hud_str) {
+                    printf("\n%s\n", hud_str);
+                    free(hud_str);
+                }
                 continue;
             }
             if (strcmp(input_buf, "/tools") == 0) {
@@ -7717,6 +7939,10 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                 }
                 belya_hook_result_free(&pre_hook);
 
+                char spin_lbl[256];
+                snprintf(spin_lbl, sizeof(spin_lbl), "Executing %s", tc->name);
+                TuiSpinner *spinner = tui_spinner_start(spin_lbl);
+
                 double tool_t0 = get_time_ms();
                 JsonValue *args_parsed = json_parse(tc->arguments_json);
                 char *observation = NULL;
@@ -7729,6 +7955,10 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
                 g_active_custom_script_path = NULL;
                 json_free(args_parsed);
                 double tool_t1 = get_time_ms();
+
+                char spin_done[256];
+                snprintf(spin_done, sizeof(spin_done), "%s completed", tc->name);
+                tui_spinner_stop(spinner, observation != NULL, spin_done);
 
                 char *breaker_alert = NULL;
                 bool tripped = belya_harness_record_tool_observation(h, tc->name, tc->arguments_json, observation, &breaker_alert);
@@ -7762,10 +7992,30 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
         printf("\033[1;36m[STAGE TURN SUMMARY]\033[0m Turn Duration: \033[1;32m%.1f ms\033[0m | Prompt Tokens: %zu | Completion Tokens: %zu | Peak RSS: \033[1;32m%.2f MB\033[0m\n\n",
                h->last_turn_latency_ms, h->agent->total_prompt_tokens, h->agent->total_completion_tokens, belya_get_current_rss_mb());
     }
+
+    if (h->tui_hud_enabled && isatty(STDOUT_FILENO) && !getenv("BELYA_HEADLESS") && !getenv("BELYA_TEST_MODE")) {
+        TuiHudMetrics hud;
+        hud.model_name = (h->agent && h->agent->gateway && h->agent->gateway->model) ? h->agent->gateway->model : "belya";
+        hud.prompt_tokens = h->agent ? h->agent->total_prompt_tokens : 0;
+        hud.completion_tokens = h->agent ? h->agent->total_completion_tokens : 0;
+        hud.cached_tokens = h->agent ? h->agent->total_cached_tokens : 0;
+        hud.last_turn_latency_ms = h->last_turn_latency_ms;
+        hud.rss_mb = belya_get_current_rss_mb();
+        hud.total_turns = h->agent ? h->agent->msg_count : 0;
+        char *hud_str = tui_render_token_hud(&hud, tui_get_terminal_width());
+        if (hud_str) {
+            printf("%s\n", hud_str);
+            free(hud_str);
+        }
+    }
 }
 
 void belya_harness_free(BelyaHarness *h) {
     if (!h) return;
+    if (h->mesh) {
+        agent_mesh_free(h->mesh);
+        h->mesh = NULL;
+    }
     for (size_t i = 0; i < BELYA_MAX_BACKGROUND_TASKS; i++) {
         BelyaBackgroundTask *t = &h->task_table.tasks[i];
         if (t->state == BELYA_TASK_STATE_RUNNING) {

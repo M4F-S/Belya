@@ -3697,6 +3697,113 @@ void test_superagent_harness_upgrade(void) {
     printf("  -> Super Agent Harness (Dual VTable, AST Slicer, Shadow Worktrees, Jev Coprocessor) PASSED (53/53)\n");
 }
 
+void test_sota_dominance_pillars(void) {
+    printf("[Test] SOTA Dominance Pillars (TUI Dominance, Stdio LSP, Speculative Multi-Worktree, Agent Mesh IPC)...\n");
+
+    // 1. Interactive Terminal TUI Dominance
+    assert(tui_get_terminal_width() >= 20);
+    assert(tui_get_terminal_height() >= 5);
+
+    const char *sample_diff = 
+        "--- a/src/main.c\n"
+        "+++ b/src/main.c\n"
+        "@@ -10,3 +10,3 @@\n"
+        "-int old_val = 1;\n"
+        "+int new_val = 2;\n"
+        " int unchanged = 0;\n";
+    char *sbs = tui_render_side_by_side_diff(sample_diff, 80);
+    assert(sbs != NULL);
+    assert(strstr(sbs, "OLD (Previous)") != NULL);
+    assert(strstr(sbs, "NEW (Modified)") != NULL);
+    assert(strstr(sbs, "old_val") != NULL);
+    assert(strstr(sbs, "new_val") != NULL);
+    free(sbs);
+
+    TuiHudMetrics hud;
+    memset(&hud, 0, sizeof(hud));
+    hud.model_name = "deepseek-v4.1-flash";
+    hud.prompt_tokens = 4500;
+    hud.completion_tokens = 320;
+    hud.cached_tokens = 3800;
+    hud.last_turn_latency_ms = 185.0;
+    hud.rss_mb = 7.4;
+    hud.total_turns = 12;
+    char *hud_out = tui_render_token_hud(&hud, 80);
+    assert(hud_out != NULL);
+    assert(strstr(hud_out, "deepseek-v4.1-fl") != NULL);
+    assert(strstr(hud_out, "4500") != NULL);
+    assert(strstr(hud_out, "7.4MB RSS") != NULL);
+    free(hud_out);
+
+    TuiSpinner *spin = tui_spinner_start("Testing tool execution");
+    assert(spin != NULL);
+    tui_spinner_update_label(spin, "Finishing tool execution");
+    tui_spinner_stop(spin, true, "Test tool finished");
+
+    // 2. Native Stdio LSP Integration
+    assert(lsp_detect_server_for_file("agent.c") == LSP_SERVER_CLANGD);
+    assert(lsp_detect_server_for_file("agent.h") == LSP_SERVER_CLANGD);
+    assert(lsp_detect_server_for_file("script.py") == LSP_SERVER_PYRIGHT);
+    assert(lsp_detect_server_for_file("main.rs") == LSP_SERVER_RUST_ANALYZER);
+    assert(lsp_detect_server_for_file("server.go") == LSP_SERVER_GOPLS);
+    assert(lsp_detect_server_for_file("app.ts") == LSP_SERVER_TYPESCRIPT);
+    assert(lsp_detect_server_for_file("data.txt") == LSP_SERVER_NONE);
+    assert(strcmp(lsp_server_command(LSP_SERVER_CLANGD), "clangd") == 0);
+    assert(strcmp(lsp_server_command(LSP_SERVER_RUST_ANALYZER), "rust-analyzer") == 0);
+
+    FILE *bad_f = fopen("test_bad_syntax.c", "w");
+    assert(bad_f != NULL);
+    fprintf(bad_f, "int invalid_syntax( { return 0;\n");
+    fclose(bad_f);
+    char *pre_diag = belya_harness_preflight_check("test_bad_syntax.c");
+    assert(pre_diag != NULL);
+    assert(strstr(pre_diag, "[Structured Compiler Diagnostics]") != NULL);
+    free(pre_diag);
+    unlink("test_bad_syntax.c");
+
+    // 3. Speculative Multi-Worktree Candidate Dispatcher
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:9999/v1/chat/completions", "test-key", "test-model");
+    assert(gw != NULL);
+    BelyaAgent *r_agent = belya_agent_init(gw, ":memory:", "Router");
+    assert(r_agent != NULL);
+    BelyaHarness *r_harness = belya_harness_init_router(r_agent);
+    assert(r_harness != NULL);
+
+    belya_shadow_worktree_cleanup_all();
+    char *spec_res = belya_dispatch_worker_speculative(r_harness, "Fix buffer validation", NULL, "echo ok", 2);
+    assert(spec_res != NULL);
+    assert(strstr(spec_res, "=== Speculative Multi-Worktree Exploration:") != NULL);
+    assert(strstr(spec_res, "Candidates Explored: 2") != NULL);
+    assert(strstr(spec_res, "Cand [0] Surgical Minimal") != NULL);
+    assert(strstr(spec_res, "Cand [1] Defensive & Robust") != NULL);
+    free(spec_res);
+    belya_shadow_worktree_cleanup_all();
+
+    belya_harness_free(r_harness);
+    model_gateway_free(gw);
+
+    // 4. Direct Inter-Agent Mesh Protocol
+    unlink("/tmp/test_mesh.sock");
+    AgentMesh *m_almaz = agent_mesh_init("almaz", "/tmp/test_mesh.sock");
+    assert(m_almaz != NULL);
+    assert(agent_mesh_start(m_almaz) == true);
+
+    AgentMesh *m_belya = agent_mesh_init("belya", "/tmp/test_mesh.sock");
+    assert(m_belya != NULL);
+    assert(agent_mesh_start(m_belya) == true);
+
+    double rtt_ms = 0.0;
+    bool ping_ok = agent_mesh_ping(m_belya, "almaz", &rtt_ms);
+    assert(ping_ok == true);
+    assert(rtt_ms >= 0.0);
+
+    agent_mesh_free(m_belya);
+    agent_mesh_free(m_almaz);
+    unlink("/tmp/test_mesh.sock");
+
+    printf("  -> SOTA Dominance Pillars (TUI Dominance, Stdio LSP, Speculative Multi-Worktree, Agent Mesh IPC) PASSED (54/54)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -3752,7 +3859,8 @@ int main(void) {
     test_belya_company_system();
     test_sota_parity_pillars();
     test_superagent_harness_upgrade();
-    printf("================ All Tests Passed Successfully (53/53 - 100%%) ================\n\n");
+    test_sota_dominance_pillars();
+    printf("================ All Tests Passed Successfully (54/54 - 100%%) ================\n\n");
     return 0;
 }
 
