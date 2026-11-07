@@ -6,7 +6,8 @@
 static void cleanup_terminal(void) {
     if (isatty(STDOUT_FILENO)) {
         const char *reset_seq = "\033[?25h\033[0m\n";
-        (void)write(STDOUT_FILENO, reset_seq, strlen(reset_seq));
+        ssize_t wrc = write(STDOUT_FILENO, reset_seq, strlen(reset_seq));
+        (void)wrc;
     }
 }
 
