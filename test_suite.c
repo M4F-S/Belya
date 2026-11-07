@@ -726,6 +726,58 @@ void test_trajectory_exporter(void) {
     free(buf);
     unlink(out_file);
 
+    // Test ShareGPT / Hermes trajectory exporter
+    const char *sg_file = "test_sharegpt_output.jsonl";
+    unlink(sg_file);
+    bool sg_ok = belya_agent_export_sharegpt(agent, NULL, sg_file);
+    assert(sg_ok == true);
+
+    FILE *f_sg = fopen(sg_file, "rb");
+    assert(f_sg != NULL);
+    fseek(f_sg, 0, SEEK_END);
+    long sz_sg = ftell(f_sg);
+    fseek(f_sg, 0, SEEK_SET);
+    assert(sz_sg > 0);
+    char *buf_sg = malloc(sz_sg + 1);
+    size_t r_sg = fread(buf_sg, 1, sz_sg, f_sg);
+    buf_sg[r_sg] = '\0';
+    fclose(f_sg);
+
+    JsonValue *root_sg = json_parse(buf_sg);
+    assert(root_sg != NULL && root_sg->type == JSON_OBJECT);
+    JsonValue *convs = json_obj_get(root_sg, "conversations");
+    assert(convs != NULL && convs->type == JSON_ARRAY);
+    assert(convs->u.array.count == 5);
+    json_free(root_sg);
+    free(buf_sg);
+    unlink(sg_file);
+
+    // Test Hermes DPO preference format exporter
+    const char *dpo_file = "test_dpo_output.jsonl";
+    unlink(dpo_file);
+    bool dpo_ok = belya_agent_export_dpo(agent, NULL, dpo_file);
+    assert(dpo_ok == true);
+
+    FILE *f_dpo = fopen(dpo_file, "rb");
+    assert(f_dpo != NULL);
+    fseek(f_dpo, 0, SEEK_END);
+    long sz_dpo = ftell(f_dpo);
+    fseek(f_dpo, 0, SEEK_SET);
+    assert(sz_dpo > 0);
+    char *buf_dpo = malloc(sz_dpo + 1);
+    size_t r_dpo = fread(buf_dpo, 1, sz_dpo, f_dpo);
+    buf_dpo[r_dpo] = '\0';
+    fclose(f_dpo);
+
+    JsonValue *root_dpo = json_parse(buf_dpo);
+    assert(root_dpo != NULL && root_dpo->type == JSON_OBJECT);
+    assert(json_obj_get(root_dpo, "prompt") != NULL);
+    assert(json_obj_get(root_dpo, "chosen") != NULL);
+    assert(json_obj_get(root_dpo, "rejected") != NULL);
+    json_free(root_dpo);
+    free(buf_dpo);
+    unlink(dpo_file);
+
     belya_agent_free(agent);
     model_gateway_free(gw);
     printf("  -> Trajectory Exporter PASSED\n");

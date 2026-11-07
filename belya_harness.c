@@ -6985,6 +6985,8 @@ static void print_help(BelyaHarness *h) {
     printf("  /checkpoint [id] Create a Git & conversation snapshot\n");
     printf("  /rollback [id]   Instant rollback to checkpoint\n");
     printf("  /export [id]     Export trajectory in OpenAI JSONL format\n");
+    printf("  /export-sharegpt Export trajectory in ShareGPT / Hermes format\n");
+    printf("  /export-dpo      Export trajectory in Hermes DPO preference format\n");
     printf("  /cache           View prompt cache economics & hit rates\n");
     printf("  /reflect         Distill recent trajectory into reusable SQLite FTS5 skill\n");
     printf("  /clear           Reset conversation history (preserves system prompt)\n");
@@ -7035,7 +7037,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
         const char *commands[] = {
             "/help", "/status", "/tools", "/rules", "/timeline",
             "/sessions", "/save", "/resume", "/skills", "/checkpoint",
-            "/rollback", "/export", "/cache", "/reflect", "/clear",
+            "/rollback", "/export", "/export-sharegpt", "/export-dpo", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/probe", "/cost",
             "/tasks", "/cron", "/dream", "/plan", "/bg",
             "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", "/company", NULL
@@ -7289,6 +7291,40 @@ void belya_harness_repl(BelyaHarness *h) {
                     printf("\033[1;32mRollback completed successfully (%zu messages active in context).\033[0m\n\n", h->agent->msg_count);
                 } else {
                     printf("\033[1;31mRollback failed (no matching checkpoint found).\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/export-sharegpt", 16) == 0) {
+                char target_session[128] = {0};
+                char target_file[256] = {0};
+                const char *args = input_buf + 16;
+                while (*args == ' ') args++;
+                if (strlen(args) > 0) {
+                    sscanf(args, "%127s %255s", target_session, target_file);
+                }
+                const char *sid = strlen(target_session) > 0 ? target_session : NULL;
+                const char *outf = strlen(target_file) > 0 ? target_file : NULL;
+                if (belya_agent_export_sharegpt(h->agent, sid, outf)) {
+                    printf("\033[1;32mTrajectory exported to %s (ShareGPT / Hermes format).\033[0m\n\n", outf ? outf : "sharegpt_*.jsonl");
+                } else {
+                    printf("\033[1;31mFailed to export ShareGPT trajectory.\033[0m\n\n");
+                }
+                continue;
+            }
+            if (strncmp(input_buf, "/export-dpo", 11) == 0) {
+                char target_session[128] = {0};
+                char target_file[256] = {0};
+                const char *args = input_buf + 11;
+                while (*args == ' ') args++;
+                if (strlen(args) > 0) {
+                    sscanf(args, "%127s %255s", target_session, target_file);
+                }
+                const char *sid = strlen(target_session) > 0 ? target_session : NULL;
+                const char *outf = strlen(target_file) > 0 ? target_file : NULL;
+                if (belya_agent_export_dpo(h->agent, sid, outf)) {
+                    printf("\033[1;32mTrajectory exported to %s (Hermes DPO format).\033[0m\n\n", outf ? outf : "dpo_*.jsonl");
+                } else {
+                    printf("\033[1;31mFailed to export DPO trajectory.\033[0m\n\n");
                 }
                 continue;
             }

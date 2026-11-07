@@ -174,6 +174,8 @@ int main(int argc, char **argv) {
             printf("  -p, --prompt <prompt>      Execute headless mission prompt and exit\n");
             printf("  --no-probe                 Skip gateway pre-flight health & authentication probe\n");
             printf("  --export-skills            Export RFC 8615 skills discovery catalogue to .well-known/agent-skills/ and exit\n");
+            printf("  --export-sharegpt <file>   Export trajectory in ShareGPT / Hermes format and exit\n");
+            printf("  --export-dpo <file>        Export trajectory in Hermes DPO preference format and exit\n");
             printf("  --headless <prompt>        Alias for --prompt\n");
             printf("  --eval <prompt>            Alias for --prompt\n\n");
             return 0;
@@ -182,6 +184,18 @@ int main(int argc, char **argv) {
             return 0;
         } else if (strcmp(argv[i], "--export-skills") == 0) {
             return belya_export_skills_catalogue();
+        } else if (strcmp(argv[i], "--export-sharegpt") == 0 && i + 1 < argc) {
+            const char *outf = argv[++i];
+            BelyaAgent *ag = belya_agent_init(NULL, "belya_memory.sqlite", NULL);
+            bool ok = belya_agent_export_sharegpt(ag, NULL, outf);
+            belya_agent_free(ag);
+            return ok ? 0 : 1;
+        } else if (strcmp(argv[i], "--export-dpo") == 0 && i + 1 < argc) {
+            const char *outf = argv[++i];
+            BelyaAgent *ag = belya_agent_init(NULL, "belya_memory.sqlite", NULL);
+            bool ok = belya_agent_export_dpo(ag, NULL, outf);
+            belya_agent_free(ag);
+            return ok ? 0 : 1;
         } else if ((strcmp(argv[i], "--preset") == 0 || strcmp(argv[i], "-P") == 0) && i + 1 < argc) {
             preset_name = argv[++i];
         } else if (strcmp(argv[i], "--probe") == 0) {
