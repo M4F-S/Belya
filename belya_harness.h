@@ -5,6 +5,9 @@
 #include "linenoise.h"
 #include "mcp_client.h"
 #include "permissions.h"
+#include "terminal_tui.h"
+#include "lsp_client.h"
+#include "agent_mesh.h"
 #include <sys/socket.h>
 #include <stdint.h>
 #include <time.h>
@@ -118,7 +121,7 @@ typedef struct BelyaWorkerVTable {
 
 struct BelyaHarness {
     BelyaAgent *agent;
-    BelyaRegisteredTool tools[64];
+    BelyaRegisteredTool tools[96];
     size_t tool_count;
     char cwd[4096];
     MCPClient *mcp_servers[8];
@@ -172,6 +175,10 @@ struct BelyaHarness {
     bool is_worker;
     BelyaRouterVTable router_vtable;
     BelyaWorkerVTable worker_vtable;
+
+    // Inter-Agent Mesh & TUI Dominance
+    AgentMesh *mesh;
+    bool tui_hud_enabled;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
@@ -182,6 +189,8 @@ BelyaHarness *belya_harness_get_active(void);
 void belya_harness_set_active(BelyaHarness *h);
 char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t max_tokens);
 char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd);
+char *belya_dispatch_worker_speculative(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd, int candidate_count);
+char *belya_mesh_collaborate(BelyaHarness *h, const char *target, const char *action, const char *message);
 void belya_shadow_worktree_cleanup_all(void);
 bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_name);
 char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *role_name, const char *task, const char *extra_context);
