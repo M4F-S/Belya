@@ -2950,7 +2950,11 @@ char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t
     if (!h->agent || !h->agent->db) {
         return xstrdup("Error: Agent database unavailable.");
     }
-    if (max_tokens == 0) max_tokens = 2000;
+    /* H26: max_tokens is model-controlled and (size_t)-cast. Clamp before the
+       byte arithmetic: a small value underflowed byte_budget - 64 and wrote
+       before the heap block (ASan: belya_harness.c:3040). */
+    if (max_tokens < 64) max_tokens = 64;
+    if (max_tokens > 250000) max_tokens = 250000;
     size_t byte_budget = max_tokens * 4;
 
     sqlite3 *db = h->agent->db;
@@ -3033,7 +3037,7 @@ char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t
     char resolved_types[8][64];
     int res_count = 0;
 
-    while (*p && res_count < 6 && ds.len < byte_budget - 500) {
+    while (*p && res_count < 6 && ds.len + 500 < byte_budget) {
         while (*p && !isalnum((unsigned char)*p) && *p != '_') p++;
         const char *tok_start = p;
         while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
@@ -3095,8 +3099,9 @@ char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t
 
     // 5. Enforce strict token/byte bounds
     if (ds.len > byte_budget) {
-        ds.data[byte_budget - 64] = '\0';
-        ds.len = byte_budget - 64;
+        size_t keep = byte_budget > 64 ? byte_budget - 64 : 0;
+        ds.data[keep] = '\0';
+        ds.len = keep;
         dyn_str_append(&ds, "\n... [AST Context Slice truncated to fit 2000 token budget]\n");
     }
 
@@ -5743,6 +5748,21 @@ bool belya_harness_exit_plan_mode(BelyaHarness *h) {
 char *belya_harness_enter_worktree(BelyaHarness *h, const char *branch_or_id) {
     if (!h) return xstrdup("Error: Invalid harness.");
     if (h->in_worktree) return xstrdup("Error: Already active inside an isolated worktree.");
+
+    /* H26: branch_or_id is interpolated into system() below. Reject anything
+       outside the git-safe set so a name cannot inject a shell command. */
+    if (branch_or_id && strlen(branch_or_id) > 0) {
+        size_t n = strlen(branch_or_id);
+        if (n > 64 || branch_or_id[0] == '/' || strstr(branch_or_id, "..")) {
+            return xstrdup("Error: Invalid worktree name.");
+        }
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)branch_or_id[i];
+            if (!(isalnum(c) || c == '_' || c == '-' || c == '.' || c == '/')) {
+                return xstrdup("Error: Invalid worktree name (allowed: A-Z a-z 0-9 _ - . /).");
+            }
+        }
+    }
 
     if (!getcwd(h->original_worktree_cwd, sizeof(h->original_worktree_cwd))) {
         snprintf(h->original_worktree_cwd, sizeof(h->original_worktree_cwd), "%s", h->cwd);
