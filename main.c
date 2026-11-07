@@ -25,11 +25,11 @@ static int belya_export_skills_catalogue(void) {
     while ((entry = readdir(d)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
-        char skill_md[512];
+        char skill_md[1024];
         struct stat st;
-        snprintf(skill_md, sizeof(skill_md), "%s/%s/SKILL.md", skills_dir, entry->d_name);
+        snprintf(skill_md, sizeof(skill_md), "%s/%.200s/SKILL.md", skills_dir, entry->d_name);
         if (stat(skill_md, &st) != 0) {
-            snprintf(skill_md, sizeof(skill_md), "%s/%s", skills_dir, entry->d_name);
+            snprintf(skill_md, sizeof(skill_md), "%s/%.200s", skills_dir, entry->d_name);
             if (stat(skill_md, &st) != 0 || !strstr(entry->d_name, ".md")) continue;
         }
 
@@ -53,9 +53,9 @@ static int belya_export_skills_catalogue(void) {
         const char *desc = fm_desc ? fm_desc : name;
 
         char dest_dir[512];
-        snprintf(dest_dir, sizeof(dest_dir), ".well-known/agent-skills/%s", name);
+        snprintf(dest_dir, sizeof(dest_dir), ".well-known/agent-skills/%.200s", name);
         mkdir(dest_dir, 0755);
-        char dest_file[512];
+        char dest_file[1024];
         snprintf(dest_file, sizeof(dest_file), "%s/SKILL.md", dest_dir);
         FILE *df = fopen(dest_file, "w");
         if (df) {
