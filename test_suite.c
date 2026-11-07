@@ -404,6 +404,32 @@ void test_harness_tools_and_patches(void) {
         unlink("sb_link.txt");
     }
 
+    // 4d. ast_slice must clamp a model-supplied max_tokens (H26).
+    {
+        JsonValue *a_args = json_create_object();
+        json_obj_add(a_args, "symbol", json_create_string("main"));
+        json_obj_add(a_args, "max_tokens", json_create_number(1));
+        for (size_t t = 0; t < h->tool_count; t++) {
+            if (strcmp(h->tools[t].name, "ast_slice") == 0) {
+                char *obs = h->tools[t].callback(agent, a_args);
+                assert(obs != NULL);
+                free(obs);
+                break;
+            }
+        }
+        json_free(a_args);
+    }
+
+    // 4e. A crafted worktree name must not reach the shell (H26).
+    {
+        unlink("/tmp/sb_wt_pwn.txt");
+        char *obs = belya_harness_enter_worktree(h, "x\"; id > /tmp/sb_wt_pwn.txt; #");
+        assert(obs != NULL);
+        assert(strstr(obs, "Invalid worktree name") != NULL);
+        assert(access("/tmp/sb_wt_pwn.txt", F_OK) != 0);
+        free(obs);
+    }
+
     // 5. Search files
     JsonValue *s_args = json_create_object();
     json_obj_add(s_args, "pattern", json_create_string("Charlie"));
