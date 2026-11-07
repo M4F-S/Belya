@@ -2,6 +2,8 @@
 #define _GNU_SOURCE
 #include "sandbox.h"
 
+#ifdef __linux__
+
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/landlock.h>
@@ -149,3 +151,16 @@ int sandbox_apply(const char *workspace) {
     close(ruleset);
     return 0;
 }
+
+#else /* Non-Linux (macOS, BSD, Windows) */
+
+int sandbox_supported(void) {
+    return 0;
+}
+
+int sandbox_apply(const char *workspace) {
+    (void)workspace;
+    return 1; /* 1 = unsupported (caller continues unconfined) */
+}
+
+#endif

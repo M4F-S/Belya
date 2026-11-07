@@ -5,6 +5,7 @@ almaz
 belya_test
 belya_test_asan
 belya_benchmark
+company_simulation
 test_runner
 bench_*
 
@@ -17,6 +18,8 @@ test_sample.txt
 test_broken.c
 .belya_history
 .belya/tools/
+.belya/worktrees/
+.belya/mcp/
 
 # OS / Editor Artifacts
 .DS_Store
@@ -31,6 +34,7 @@ docs/*
 !docs/PRD.md
 !docs/PRD.lock
 !docs/PRD-CHANGELOG.md
+!docs/BELYA_ALMAZ_NOTION_DOCUMENTATION.md
 
 # Evolution outputs
 reports/

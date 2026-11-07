@@ -27,13 +27,6 @@ static ModelGateway *benchmark_gateway_init(void) {
     return model_gateway_init(endpoint, api_key, model);
 }
 
-// Microsecond timestamp helper
-static double get_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
-}
-
 // Peak RSS in Kilobytes (macOS/POSIX compatible)
 static long get_peak_rss_kb(void) {
     struct rusage usage;

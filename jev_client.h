@@ -37,6 +37,8 @@ char *jev_decide_triage_role(JevClient *client, const char *user_prompt);
 
 /* 2. Tool-call Safety Gating */
 JevRiskResult *jev_check_tool_risk(JevClient *client, const char *goal, const char *tool, const char *arguments);
+JevRiskResult *jev_local_eval_risk(const char *goal, const char *tool, const char *arguments);
+JevRiskResult *jev_evaluate_command_risk(JevClient *client, const char *goal, const char *tool, const char *arguments);
 void jev_risk_result_free(JevRiskResult *res);
 
 /* 3. Context Filtering (Keep / Truncate / Drop) */

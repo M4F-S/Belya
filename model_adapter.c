@@ -31,6 +31,7 @@ typedef struct {
     bool printed_reasoning_header;
     bool printed_content_header;
     long retry_after_sec;   /* from the Retry-After header, 0 when absent */
+    bool inside_think_tag;
 } StreamContext;
 
 /* Providers say how long to wait on 429. Ignoring it earns another 429. */
@@ -63,44 +64,119 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
         }
     }
 
+    JsonValue *delta = NULL;
     JsonValue *choices = json_obj_get(root, "choices");
     if (choices && choices->type == JSON_ARRAY && choices->u.array.count > 0) {
         JsonValue *choice = choices->u.array.items[0];
-        JsonValue *delta = json_obj_get(choice, "delta");
-        if (delta) {
-            // 1. Reasoning Tokens
-            const char *reasoning = json_obj_get_str(delta, "reasoning_content");
-            if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
-            if (!reasoning) reasoning = json_obj_get_str(delta, "reasoning");
-            if (reasoning && strlen(reasoning) > 0) {
-                dyn_str_append(&ctx->accum_reasoning, reasoning);
-                if (ctx->gw->stream_cb) {
-                    ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
-                } else if (stream_echo_enabled()) {
-                    if (!ctx->printed_reasoning_header) {
-                        printf("\n\033[0;36m[Reasoning]:\033[0m\n");
-                        ctx->printed_reasoning_header = true;
-                    }
-                    printf("\033[0;36m%s\033[0m", reasoning);
-                    fflush(stdout);
-                }
-            }
+        delta = json_obj_get(choice, "delta");
+    } else {
+        delta = json_obj_get(root, "delta");
+    }
 
-            // 2. Content Tokens
-            const char *content = json_obj_get_str(delta, "content");
-            if (content && strlen(content) > 0) {
-                dyn_str_append(&ctx->accum_content, content);
-                if (ctx->gw->stream_cb) {
-                    ctx->gw->stream_cb(content, false, ctx->gw->stream_userdata);
-                } else if (stream_echo_enabled()) {
-                    if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
-                        printf("\n\n\033[1;34m[Belya]\033[0m\n");
-                        ctx->printed_content_header = true;
+    if (delta) {
+        // 1. Reasoning Tokens (DeepSeek, Claude 3.7 Thinking, OpenRouter)
+        const char *reasoning = json_obj_get_str(delta, "reasoning_content");
+        if (!reasoning) reasoning = json_obj_get_str(delta, "thinking");
+        if (!reasoning) reasoning = json_obj_get_str(delta, "reasoning");
+        if (reasoning && strlen(reasoning) > 0) {
+            dyn_str_append(&ctx->accum_reasoning, reasoning);
+            if (ctx->gw->stream_cb) {
+                ctx->gw->stream_cb(reasoning, true, ctx->gw->stream_userdata);
+            } else if (stream_echo_enabled()) {
+                if (!ctx->printed_reasoning_header) {
+                    printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                    ctx->printed_reasoning_header = true;
+                }
+                printf("\033[0;36m%s\033[0m", reasoning);
+                fflush(stdout);
+            }
+        }
+
+        // 2. Content Tokens (with DeepSeek <think> / </think> tag isolation)
+        const char *content = json_obj_get_str(delta, "content");
+        if (!content) content = json_obj_get_str(delta, "text");
+        if (content && strlen(content) > 0) {
+            const char *cp = content;
+            while (*cp) {
+                if (!ctx->inside_think_tag) {
+                    const char *t_start = strstr(cp, "<think>");
+                    if (t_start) {
+                        if (t_start > cp) {
+                            dyn_str_append_len(&ctx->accum_content, cp, (size_t)(t_start - cp));
+                            if (ctx->gw->stream_cb) {
+                                char *pchunk = malloc((size_t)(t_start - cp) + 1);
+                                if (pchunk) {
+                                    memcpy(pchunk, cp, (size_t)(t_start - cp));
+                                    pchunk[t_start - cp] = '\0';
+                                    ctx->gw->stream_cb(pchunk, false, ctx->gw->stream_userdata);
+                                    free(pchunk);
+                                }
+                            } else if (stream_echo_enabled()) {
+                                if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
+                                    printf("\n\n\033[1;34m[Belya]\033[0m\n");
+                                    ctx->printed_content_header = true;
+                                }
+                                fwrite(cp, 1, (size_t)(t_start - cp), stdout);
+                                fflush(stdout);
+                            }
+                        }
+                        ctx->inside_think_tag = true;
+                        cp = t_start + 7; // skip "<think>"
+                    } else {
+                        dyn_str_append(&ctx->accum_content, cp);
+                        if (ctx->gw->stream_cb) {
+                            ctx->gw->stream_cb(cp, false, ctx->gw->stream_userdata);
+                        } else if (stream_echo_enabled()) {
+                            if (ctx->printed_reasoning_header && !ctx->printed_content_header) {
+                                printf("\n\n\033[1;34m[Belya]\033[0m\n");
+                                ctx->printed_content_header = true;
+                            }
+                            printf("%s", cp);
+                            fflush(stdout);
+                        }
+                        break;
                     }
-                    printf("%s", content);
-                    fflush(stdout);
+                } else {
+                    const char *t_end = strstr(cp, "</think>");
+                    if (t_end) {
+                        if (t_end > cp) {
+                            dyn_str_append_len(&ctx->accum_reasoning, cp, (size_t)(t_end - cp));
+                            if (ctx->gw->stream_cb) {
+                                char *rchunk = malloc((size_t)(t_end - cp) + 1);
+                                if (rchunk) {
+                                    memcpy(rchunk, cp, (size_t)(t_end - cp));
+                                    rchunk[t_end - cp] = '\0';
+                                    ctx->gw->stream_cb(rchunk, true, ctx->gw->stream_userdata);
+                                    free(rchunk);
+                                }
+                            } else if (stream_echo_enabled()) {
+                                if (!ctx->printed_reasoning_header) {
+                                    printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                                    ctx->printed_reasoning_header = true;
+                                }
+                                fwrite(cp, 1, (size_t)(t_end - cp), stdout);
+                                fflush(stdout);
+                            }
+                        }
+                        ctx->inside_think_tag = false;
+                        cp = t_end + 8; // skip "</think>"
+                    } else {
+                        dyn_str_append(&ctx->accum_reasoning, cp);
+                        if (ctx->gw->stream_cb) {
+                            ctx->gw->stream_cb(cp, true, ctx->gw->stream_userdata);
+                        } else if (stream_echo_enabled()) {
+                            if (!ctx->printed_reasoning_header) {
+                                printf("\n\033[0;36m[Reasoning]:\033[0m\n");
+                                ctx->printed_reasoning_header = true;
+                            }
+                            printf("\033[0;36m%s\033[0m", cp);
+                            fflush(stdout);
+                        }
+                        break;
+                    }
                 }
             }
+        }
 
             // 3. Tool Calls Delta
             JsonValue *tc_arr = json_obj_get(delta, "tool_calls");
@@ -175,7 +251,6 @@ static void stream_process_line(StreamContext *ctx, const char *line) {
                 }
             }
         }
-    }
 
     json_free(root);
 }
@@ -237,6 +312,13 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         json_obj_add(payload, "options", opts);
     }
 
+    if (self->thinking_budget_tokens > 0) {
+        JsonValue *thk = json_create_object();
+        json_obj_add(thk, "type", json_create_string("enabled"));
+        json_obj_add(thk, "budget_tokens", json_create_number((double)self->thinking_budget_tokens));
+        json_obj_add(payload, "thinking", thk);
+    }
+
     char *json_body = json_serialize(payload);
 
     // Detach shared references safely by key before freeing root wrapper
@@ -270,14 +352,18 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         headers = curl_slist_append(headers, "Content-Type: application/json");
 
         char auth_header[512];
-        if (key && strlen(key) > 0 && strcmp(key, "none") != 0) {
+        if (ep && strstr(ep, "api.anthropic.com") != NULL) {
+            char anthropic_key[512];
+            snprintf(anthropic_key, sizeof(anthropic_key), "x-api-key: %s", (key && strcmp(key, "none") != 0) ? key : "");
+            headers = curl_slist_append(headers, anthropic_key);
+            headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+            if (self->prompt_caching) {
+                headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
+            }
+        } else if (key && strlen(key) > 0 && strcmp(key, "none") != 0) {
             snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", key);
             headers = curl_slist_append(headers, auth_header);
-        }
-
-        if (self->prompt_caching) {
-            // Only send anthropic prompt caching header for anthropic endpoints
-            if (ep && strstr(ep, "anthropic") != NULL) {
+            if (self->prompt_caching && ep && strstr(ep, "anthropic") != NULL) {
                 headers = curl_slist_append(headers, "anthropic-beta: prompt-caching-2024-07-31");
             }
         }
@@ -803,9 +889,94 @@ size_t model_gateway_scavenge_tool_calls(const char *content, const char *reason
                 p++;
             }
         }
+
+        // 3. Fallback: Check for markdown codeblocks (e.g. ```bash ... ``` or ```sh ... ```) if no tool call was scavenged
+        if (count == initial_count && is_known_tool("bash", known_tool_names, known_count)) {
+            const char *cb = src;
+            while ((cb = strstr(cb, "```")) != NULL) {
+                cb += 3;
+                bool is_sh = false;
+                if (strncmp(cb, "bash\n", 5) == 0 || strncmp(cb, "bash\r\n", 6) == 0) {
+                    cb = strchr(cb, '\n');
+                    if (cb) cb++;
+                    is_sh = true;
+                } else if (strncmp(cb, "sh\n", 3) == 0 || strncmp(cb, "sh\r\n", 4) == 0) {
+                    cb = strchr(cb, '\n');
+                    if (cb) cb++;
+                    is_sh = true;
+                }
+                if (is_sh && cb) {
+                    const char *cb_end = strstr(cb, "```");
+                    if (cb_end && cb_end > cb) {
+                        size_t cmd_len = (size_t)(cb_end - cb);
+                        while (cmd_len > 0 && (cb[cmd_len - 1] == ' ' || cb[cmd_len - 1] == '\t' || cb[cmd_len - 1] == '\r' || cb[cmd_len - 1] == '\n')) {
+                            cmd_len--;
+                        }
+                        if (cmd_len > 0) {
+                            char *cmd = malloc(cmd_len + 1);
+                            if (cmd) {
+                                memcpy(cmd, cb, cmd_len);
+                                cmd[cmd_len] = '\0';
+
+                                JsonValue *bargs = json_create_object();
+                                json_obj_add(bargs, "command", json_create_string(cmd));
+                                char *bargs_json = json_serialize(bargs);
+                                json_free(bargs);
+                                free(cmd);
+
+                                if (count >= cap) {
+                                    size_t new_cap = (cap == 0) ? 4 : (cap * 2);
+                                    void *tmp = realloc(*out_calls, sizeof(ModelParsedToolCall) * new_cap);
+                                    if (!tmp) {
+                                        free(bargs_json);
+                                        break;
+                                    }
+                                    *out_calls = tmp;
+                                    cap = new_cap;
+                                }
+                                char id_buf[64];
+                                snprintf(id_buf, sizeof(id_buf), "codeblock_%zu", count + 1);
+                                (*out_calls)[count].id = xstrdup(id_buf);
+                                (*out_calls)[count].name = xstrdup("bash");
+                                (*out_calls)[count].arguments_json = bargs_json ? bargs_json : xstrdup("{\"command\":\"\"}");
+                                count++;
+                            }
+                        }
+                        cb = cb_end + 3;
+                        continue;
+                    }
+                }
+            }
+        }
     }
 
     return count;
+}
+
+ModelProtocolMode model_gateway_detect_protocol(const char *endpoint, const char *model) {
+    if (endpoint && strstr(endpoint, "api.anthropic.com") != NULL) {
+        return PROTOCOL_ANTHROPIC;
+    }
+    if (model) {
+        if (strstr(model, "claude") != NULL) {
+            return PROTOCOL_ANTHROPIC;
+        }
+        if (strstr(model, "hermes") != NULL) {
+            return PROTOCOL_HERMES;
+        }
+        if (strstr(model, "deepseek") != NULL || strstr(model, "r1") != NULL) {
+            return PROTOCOL_DEEPSEEK;
+        }
+    }
+    return PROTOCOL_OPENAI;
+}
+
+void model_gateway_set_protocol(ModelGateway *gw, ModelProtocolMode protocol) {
+    if (gw) gw->protocol = protocol;
+}
+
+void model_gateway_set_thinking_budget(ModelGateway *gw, int budget_tokens) {
+    if (gw) gw->thinking_budget_tokens = budget_tokens;
 }
 
 ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, const char *model) {
@@ -828,6 +999,11 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->timeout_sec = 120;
     gw->max_retries = 3;
     gw->streaming = true;
+    gw->protocol = model_gateway_detect_protocol(gw->endpoint, gw->model);
+    const char *tb_env = getenv("MODEL_THINKING_BUDGET");
+    if (tb_env && atoi(tb_env) > 0) {
+        gw->thinking_budget_tokens = atoi(tb_env);
+    }
     const char *pc_env = getenv("PROMPT_CACHING");
     if (pc_env && (strcmp(pc_env, "true") == 0 || strcmp(pc_env, "1") == 0)) {
         gw->prompt_caching = true;
@@ -904,42 +1080,41 @@ static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *ke
     bool is_openrouter = (strstr(ep, "openrouter.ai") != NULL);
     bool is_ollama = (strstr(ep, "11434") != NULL || strstr(ep, "localhost") != NULL || strstr(ep, "127.0.0.1") != NULL);
     bool is_anthropic = (strstr(ep, "anthropic.com") != NULL);
+    bool is_vllm = (strstr(ep, ":8000") != NULL);
+    bool is_falcon = (mod && (strstr(mod, "falcon") != NULL || strstr(mod, "Falcon") != NULL));
 
     if (is_openrouter) {
         p.provider = xstrdup("OpenRouter");
         snprintf(target_url, sizeof(target_url), "https://openrouter.ai/api/v1/auth/key");
     } else if (is_ollama) {
-        p.provider = xstrdup("Local Ollama");
+        p.provider = xstrdup(is_falcon ? "UAE TII Falcon (Local Ollama)" : "Local Ollama");
         const char *slash = strstr(ep, "://");
         const char *host_start = slash ? slash + 3 : ep;
         const char *path_start = strchr(host_start, '/');
         if (path_start) {
             size_t host_len = (size_t)(path_start - ep);
-            if (host_len < sizeof(target_url) - 16) {
-                memcpy(target_url, ep, host_len);
-                target_url[host_len] = '\0';
-                strcat(target_url, "/api/tags");
-            } else {
-                snprintf(target_url, sizeof(target_url), "%s", ep);
-            }
+            snprintf(target_url, sizeof(target_url), "%.*s/api/tags", (int)host_len, ep);
         } else {
             snprintf(target_url, sizeof(target_url), "%s/api/tags", ep);
         }
     } else if (is_anthropic) {
         p.provider = xstrdup("Anthropic");
         snprintf(target_url, sizeof(target_url), "https://api.anthropic.com/v1/models");
+    } else if (is_vllm) {
+        p.provider = xstrdup(is_falcon ? "UAE TII Falcon (Local vLLM)" : "Local vLLM");
+        char *cc = strstr(ep, "/chat/completions");
+        if (cc) {
+            size_t base_len = (size_t)(cc - ep);
+            snprintf(target_url, sizeof(target_url), "%.*s/models", (int)base_len, ep);
+        } else {
+            snprintf(target_url, sizeof(target_url), "%s", ep);
+        }
     } else {
         p.provider = xstrdup("OpenAI-Compatible");
         char *cc = strstr(ep, "/chat/completions");
         if (cc) {
             size_t base_len = (size_t)(cc - ep);
-            if (base_len < sizeof(target_url) - 16) {
-                memcpy(target_url, ep, base_len);
-                target_url[base_len] = '\0';
-                strcat(target_url, "/models");
-            } else {
-                snprintf(target_url, sizeof(target_url), "%s", ep);
-            }
+            snprintf(target_url, sizeof(target_url), "%.*s/models", (int)base_len, ep);
         } else {
             snprintf(target_url, sizeof(target_url), "%s", ep);
         }
@@ -1057,6 +1232,28 @@ static GatewayEndpointProbe probe_single_endpoint(const char *ep, const char *ke
                     dyn_str_appendf(&ds, "Online, but model '%s' not listed in 'ollama list' (run 'ollama pull %s').",
                                     mod ? mod : "", mod ? mod : "");
                 }
+            } else if (is_vllm) {
+                JsonValue *root = json_parse(resp_body.data);
+                bool model_found = false;
+                if (root) {
+                    JsonValue *data = json_obj_get(root, "data");
+                    if (data && data->type == JSON_ARRAY && mod) {
+                        for (size_t di = 0; di < data->u.array.count; di++) {
+                            JsonValue *d_item = data->u.array.items[di];
+                            const char *d_id = json_obj_get_str(d_item, "id");
+                            if (d_id && (strcmp(d_id, mod) == 0 || strstr(d_id, mod) != NULL || strstr(mod, d_id) != NULL)) {
+                                model_found = true;
+                                break;
+                            }
+                        }
+                    }
+                    json_free(root);
+                }
+                if (model_found) {
+                    dyn_str_appendf(&ds, "Online & Verified. UAE Model '%s' confirmed loaded.", mod ? mod : "");
+                } else {
+                    dyn_str_appendf(&ds, "vLLM online (HTTP 200 OK). Target model: '%s'.", mod ? mod : "default");
+                }
             } else {
                 dyn_str_append(&ds, "Endpoint verified & authorized (HTTP 200 OK).");
             }
@@ -1164,6 +1361,85 @@ void model_gateway_print_probe_report(const ModelGatewayProbeResult *res) {
     } else if (!res->primary.reachable && res->has_fallback && res->fallback.reachable) {
         printf("\033[1;33m  [NOTICE] Primary provider offline; transparent failover to %s is active.\033[0m\n",
                res->fallback.provider ? res->fallback.provider : "fallback");
+    }
+    printf("\033[1;36m==============================================================================\033[0m\n\n");
+}
+
+/* Championship & UAE Ecosystem Model Presets Implementation */
+static const ModelPresetConfig g_model_presets[] = {
+    {
+        "falcon",
+        "falcon3:7b",
+        "http://localhost:11434/v1/chat/completions",
+        "UAE TII Falcon-3 (7B Instruct - Sovereign UAE Model via Ollama)",
+        true
+    },
+    {
+        "falcon3",
+        "falcon3:7b",
+        "http://localhost:11434/v1/chat/completions",
+        "UAE TII Falcon-3 (7B Instruct - Sovereign UAE Model via Ollama)",
+        true
+    },
+    {
+        "falcon-vllm",
+        "tiiuae/Falcon3-7B-Instruct",
+        "http://localhost:8000/v1/chat/completions",
+        "UAE TII Falcon-3 (High-Throughput Local vLLM Inference Engine)",
+        true
+    },
+    {
+        "falcon2",
+        "falcon2:11b",
+        "http://localhost:11434/v1/chat/completions",
+        "UAE TII Falcon-2 (11B Foundation Model - Local Ollama)",
+        true
+    },
+    {
+        "qwen",
+        "qwen2.5-coder:7b",
+        "http://localhost:11434/v1/chat/completions",
+        "Qwen 2.5 Coder (7B Instruct - Local Air-Gapped Ollama)",
+        true
+    },
+    {
+        "deepseek",
+        "deepseek-r1:8b",
+        "http://localhost:11434/v1/chat/completions",
+        "DeepSeek R1 (8B Distill - Local Ollama Reasoning Engine)",
+        true
+    },
+    {
+        "airgap",
+        "falcon3:7b",
+        "http://localhost:11434/v1/chat/completions",
+        "Strict Air-Gapped Zero-Egress Local Mode (UAE TII Falcon-3 Sovereign)",
+        true
+    }
+};
+static const size_t g_model_presets_count = sizeof(g_model_presets) / sizeof(g_model_presets[0]);
+
+const ModelPresetConfig *model_preset_get(const char *name) {
+    if (!name || strlen(name) == 0) return NULL;
+    for (size_t i = 0; i < g_model_presets_count; i++) {
+        if (strcasecmp(g_model_presets[i].name, name) == 0) {
+            return &g_model_presets[i];
+        }
+    }
+    return NULL;
+}
+
+void model_presets_print_list(void) {
+    printf("\n\033[1;36m====================== UAE & Championship Model Presets ======================\033[0m\n");
+    printf("  \033[1;37m%-14s %-26s %-12s %s\033[0m\n", "PRESET", "MODEL", "TYPE", "DESCRIPTION");
+    printf("  --------------------------------------------------------------------------------\n");
+    for (size_t i = 0; i < g_model_presets_count; i++) {
+        if (strcmp(g_model_presets[i].name, "falcon3") == 0) continue; // alias
+        printf("  \033[1;32m%-14s\033[0m %-26s %-12s %s\n",
+               g_model_presets[i].name,
+               g_model_presets[i].model_name,
+               g_model_presets[i].is_airgap ? "Air-Gapped" : "Cloud",
+               g_model_presets[i].description);
     }
     printf("\033[1;36m==============================================================================\033[0m\n\n");
 }
