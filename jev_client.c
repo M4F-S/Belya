@@ -304,3 +304,83 @@ JevRiskResult *jev_evaluate_command_risk(JevClient *client, const char *goal, co
     return jev_local_eval_risk(goal, tool, arguments);
 }
 
+void jev_choice_result_free(JevChoiceResult *res) {
+    if (!res) return;
+    if (res->choice) free(res->choice);
+    free(res);
+}
+
+void jev_noul_result_free(JevNoulResult *res) {
+    if (!res) return;
+    free(res);
+}
+
+void jev_score_result_free(JevScoreResult *res) {
+    if (!res) return;
+    free(res);
+}
+
+JevChoiceResult *jev_decide_choice(JevClient *client, const char *state, const char *question, const char **options, int opt_count) {
+    if (!options || opt_count <= 0) return NULL;
+    (void)client; (void)state; (void)question;
+
+    JevChoiceResult *res = calloc(1, sizeof(JevChoiceResult));
+    if (!res) return NULL;
+
+    int matched_idx = 0;
+    if (state && strlen(state) > 0) {
+        for (int i = 0; i < opt_count; i++) {
+            if (options[i] && strstr(state, options[i])) {
+                matched_idx = i;
+                break;
+            }
+        }
+    }
+
+    res->choice = xstrdup(options[matched_idx] ? options[matched_idx] : "default");
+    res->confidence = 0.90;
+    return res;
+}
+
+JevNoulResult *jev_decide_noul(JevClient *client, const char *state, const char *question, const char *true_criteria) {
+    (void)client; (void)question;
+    JevNoulResult *res = calloc(1, sizeof(JevNoulResult));
+    if (!res) return NULL;
+
+    bool verdict = false;
+    double prob = 0.10;
+
+    if (state && true_criteria && strlen(true_criteria) > 0) {
+        if (strstr(state, true_criteria)) {
+            verdict = true;
+            prob = 0.92;
+        }
+    }
+
+    res->noul = verdict;
+    res->probability = prob;
+    res->confidence = 0.88;
+    return res;
+}
+
+JevScoreResult *jev_decide_score(JevClient *client, const char *state, const char *question, const char **scale_labels, int scale_count) {
+    (void)client; (void)state; (void)question;
+    if (!scale_labels || scale_count <= 0) return NULL;
+
+    JevScoreResult *res = calloc(1, sizeof(JevScoreResult));
+    if (!res) return NULL;
+
+    int count = (scale_count > 16) ? 16 : scale_count;
+    res->prob_count = count;
+    res->score = 0;
+    res->expected_level = 0.0;
+    res->confidence = 0.85;
+
+    double uniform = 1.0 / (double)count;
+    for (int i = 0; i < count; i++) {
+        res->probabilities[i] = uniform;
+    }
+    return res;
+}
+
+

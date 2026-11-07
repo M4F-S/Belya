@@ -11,6 +11,20 @@ typedef struct {
 } JevChoiceResult;
 
 typedef struct {
+    bool noul;          /* true or false */
+    double probability; /* 0.0 - 1.0 */
+    double confidence;
+} JevNoulResult;
+
+typedef struct {
+    int score;                  /* Selected integer level 0..N-1 */
+    double expected_level;      /* Expected scalar value */
+    double probabilities[16];   /* Probability distribution */
+    int prob_count;
+    double confidence;
+} JevScoreResult;
+
+typedef struct {
     char *action;      /* "allow", "confirm", "block" */
     double risk;       /* 0.0 - 1.0 */
     double confidence;
@@ -44,6 +58,14 @@ void jev_risk_result_free(JevRiskResult *res);
 /* 3. Context Filtering (Keep / Truncate / Drop) */
 JevContextFilterResult *jev_filter_context_item(JevClient *client, const char *task, const char *item_text);
 void jev_context_filter_result_free(JevContextFilterResult *res);
+
+/* 4. Discrete Decision Primitives (Hanzo Kai / Jev Compatibility) */
+JevChoiceResult *jev_decide_choice(JevClient *client, const char *state, const char *question, const char **options, int opt_count);
+JevNoulResult *jev_decide_noul(JevClient *client, const char *state, const char *question, const char *true_criteria);
+JevScoreResult *jev_decide_score(JevClient *client, const char *state, const char *question, const char **scale_labels, int scale_count);
+void jev_choice_result_free(JevChoiceResult *res);
+void jev_noul_result_free(JevNoulResult *res);
+void jev_score_result_free(JevScoreResult *res);
 
 /* Parsing helpers (exposed for testing and offline validation) */
 char *jev_parse_triage_response(const char *json_str);

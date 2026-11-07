@@ -287,8 +287,8 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
         );
     }
 
-    // Check for repository guidelines (.agentrules / AGENT.md / AGENTS.md / GEMINI.md / CLAUDE.md)
-    const char *rules_files[] = {".agentrules", "AGENT.md", "AGENTS.md", "GEMINI.md", "CLAUDE.md", NULL};
+    // Check for repository guidelines (BELYARULES.md / Belya.md / .agentrules / AGENT.md / AGENTS.md / GEMINI.md / CLAUDE.md)
+    const char *rules_files[] = {"BELYARULES.md", "Belya.md", "BELYA.md", "belya.md", ".agentrules", "AGENT.md", "AGENTS.md", "GEMINI.md", "CLAUDE.md", NULL};
     for (int rf = 0; rules_files[rf]; rf++) {
         FILE *rfp = fopen(rules_files[rf], "r");
         if (rfp) {
@@ -1201,6 +1201,27 @@ char *belya_agent_reflect_and_distill(BelyaAgent *agent) {
     if (strlen(topic) > 60) {
         topic[57] = '.'; topic[58] = '.'; topic[59] = '.'; topic[60] = '\0';
     }
+
+    // Auto-generate clean slug name for disk persistence into skills/<slug>/SKILL.md
+    char slug[64] = "auto_";
+    size_t s_idx = 5;
+    const char *raw_prompt = (agent->messages[1].content) ? agent->messages[1].content : "workflow";
+    for (size_t p = 0; raw_prompt[p] && s_idx < sizeof(slug) - 1; p++) {
+        char ch = raw_prompt[p];
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+            slug[s_idx++] = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+        } else if (s_idx > 5 && slug[s_idx - 1] != '_') {
+            slug[s_idx++] = '_';
+        }
+    }
+    while (s_idx > 5 && slug[s_idx - 1] == '_') s_idx--;
+    slug[s_idx] = '\0';
+    if (s_idx <= 5) {
+        snprintf(slug, sizeof(slug), "auto_skill_%ld", (long)time(NULL));
+    }
+
+    // Closed-Loop Evolution: Save and mirror to skills/<slug>/SKILL.md (for persistent DBs)
+    belya_agent_save_skill(agent, slug, raw_prompt, topic, skill.data);
 
     belya_agent_persist_memory(agent, topic, skill.data);
     dyn_str_free(&skill);

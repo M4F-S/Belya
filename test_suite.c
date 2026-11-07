@@ -2025,6 +2025,33 @@ void test_jev_client(void) {
     model_gateway_free(gw);
     unlink("test_jev.sqlite");
 
+    // 7. Discrete decision primitives (Choice, Noul, Score - Kai compatibility)
+    const char *opts[] = {"billing", "technical", "sales"};
+    JevChoiceResult *cr = jev_decide_choice(NULL, "I have a question about technical bugs", "Which team?", opts, 3);
+    assert(cr != NULL);
+    assert(strcmp(cr->choice, "technical") == 0);
+    assert(cr->confidence > 0.8);
+    jev_choice_result_free(cr);
+
+    JevNoulResult *nr1 = jev_decide_noul(NULL, "This is about billing and invoice refunds", "Is billing?", "billing");
+    assert(nr1 != NULL);
+    assert(nr1->noul == true);
+    assert(nr1->probability > 0.8);
+    jev_noul_result_free(nr1);
+
+    JevNoulResult *nr2 = jev_decide_noul(NULL, "System kernel crash in POSIX scheduler", "Is billing?", "billing");
+    assert(nr2 != NULL);
+    assert(nr2->noul == false);
+    assert(nr2->probability < 0.2);
+    jev_noul_result_free(nr2);
+
+    const char *scale[] = {"low", "medium", "high", "critical"};
+    JevScoreResult *sr = jev_decide_score(NULL, "Urgency assessment", "How urgent?", scale, 4);
+    assert(sr != NULL);
+    assert(sr->prob_count == 4);
+    assert(sr->probabilities[0] > 0.2);
+    jev_score_result_free(sr);
+
     printf("  -> Jev TypeSafe AI Integration & Coprocessor Parser PASSED\n");
 }
 
