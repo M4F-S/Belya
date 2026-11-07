@@ -89,6 +89,33 @@ typedef enum {
     BELYA_BACKEND_SSH    = 2
 } BelyaExecBackend;
 
+// Super Agent Harness: Dual C ABI VTable Structural Separation
+typedef struct BelyaRouterVTable {
+    char *(*dispatch_worker_task)(BelyaAgent *agent, const JsonValue *args);
+    char *(*query_ast_graph)(BelyaAgent *agent, const JsonValue *args);
+    char *(*recall_memory)(BelyaAgent *agent, const JsonValue *args);
+    char *(*read_file)(BelyaAgent *agent, const JsonValue *args);
+    char *(*ask_user)(BelyaAgent *agent, const JsonValue *args);
+    /* Physical denial: Mutative execution callbacks are structurally NULL */
+    void *no_bash_exec;
+    void *no_write_file;
+    void *no_edit_file;
+    void *no_apply_patch;
+} BelyaRouterVTable;
+
+typedef struct BelyaWorkerVTable {
+    char *(*read_file)(BelyaAgent *agent, const JsonValue *args);
+    char *(*write_file)(BelyaAgent *agent, const JsonValue *args);
+    char *(*edit_file)(BelyaAgent *agent, const JsonValue *args);
+    char *(*apply_patch)(BelyaAgent *agent, const JsonValue *args);
+    char *(*bash)(BelyaAgent *agent, const JsonValue *args);
+    char *(*run_test_cycle)(BelyaAgent *agent, const JsonValue *args);
+    char *(*ast_slice)(BelyaAgent *agent, const JsonValue *args);
+    /* Physical denial: Operator communication callbacks are structurally NULL */
+    void *no_ask_user;
+    void *no_operator_reply;
+} BelyaWorkerVTable;
+
 struct BelyaHarness {
     BelyaAgent *agent;
     BelyaRegisteredTool tools[64];
@@ -139,10 +166,23 @@ struct BelyaHarness {
     // Championship Live Stage Demonstration & Interactive Visual Telemetry
     bool stage_mode;
     double last_turn_latency_ms;
+
+    // Super Agent Harness: Dual VTable Structural Isolation
+    bool is_router;
+    bool is_worker;
+    BelyaRouterVTable router_vtable;
+    BelyaWorkerVTable worker_vtable;
 };
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent);
+BelyaHarness *belya_harness_init_router(BelyaAgent *agent);
+BelyaHarness *belya_harness_init_worker(BelyaAgent *agent, const char *worktree_dir);
 BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name);
+BelyaHarness *belya_harness_get_active(void);
+void belya_harness_set_active(BelyaHarness *h);
+char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t max_tokens);
+char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd);
+void belya_shadow_worktree_cleanup_all(void);
 bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_name);
 char *belya_agency_dispatch_subagent(BelyaHarness *parent_harness, const char *role_name, const char *task, const char *extra_context);
 bool belya_agency_triage(BelyaHarness *harness, const char *user_input, char ***out_pipeline, size_t *out_count, char **out_direct_reply);

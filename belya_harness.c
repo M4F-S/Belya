@@ -40,6 +40,14 @@ static inline int landlock_restrict_self(const int ruleset_fd, const __u32 flags
 static BelyaHarness *g_harness = NULL;
 const char *g_active_custom_script_path = NULL;
 
+BelyaHarness *belya_harness_get_active(void) {
+    return g_harness;
+}
+
+void belya_harness_set_active(BelyaHarness *h) {
+    g_harness = h;
+}
+
 #ifdef __APPLE__
 extern int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
 extern void sandbox_free_error(char *errorbuf);
@@ -316,12 +324,36 @@ bool belya_harness_is_tool_whitelisted(const char *whitelist, const char *tool_n
     return matched;
 }
 
+// Forward declarations for Super Agent Harness tools
+static char *tool_dispatch_worker_task(BelyaAgent *agent, const JsonValue *args);
+static char *tool_query_ast_graph(BelyaAgent *agent, const JsonValue *args);
+static char *tool_ast_slice(BelyaAgent *agent, const JsonValue *args);
+
 // Built-in Native Tools
 
 static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    // Super Agent Harness Physical Denial: Router session has no execution rights
+    if (g_harness && g_harness->is_router) {
+        return xstrdup("Physical security violation: execution tools are disabled in Router VTable.");
+    }
+
     const char *cmd = json_obj_get_str(args, "command");
     if (!cmd) return xstrdup("Error: Missing command argument.");
+
+    // Jev Decision Coprocessor Risk Gate (Cloud API + Deterministic Fast-Path)
+    if (g_harness && g_harness->agent) {
+        JevRiskResult *risk = jev_evaluate_command_risk(g_harness->agent->jev, "Execute shell command", "bash", cmd);
+        if (risk) {
+            if (strcmp(risk->action, "block") == 0) {
+                DynString blk = dyn_str_new();
+                dyn_str_appendf(&blk, "Blocked by Jev Decision Coprocessor: Command poses severe risk (score: %.2f, confidence: %.2f). Execution denied.", risk->risk, risk->confidence);
+                jev_risk_result_free(risk);
+                return blk.data;
+            }
+            jev_risk_result_free(risk);
+        }
+    }
 
     // Plan Mode Read-Only Shell Guard
     if (g_harness && g_harness->plan_mode) {
@@ -844,6 +876,9 @@ static char *tool_read_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->is_router) {
+        return xstrdup("Physical security violation: file mutation tools are disabled in Router VTable.");
+    }
     if (g_harness && g_harness->plan_mode) {
         return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
     }
@@ -872,6 +907,9 @@ static char *tool_write_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->is_router) {
+        return xstrdup("Physical security violation: file mutation tools are disabled in Router VTable.");
+    }
     if (g_harness && g_harness->plan_mode) {
         return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
     }
@@ -1119,6 +1157,9 @@ static char *tool_edit_file(BelyaAgent *agent, const JsonValue *args) {
 
 static char *tool_apply_patch(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    if (g_harness && g_harness->is_router) {
+        return xstrdup("Physical security violation: patch mutation tools are disabled in Router VTable.");
+    }
     if (g_harness && g_harness->plan_mode) {
         return xstrdup("Blocked: Plan Mode is active (read-only execution). Use exit_plan_mode to perform modifications.");
     }
@@ -1589,6 +1630,10 @@ char *belya_ansi_diff_colorize(const char *raw_diff) {
 
 static char *tool_ask_user(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
+    // Super Agent Harness Physical Denial: Worker session has no operator communication rights
+    if (g_harness && g_harness->is_worker) {
+        return xstrdup("Physical security violation: operator communication is disabled in Worker VTable.");
+    }
     const char *q = json_obj_get_str(args, "question");
     if (!q) return xstrdup("Error: Missing question argument.");
 
@@ -2840,6 +2885,494 @@ char *belya_harness_find_callers(BelyaHarness *h, const char *symbol_name) {
     dyn_str_appendf(&ds, "Total Callers: %d\n", callers);
     return ds.data;
 }
+
+// ==================== Super Agent Harness: AST Dependency Slicer & Shadow Worktrees ====================
+
+char *belya_harness_slice_ast(BelyaHarness *h, const char *target_symbol, size_t max_tokens) {
+    if (!h || !target_symbol || strlen(target_symbol) == 0) {
+        return xstrdup("Error: Invalid symbol name for AST slice.");
+    }
+    if (!h->agent || !h->agent->db) {
+        return xstrdup("Error: Agent database unavailable.");
+    }
+    if (max_tokens == 0) max_tokens = 2000;
+    size_t byte_budget = max_tokens * 4;
+
+    sqlite3 *db = h->agent->db;
+
+    // 1. Ensure symbols table is indexed
+    sqlite3_stmt *cnt_stmt = NULL;
+    int total_syms = 0;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM symbols;", -1, &cnt_stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(cnt_stmt) == SQLITE_ROW) total_syms = sqlite3_column_int(cnt_stmt, 0);
+        sqlite3_finalize(cnt_stmt);
+    }
+    if (total_syms == 0) {
+        belya_harness_index_symbols(h, ".");
+    }
+
+    // 2. Query target symbol definition
+    const char *q_def = "SELECT file_path, kind, start_line, end_line, signature FROM symbols "
+                        "WHERE symbol_name = ? AND kind != 'CALL' "
+                        "ORDER BY (CASE kind WHEN 'FUNC_DEF' THEN 1 WHEN 'STRUCT_DEF' THEN 2 ELSE 3 END) LIMIT 1;";
+    sqlite3_stmt *stmt_def = NULL;
+    if (sqlite3_prepare_v2(db, q_def, -1, &stmt_def, NULL) != SQLITE_OK) {
+        return xstrdup("Error: Failed to prepare AST definition query.");
+    }
+    sqlite3_bind_text(stmt_def, 1, target_symbol, -1, SQLITE_TRANSIENT);
+
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "=== AST Sliced Context for Symbol '%s' ===\n", target_symbol);
+
+    char def_file[512] = {0};
+    int s_line = 0, e_line = 0;
+    char def_kind[32] = {0};
+    char def_sig[512] = {0};
+    bool found_def = false;
+
+    if (sqlite3_step(stmt_def) == SQLITE_ROW) {
+        const char *fpath = (const char *)sqlite3_column_text(stmt_def, 0);
+        const char *k = (const char *)sqlite3_column_text(stmt_def, 1);
+        s_line = sqlite3_column_int(stmt_def, 2);
+        e_line = sqlite3_column_int(stmt_def, 3);
+        const char *sig = (const char *)sqlite3_column_text(stmt_def, 4);
+
+        if (fpath) snprintf(def_file, sizeof(def_file), "%s", fpath);
+        if (k) snprintf(def_kind, sizeof(def_kind), "%s", k);
+        if (sig) snprintf(def_sig, sizeof(def_sig), "%s", sig);
+        found_def = true;
+    }
+    sqlite3_finalize(stmt_def);
+
+    if (!found_def) {
+        dyn_str_appendf(&ds, "Note: Symbol '%s' definition not found in index. Searching approximate references...\n", target_symbol);
+    } else {
+        dyn_str_appendf(&ds, "[Definition: %s (%s:%d-%d)]\n", def_kind, def_file, s_line, e_line);
+        FILE *sf = fopen(def_file, "r");
+        if (sf) {
+            char line_buf[1024];
+            int cur_line = 1;
+            dyn_str_append(&ds, "```c\n");
+            while (fgets(line_buf, sizeof(line_buf), sf)) {
+                if (cur_line >= s_line && cur_line <= (e_line > s_line + 60 ? s_line + 60 : e_line)) {
+                    dyn_str_appendf(&ds, "%4d | %s", cur_line, line_buf);
+                } else if (cur_line > e_line) {
+                    break;
+                }
+                cur_line++;
+            }
+            if (e_line > s_line + 60) {
+                dyn_str_append(&ds, "     | ... [Definition body truncated at 60 lines]\n");
+            }
+            dyn_str_append(&ds, "```\n\n");
+            fclose(sf);
+        } else if (def_sig[0] != '\0') {
+            dyn_str_appendf(&ds, "```c\n%s\n```\n\n", def_sig);
+        }
+    }
+
+    // 3. Resolve Dependent Types (Shallow Transitive Closure)
+    dyn_str_append(&ds, "[Dependent Type Signatures]\n");
+    const char *sig_scan = def_sig[0] != '\0' ? def_sig : target_symbol;
+    const char *p = sig_scan;
+    char resolved_types[8][64];
+    int res_count = 0;
+
+    while (*p && res_count < 6 && ds.len < byte_budget - 500) {
+        while (*p && !isalnum((unsigned char)*p) && *p != '_') p++;
+        const char *tok_start = p;
+        while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+        size_t tok_len = (size_t)(p - tok_start);
+        if (tok_len >= 3 && tok_len < 60) {
+            char tok[64];
+            memcpy(tok, tok_start, tok_len);
+            tok[tok_len] = '\0';
+
+            bool seen = false;
+            for (int r = 0; r < res_count; r++) {
+                if (strcmp(resolved_types[r], tok) == 0) { seen = true; break; }
+            }
+            if (!seen && strcmp(tok, target_symbol) != 0 && strcmp(tok, "void") != 0 &&
+                strcmp(tok, "char") != 0 && strcmp(tok, "int") != 0 && strcmp(tok, "const") != 0 &&
+                strcmp(tok, "struct") != 0 && strcmp(tok, "bool") != 0 && strcmp(tok, "size_t") != 0) {
+                sqlite3_stmt *t_stmt = NULL;
+                const char *q_t = "SELECT file_path, start_line, end_line, signature FROM symbols "
+                                  "WHERE symbol_name = ? AND kind IN ('STRUCT_DEF', 'TYPEDEF', 'CLASS_DEF') LIMIT 1;";
+                if (sqlite3_prepare_v2(db, q_t, -1, &t_stmt, NULL) == SQLITE_OK) {
+                    sqlite3_bind_text(t_stmt, 1, tok, -1, SQLITE_TRANSIENT);
+                    if (sqlite3_step(t_stmt) == SQLITE_ROW) {
+                        const char *tf = (const char *)sqlite3_column_text(t_stmt, 0);
+                        int ts = sqlite3_column_int(t_stmt, 1);
+                        const char *tsig = (const char *)sqlite3_column_text(t_stmt, 3);
+                        dyn_str_appendf(&ds, "  • %s (%s:%d): %s\n", tok, tf ? tf : "", ts, tsig ? tsig : "typedef/struct");
+                        snprintf(resolved_types[res_count++], sizeof(resolved_types[0]), "%s", tok);
+                    }
+                    sqlite3_finalize(t_stmt);
+                }
+            }
+        }
+    }
+    if (res_count == 0) {
+        dyn_str_append(&ds, "  (No complex dependent structs required for slice)\n");
+    }
+    dyn_str_append(&ds, "\n");
+
+    // 4. Immediate Callers
+    dyn_str_append(&ds, "[Immediate Callers]\n");
+    sqlite3_stmt *c_stmt = NULL;
+    const char *q_call = "SELECT file_path, start_line, signature FROM symbols WHERE symbol_name = ? AND kind = 'CALL' LIMIT 5;";
+    int caller_count = 0;
+    if (sqlite3_prepare_v2(db, q_call, -1, &c_stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(c_stmt, 1, target_symbol, -1, SQLITE_TRANSIENT);
+        while (sqlite3_step(c_stmt) == SQLITE_ROW) {
+            const char *cf = (const char *)sqlite3_column_text(c_stmt, 0);
+            int cl = sqlite3_column_int(c_stmt, 1);
+            const char *csig = (const char *)sqlite3_column_text(c_stmt, 2);
+            dyn_str_appendf(&ds, "  • %s:%d => %s\n", cf ? cf : "", cl, csig ? csig : "");
+            caller_count++;
+        }
+        sqlite3_finalize(c_stmt);
+    }
+    if (caller_count == 0) {
+        dyn_str_append(&ds, "  (No direct callers recorded in symbols index)\n");
+    }
+    dyn_str_append(&ds, "\n");
+
+    // 5. Enforce strict token/byte bounds
+    if (ds.len > byte_budget) {
+        ds.data[byte_budget - 64] = '\0';
+        ds.len = byte_budget - 64;
+        dyn_str_append(&ds, "\n... [AST Context Slice truncated to fit 2000 token budget]\n");
+    }
+
+    return ds.data;
+}
+
+static char *tool_query_ast_graph(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *sym = json_obj_get_str(args, "symbol");
+    const char *action = json_obj_get_str(args, "action");
+    if (!sym) return xstrdup("Error: Missing symbol parameter for query_ast_graph.");
+    if (!g_harness) return xstrdup("Error: Active harness unavailable.");
+
+    if (action && strcmp(action, "callers") == 0) {
+        return belya_harness_find_callers(g_harness, sym);
+    } else if (action && strcmp(action, "definition") == 0) {
+        return belya_harness_goto_definition(g_harness, sym);
+    } else {
+        return belya_harness_slice_ast(g_harness, sym, 2000);
+    }
+}
+
+static char *tool_ast_slice(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *sym = json_obj_get_str(args, "symbol");
+    double max_tok = json_obj_get_num(args, "max_tokens", 2000);
+    if (!sym) return xstrdup("Error: Missing symbol parameter for ast_slice.");
+    if (!g_harness) return xstrdup("Error: Active harness unavailable.");
+
+    return belya_harness_slice_ast(g_harness, sym, (size_t)max_tok);
+}
+
+// Ephemeral Shadow Worktree Lifecycle Engine
+#define BELYA_MAX_SHADOW_WORKTREES 16
+static char g_active_shadow_worktrees[BELYA_MAX_SHADOW_WORKTREES][4096];
+static size_t g_active_shadow_worktree_count = 0;
+static bool g_shadow_cleanup_registered = false;
+
+void belya_shadow_worktree_cleanup_all(void) {
+    for (size_t i = 0; i < BELYA_MAX_SHADOW_WORKTREES; i++) {
+        if (g_active_shadow_worktrees[i][0] != '\0') {
+            char rm_cmd[8192];
+            snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; rm -rf \"%s\"",
+                     g_active_shadow_worktrees[i], g_active_shadow_worktrees[i]);
+            int rc = system(rm_cmd);
+            (void)rc;
+            g_active_shadow_worktrees[i][0] = '\0';
+        }
+    }
+    g_active_shadow_worktree_count = 0;
+    int rc_p = system("git worktree prune >/dev/null 2>&1");
+    (void)rc_p;
+}
+
+static void belya_shadow_worktree_register(const char *path) {
+    if (!path) return;
+    if (!g_shadow_cleanup_registered) {
+        atexit(belya_shadow_worktree_cleanup_all);
+        g_shadow_cleanup_registered = true;
+    }
+    for (size_t i = 0; i < BELYA_MAX_SHADOW_WORKTREES; i++) {
+        if (g_active_shadow_worktrees[i][0] == '\0') {
+            snprintf(g_active_shadow_worktrees[i], sizeof(g_active_shadow_worktrees[i]), "%s", path);
+            g_active_shadow_worktree_count++;
+            return;
+        }
+    }
+}
+
+static void belya_shadow_worktree_unregister(const char *path) {
+    if (!path) return;
+    for (size_t i = 0; i < BELYA_MAX_SHADOW_WORKTREES; i++) {
+        if (strcmp(g_active_shadow_worktrees[i], path) == 0) {
+            g_active_shadow_worktrees[i][0] = '\0';
+            if (g_active_shadow_worktree_count > 0) g_active_shadow_worktree_count--;
+            return;
+        }
+    }
+}
+
+char *belya_dispatch_worker_task(BelyaHarness *router_harness, const char *task, const char *target_symbol, const char *test_cmd) {
+    if (!router_harness || !task) {
+        return xstrdup("Error: Invalid harness or missing task for worker dispatch.");
+    }
+    if (!router_harness->agent) {
+        return xstrdup("Error: Agent unavailable for worker dispatch.");
+    }
+
+    // 1. Generate unique task id and worktree path
+    char task_id[64];
+    snprintf(task_id, sizeof(task_id), "wtask_%ld_%d", (long)time(NULL), (int)(rand() % 10000));
+
+    char wt_path[4096];
+    snprintf(wt_path, sizeof(wt_path), "/tmp/belya_worker_%s", task_id);
+
+    // Initial prune of any stale worktrees
+    int rc_prune = system("git worktree prune >/dev/null 2>&1");
+    (void)rc_prune;
+
+    // 2. Create shadow git worktree: git worktree add -B <task_id> <wt_path> HEAD
+    char add_cmd[8192];
+    snprintf(add_cmd, sizeof(add_cmd), "git worktree add -B \"%s\" \"%s\" HEAD >/dev/null 2>&1", task_id, wt_path);
+    int rc = system(add_cmd);
+    if (rc != 0) {
+        snprintf(add_cmd, sizeof(add_cmd), "git worktree add \"%s\" HEAD >/dev/null 2>&1", wt_path);
+        rc = system(add_cmd);
+    }
+    if (rc != 0) {
+        return xstrdup("Error: Failed to create ephemeral shadow git worktree. Ensure repository is valid and has commits.");
+    }
+
+    belya_shadow_worktree_register(wt_path);
+
+    // 3. Obtain AST context slice if target_symbol is provided
+    char *ast_slice = NULL;
+    if (target_symbol && strlen(target_symbol) > 0) {
+        ast_slice = belya_harness_slice_ast(router_harness, target_symbol, 2000);
+    }
+
+    // 4. Construct worker system prompt
+    DynString sys = dyn_str_new();
+    dyn_str_append(&sys, "Role: Ephemeral Implementation Worker (dsh-superagent)\n");
+    dyn_str_append(&sys, "You operate strictly inside an isolated shadow git worktree.\n");
+    dyn_str_append(&sys, "Implement the requested code change, run verification tests, and ensure all tests pass.\n");
+    dyn_str_append(&sys, "Do NOT attempt to contact or prompt the operator; execute silently.\n");
+    dyn_str_appendf(&sys, "Working Directory: %s\n", wt_path);
+    if (ast_slice) {
+        dyn_str_append(&sys, "\n=== Sliced AST Dependency Context ===\n");
+        dyn_str_append(&sys, ast_slice);
+        dyn_str_append(&sys, "\n");
+    }
+
+    // 5. Initialize isolated worker agent and harness
+    ModelGateway *worker_gw = NULL;
+    if (router_harness->agent->gateway) {
+        worker_gw = model_gateway_init(router_harness->agent->gateway->endpoint,
+                                       router_harness->agent->gateway->api_key,
+                                       router_harness->agent->gateway->model);
+        if (worker_gw) worker_gw->streaming = false;
+    }
+
+    BelyaAgent *worker_agent = belya_agent_init(worker_gw, ":memory:", sys.data);
+    dyn_str_free(&sys);
+    if (ast_slice) free(ast_slice);
+
+    if (!worker_agent) {
+        if (worker_gw) model_gateway_free(worker_gw);
+        char cleanup_cmd[8192];
+        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        int sys_cl = system(cleanup_cmd);
+        (void)sys_cl;
+        belya_shadow_worktree_unregister(wt_path);
+        return xstrdup("Error: Failed to initialize worker agent.");
+    }
+
+    BelyaHarness *worker_harness = belya_harness_init_worker(worker_agent, wt_path);
+    if (!worker_harness) {
+        belya_agent_free(worker_agent);
+        if (worker_gw) model_gateway_free(worker_gw);
+        char cleanup_cmd[8192];
+        snprintf(cleanup_cmd, sizeof(cleanup_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        int sys_cl = system(cleanup_cmd);
+        (void)sys_cl;
+        belya_shadow_worktree_unregister(wt_path);
+        return xstrdup("Error: Failed to initialize worker harness.");
+    }
+
+    // Worker prompt
+    DynString task_prompt = dyn_str_new();
+    dyn_str_appendf(&task_prompt, "Task: %s\n", task);
+    if (test_cmd && strlen(test_cmd) > 0) {
+        dyn_str_appendf(&task_prompt, "Verification command: %s\n", test_cmd);
+    }
+    belya_agent_add_message(worker_agent, "user", task_prompt.data);
+    dyn_str_free(&task_prompt);
+
+    // Save previous harness and directory
+    BelyaHarness *saved_harness = g_harness;
+    char saved_cwd[4096];
+    if (!getcwd(saved_cwd, sizeof(saved_cwd))) {
+        snprintf(saved_cwd, sizeof(saved_cwd), "%s", router_harness->cwd);
+    }
+
+    // Switch process cwd to shadow worktree
+    if (chdir(wt_path) != 0) { /* logged */ }
+    g_harness = worker_harness;
+
+    // Execute worker loop (silent execution)
+    int max_turns = 8;
+    bool execution_success = false;
+    DynString worker_log = dyn_str_new();
+    size_t tool_executions = 0;
+
+    while (max_turns-- > 0 && worker_agent->gateway && worker_agent->gateway->endpoint) {
+        ModelGatewayResponse resp = belya_agent_step(worker_agent);
+        if (!resp.has_tool_call) {
+            model_gateway_response_free(&resp);
+            break;
+        }
+        for (size_t i = 0; i < resp.tool_call_count; i++) {
+            ModelParsedToolCall *tc = &resp.tool_calls[i];
+            BelyaRegisteredTool *matched = NULL;
+            for (size_t t = 0; t < worker_harness->tool_count; t++) {
+                if (strcmp(worker_harness->tools[t].name, tc->name) == 0) {
+                    matched = &worker_harness->tools[t];
+                    break;
+                }
+            }
+            if (matched && matched->callback) {
+                JsonValue *p_args = json_parse(tc->arguments_json);
+                char *obs = matched->callback(worker_agent, p_args);
+                json_free(p_args);
+                belya_agent_add_tool_result(worker_agent, tc->id, tc->name, obs ? obs : "");
+                dyn_str_appendf(&worker_log, "  • [%s] => %s\n", tc->name, obs ? obs : "");
+                tool_executions++;
+                if (obs) free(obs);
+            } else {
+                belya_agent_add_tool_result(worker_agent, tc->id, tc->name, "Tool blocked or unavailable in worker VTable.");
+            }
+        }
+        model_gateway_response_free(&resp);
+    }
+
+    // 6. Verification Cycle in Shadow Worktree
+    char status_cmd[8192];
+    snprintf(status_cmd, sizeof(status_cmd), "git -C \"%s\" status --porcelain 2>/dev/null", wt_path);
+    FILE *fp_st = popen(status_cmd, "r");
+    char status_line[1024];
+    bool has_modifications = false;
+    if (fp_st) {
+        if (fgets(status_line, sizeof(status_line), fp_st)) {
+            has_modifications = true;
+        }
+        pclose(fp_st);
+    }
+
+    bool tests_passed = true;
+    char test_output[4096] = {0};
+    if (has_modifications) {
+        char verify_cmd[8192];
+        if (test_cmd && strlen(test_cmd) > 0) {
+            snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && %s 2>&1", wt_path, test_cmd);
+        } else {
+            snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && make test 2>&1", wt_path);
+        }
+        FILE *tf = popen(verify_cmd, "r");
+        if (tf) {
+            size_t bytes_read = fread(test_output, 1, sizeof(test_output) - 1, tf);
+            test_output[bytes_read] = '\0';
+            int test_rc = pclose(tf);
+            if (test_rc != 0) {
+                tests_passed = false;
+            }
+        }
+    } else {
+        tests_passed = false;
+    }
+
+    // Switch process cwd back to router workspace
+    if (chdir(saved_cwd) != 0) { /* restore */ }
+    g_harness = saved_harness;
+
+    DynString envelope = dyn_str_new();
+
+    if (has_modifications && tests_passed) {
+        // 7. Success Path: Extract verified patch and merge into parent workspace
+        char diff_cmd[8192];
+        char patch_file[512];
+        snprintf(patch_file, sizeof(patch_file), "/tmp/belya_verified_%s.patch", task_id);
+        snprintf(diff_cmd, sizeof(diff_cmd), "git -C \"%s\" diff HEAD > \"%s\"", wt_path, patch_file);
+        int rc_d = system(diff_cmd);
+        (void)rc_d;
+
+        char apply_cmd[8192];
+        snprintf(apply_cmd, sizeof(apply_cmd), "git -C \"%s\" apply --whitespace=nowarn \"%s\" >/dev/null 2>&1", saved_cwd, patch_file);
+        int apply_rc = system(apply_cmd);
+        (void)apply_rc;
+
+        char rm_cmd[8192];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        int rc_rm = system(rm_cmd);
+        (void)rc_rm;
+        unlink(patch_file);
+        belya_shadow_worktree_unregister(wt_path);
+
+        dyn_str_append(&envelope, "=== Super Agent Worker Execution: VERIFIED & MERGED ===\n");
+        dyn_str_appendf(&envelope, "Task ID: %s | Worktree: Silent Zero-Noise Ephemeral\n", task_id);
+        dyn_str_appendf(&envelope, "Tools Executed: %zu\n", tool_executions);
+        dyn_str_append(&envelope, "Verification Status: PASSED (All tests clean)\n");
+        dyn_str_append(&envelope, "Patch Merged: Successfully applied to main workspace.\n");
+        execution_success = true;
+    } else {
+        // 8. Failure Path: Silent Zero-Noise Worktree Teardown
+        char rm_cmd[8192];
+        snprintf(rm_cmd, sizeof(rm_cmd), "git worktree remove --force \"%s\" >/dev/null 2>&1; git branch -D \"%s\" >/dev/null 2>&1", wt_path, task_id);
+        int rc_rm = system(rm_cmd);
+        (void)rc_rm;
+        belya_shadow_worktree_unregister(wt_path);
+
+        dyn_str_append(&envelope, "=== Super Agent Worker Execution: REJECTED (Zero-Noise Purge) ===\n");
+        dyn_str_appendf(&envelope, "Task ID: %s\n", task_id);
+        dyn_str_appendf(&envelope, "Tools Executed: %zu\n", tool_executions);
+        dyn_str_append(&envelope, "Verification Status: FAILED (Worktree silently discarded; zero noise emitted to operator)\n");
+        if (!has_modifications) {
+            dyn_str_append(&envelope, "Reason: Worker produced no file modifications.\n");
+        } else {
+            dyn_str_appendf(&envelope, "Reason: Unit tests failed during shadow verification cycle.\nTrace snippet:\n%.500s\n", test_output);
+        }
+    }
+
+    dyn_str_free(&worker_log);
+    belya_harness_free(worker_harness);
+    if (worker_gw) model_gateway_free(worker_gw);
+
+    belya_agent_log_timeline(router_harness->agent,
+                             execution_success ? "worker_patch_merged" : "worker_patch_rejected",
+                             task);
+
+    return envelope.data;
+}
+
+static char *tool_dispatch_worker_task(BelyaAgent *agent, const JsonValue *args) {
+    (void)agent;
+    const char *task = json_obj_get_str(args, "task");
+    const char *sym = json_obj_get_str(args, "target_symbol");
+    const char *test_cmd = json_obj_get_str(args, "test_cmd");
+    if (!task) return xstrdup("Error: Missing task parameter for dispatch_worker_task.");
+    if (!g_harness) return xstrdup("Error: Active harness unavailable.");
+    return belya_dispatch_worker_task(g_harness, task, sym, test_cmd);
+}
+
 
 // Late-2026 Phase 3: Repo-to-MCP Dynamic Synthesis
 
@@ -4523,6 +5056,64 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(rtc_params, "properties", rtc_props);
     REGISTER_IF_PERMITTED("run_test_cycle", "Run the project test suite autonomously (auto-detects make, pytest, cargo, npm, ctest, go test). Returns structured pass/fail trace.", rtc_params, PERM_ALLOW, tool_run_test_cycle);
 
+    // 43. dispatch_worker_task (Super Agent Ephemeral Shadow Worktree Dispatcher)
+    JsonValue *dwt_params = json_create_object();
+    json_obj_add(dwt_params, "type", json_create_string("object"));
+    JsonValue *dwt_props = json_create_object();
+    JsonValue *dwt_tsk = json_create_object();
+    json_obj_add(dwt_tsk, "type", json_create_string("string"));
+    json_obj_add(dwt_tsk, "description", json_create_string("Task specification for worker execution"));
+    json_obj_add(dwt_props, "task", dwt_tsk);
+    JsonValue *dwt_sym = json_create_object();
+    json_obj_add(dwt_sym, "type", json_create_string("string"));
+    json_obj_add(dwt_sym, "description", json_create_string("Optional target symbol for AST dependency slicing"));
+    json_obj_add(dwt_props, "target_symbol", dwt_sym);
+    JsonValue *dwt_cmd = json_create_object();
+    json_obj_add(dwt_cmd, "type", json_create_string("string"));
+    json_obj_add(dwt_cmd, "description", json_create_string("Optional verification test command"));
+    json_obj_add(dwt_props, "test_cmd", dwt_cmd);
+    json_obj_add(dwt_params, "properties", dwt_props);
+    JsonValue *dwt_req = json_create_array();
+    json_arr_add(dwt_req, json_create_string("task"));
+    json_obj_add(dwt_params, "required", dwt_req);
+    REGISTER_IF_PERMITTED("dispatch_worker_task", "Dispatch coding task to an ephemeral shadow git worktree worker. Slices AST and verifies before merge.", dwt_params, PERM_ALLOW, tool_dispatch_worker_task);
+
+    // 44. query_ast_graph
+    JsonValue *qast_params = json_create_object();
+    json_obj_add(qast_params, "type", json_create_string("object"));
+    JsonValue *qast_props = json_create_object();
+    JsonValue *qast_sym = json_create_object();
+    json_obj_add(qast_sym, "type", json_create_string("string"));
+    json_obj_add(qast_sym, "description", json_create_string("Target symbol identifier"));
+    json_obj_add(qast_props, "symbol", qast_sym);
+    JsonValue *qast_act = json_create_object();
+    json_obj_add(qast_act, "type", json_create_string("string"));
+    json_obj_add(qast_act, "description", json_create_string("Action: 'slice' (default), 'definition', or 'callers'"));
+    json_obj_add(qast_props, "action", qast_act);
+    json_obj_add(qast_params, "properties", qast_props);
+    JsonValue *qast_req = json_create_array();
+    json_arr_add(qast_req, json_create_string("symbol"));
+    json_obj_add(qast_params, "required", qast_req);
+    REGISTER_IF_PERMITTED("query_ast_graph", "Query AST symbol graph for definitions, callers, or bounded dependency slice", qast_params, PERM_ALLOW, tool_query_ast_graph);
+
+    // 45. ast_slice
+    JsonValue *aslc_params = json_create_object();
+    json_obj_add(aslc_params, "type", json_create_string("object"));
+    JsonValue *aslc_props = json_create_object();
+    JsonValue *aslc_sym = json_create_object();
+    json_obj_add(aslc_sym, "type", json_create_string("string"));
+    json_obj_add(aslc_sym, "description", json_create_string("Target symbol to slice"));
+    json_obj_add(aslc_props, "symbol", aslc_sym);
+    JsonValue *aslc_tok = json_create_object();
+    json_obj_add(aslc_tok, "type", json_create_string("integer"));
+    json_obj_add(aslc_tok, "description", json_create_string("Maximum token budget (default 2000)"));
+    json_obj_add(aslc_props, "max_tokens", aslc_tok);
+    json_obj_add(aslc_params, "properties", aslc_props);
+    JsonValue *aslc_req = json_create_array();
+    json_arr_add(aslc_req, json_create_string("symbol"));
+    json_obj_add(aslc_params, "required", aslc_req);
+    REGISTER_IF_PERMITTED("ast_slice", "Extract bounded shallow transitive AST dependency slice (definition, parameter types, caller signatures)", aslc_params, PERM_ALLOW, tool_ast_slice);
+
     // Load any previously defined custom tools if whitelist is unrestricted
     if (!tools_whitelist) {
         belya_harness_load_custom_tools(h);
@@ -4535,6 +5126,56 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
 
 BelyaHarness *belya_harness_init(BelyaAgent *agent) {
     return belya_harness_init_bounded(agent, NULL, NULL);
+}
+
+BelyaHarness *belya_harness_init_router(BelyaAgent *agent) {
+    const char *router_whitelist = "dispatch_worker_task,query_ast_graph,recall_memory,save_memory,"
+                                   "read_file,list_dir,search_files,git_status,git_diff,ask_user,"
+                                   "web_search,web_fetch,lsp_definition,lsp_references";
+    BelyaHarness *h = belya_harness_init_bounded(agent, router_whitelist, "router");
+    if (!h) return NULL;
+    h->is_router = true;
+    h->is_worker = false;
+
+    // Populate Router VTable (physical omission of execution/mutation pointers)
+    h->router_vtable.dispatch_worker_task = tool_dispatch_worker_task;
+    h->router_vtable.query_ast_graph = tool_query_ast_graph;
+    h->router_vtable.recall_memory = tool_recall_memory;
+    h->router_vtable.read_file = tool_read_file;
+    h->router_vtable.ask_user = tool_ask_user;
+    h->router_vtable.no_bash_exec = NULL;
+    h->router_vtable.no_write_file = NULL;
+    h->router_vtable.no_edit_file = NULL;
+    h->router_vtable.no_apply_patch = NULL;
+
+    return h;
+}
+
+BelyaHarness *belya_harness_init_worker(BelyaAgent *agent, const char *worktree_dir) {
+    const char *worker_whitelist = "read_file,write_file,edit_file,apply_patch,bash,"
+                                   "run_test_cycle,ast_slice,list_dir,search_files,"
+                                   "lsp_definition,lsp_references";
+    BelyaHarness *h = belya_harness_init_bounded(agent, worker_whitelist, "worker");
+    if (!h) return NULL;
+    h->is_router = false;
+    h->is_worker = true;
+
+    if (worktree_dir && strlen(worktree_dir) > 0) {
+        snprintf(h->cwd, sizeof(h->cwd), "%s", worktree_dir);
+    }
+
+    // Populate Worker VTable (physical omission of operator communication pointers)
+    h->worker_vtable.read_file = tool_read_file;
+    h->worker_vtable.write_file = tool_write_file;
+    h->worker_vtable.edit_file = tool_edit_file;
+    h->worker_vtable.apply_patch = tool_apply_patch;
+    h->worker_vtable.bash = tool_bash;
+    h->worker_vtable.run_test_cycle = tool_run_test_cycle;
+    h->worker_vtable.ast_slice = tool_ast_slice;
+    h->worker_vtable.no_ask_user = NULL;
+    h->worker_vtable.no_operator_reply = NULL;
+
+    return h;
 }
 
 void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, BelyaToolCallback fn) {

@@ -251,3 +251,56 @@ void jev_context_filter_result_free(JevContextFilterResult *res) {
     if (res->relevance) free(res->relevance);
     free(res);
 }
+
+JevRiskResult *jev_local_eval_risk(const char *goal, const char *tool, const char *arguments) {
+    (void)goal;
+    JevRiskResult *res = calloc(1, sizeof(JevRiskResult));
+    if (!res) return NULL;
+
+    const char *args = arguments ? arguments : "";
+    bool is_bash = (tool && (strcmp(tool, "bash") == 0 || strcmp(tool, "exec") == 0 || strcmp(tool, "sh") == 0));
+
+    if (is_bash) {
+        if (strstr(args, "rm -rf /") || strstr(args, "rm -fr /") ||
+            strstr(args, "rm -rf ~") || strstr(args, "rm -rf *") ||
+            strstr(args, ":(){ :|:& };:") || strstr(args, "mkfs") ||
+            strstr(args, "dd if=/dev/zero") || strstr(args, "dd if=/dev/urandom") ||
+            strstr(args, "chmod -R 777 /") || strstr(args, "> /dev/sda") ||
+            (strstr(args, "curl ") && strstr(args, "| sh")) ||
+            (strstr(args, "curl ") && strstr(args, "| bash")) ||
+            (strstr(args, "wget ") && strstr(args, "| sh")) ||
+            (strstr(args, "wget ") && strstr(args, "| bash")) ||
+            strstr(args, "/etc/passwd") || strstr(args, "/etc/shadow") ||
+            strstr(args, "DROP TABLE") || strstr(args, "DROP DATABASE")) {
+            res->action = xstrdup("block");
+            res->risk = 0.98;
+            res->confidence = 0.99;
+            return res;
+        }
+
+        if (strstr(args, "sudo ") || strstr(args, "systemctl ") ||
+            strstr(args, "kill -9") || strstr(args, "killall") ||
+            strstr(args, "chmod ") || strstr(args, "chown ") ||
+            strstr(args, "git reset --hard") || strstr(args, "git clean -f") ||
+            strstr(args, "iptables") || strstr(args, "ufw")) {
+            res->action = xstrdup("confirm");
+            res->risk = 0.65;
+            res->confidence = 0.92;
+            return res;
+        }
+    }
+
+    res->action = xstrdup("allow");
+    res->risk = 0.05;
+    res->confidence = 0.95;
+    return res;
+}
+
+JevRiskResult *jev_evaluate_command_risk(JevClient *client, const char *goal, const char *tool, const char *arguments) {
+    if (client && client->api_key && strlen(client->api_key) > 0) {
+        JevRiskResult *remote = jev_check_tool_risk(client, goal, tool, arguments);
+        if (remote) return remote;
+    }
+    return jev_local_eval_risk(goal, tool, arguments);
+}
+
