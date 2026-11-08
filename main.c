@@ -6,6 +6,40 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+static bool skill_name_safe(const char *n) {
+    if (!n) return false;
+    size_t len = strlen(n);
+    if (len == 0 || len > 64) return false;
+    if (strcmp(n, ".") == 0 || strcmp(n, "..") == 0) return false;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)n[i];
+        if (!(isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
+    }
+    return true;
+}
+
+static void json_escape_append(DynString *out, const char *s) {
+    if (!s) return;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+            case '"': dyn_str_append(out, "\\\""); break;
+            case '\\': dyn_str_append(out, "\\\\"); break;
+            case '\n': dyn_str_append(out, "\\n"); break;
+            case '\r': dyn_str_append(out, "\\r"); break;
+            case '\t': dyn_str_append(out, "\\t"); break;
+            default:
+                if (*p < 0x20) {
+                    char esc[8];
+                    snprintf(esc, sizeof(esc), "\\u%04x", *p);
+                    dyn_str_append(out, esc);
+                } else {
+                    char ch[2] = { (char)*p, '\0' };
+                    dyn_str_append(out, ch);
+                }
+        }
+    }
+}
+
 static int belya_export_skills_catalogue(void) {
     const char *skills_dir = "skills";
     DIR *d = opendir(skills_dir);
@@ -22,6 +56,7 @@ static int belya_export_skills_catalogue(void) {
 
     struct dirent *entry;
     int count = 0;
+    int write_failures = 0;
     while ((entry = readdir(d)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
 
@@ -51,6 +86,14 @@ static int belya_export_skills_catalogue(void) {
         const char *fm_desc = fm ? frontmatter_get_scalar(fm, "description") : NULL;
         const char *name = fm_name ? fm_name : entry->d_name;
         const char *desc = fm_desc ? fm_desc : name;
+        /* H28: name is a path component below; reject anything that could
+           escape .well-known (e.g. "../../skills/good") or break the JSON. */
+        if (!skill_name_safe(name)) {
+            fprintf(stderr, "export-skills: skipping unsafe skill name '%s'\n", name ? name : "(null)");
+            if (fm) frontmatter_free(fm);
+            free(buf);
+            continue;
+        }
 
         char dest_dir[512];
         snprintf(dest_dir, sizeof(dest_dir), ".well-known/agent-skills/%.200s", name);
@@ -58,14 +101,22 @@ static int belya_export_skills_catalogue(void) {
         char dest_file[1024];
         snprintf(dest_file, sizeof(dest_file), "%s/SKILL.md", dest_dir);
         FILE *df = fopen(dest_file, "w");
-        if (df) {
-            fwrite(buf, 1, nr, df);
-            fclose(df);
+        if (!df || fwrite(buf, 1, nr, df) != nr || fclose(df) != 0) {
+            fprintf(stderr, "export-skills: failed to write '%s'\n", dest_file);
+            write_failures++;
+            if (fm) frontmatter_free(fm);
+            free(buf);
+            continue;
         }
 
         if (count > 0) dyn_str_append(&json, ",\n");
-        dyn_str_appendf(&json, "    {\n      \"name\": \"%s\",\n      \"description\": \"%s\",\n      \"path\": \"/.well-known/agent-skills/%s/SKILL.md\"\n    }",
-                        name, desc, name);
+        dyn_str_append(&json, "    {\n      \"name\": \"");
+        json_escape_append(&json, name);
+        dyn_str_append(&json, "\",\n      \"description\": \"");
+        json_escape_append(&json, desc);
+        dyn_str_append(&json, "\",\n      \"path\": \"/.well-known/agent-skills/");
+        json_escape_append(&json, name);
+        dyn_str_append(&json, "/SKILL.md\"\n    }");
         count++;
 
         if (fm) frontmatter_free(fm);
@@ -75,10 +126,24 @@ static int belya_export_skills_catalogue(void) {
 
     dyn_str_append(&json, "\n  ]\n}\n");
 
+    if (count == 0 || write_failures > 0) {
+        fprintf(stderr, "export-skills: %d written, %d failed, catalog not published\n",
+                count, write_failures);
+        dyn_str_free(&json);
+        return 1;
+    }
+
     FILE *jf = fopen(".well-known/agent-skills/index.json", "w");
-    if (jf) {
-        fwrite(json.data, 1, strlen(json.data), jf);
-        fclose(jf);
+    if (!jf) {
+        fprintf(stderr, "export-skills: cannot create index.json\n");
+        dyn_str_free(&json);
+        return 1;
+    }
+    size_t want = strlen(json.data);
+    if (fwrite(json.data, 1, want, jf) != want || fclose(jf) != 0) {
+        fprintf(stderr, "export-skills: failed to write index.json\n");
+        dyn_str_free(&json);
+        return 1;
     }
     dyn_str_free(&json);
 
