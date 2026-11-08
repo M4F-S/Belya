@@ -1467,6 +1467,7 @@ static bool search_files_ripgrep(const char *rg_bin, const char *path, const cha
         argv[idx++] = rg_bin;
         argv[idx++] = "--max-count";
         argv[idx++] = "30";
+        argv[idx++] = "--no-ignore";
         argv[idx++] = "--no-heading";
         argv[idx++] = "--line-number";
         argv[idx++] = "--color";
