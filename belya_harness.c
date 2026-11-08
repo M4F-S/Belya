@@ -346,6 +346,10 @@ static char *tool_ast_slice(BelyaAgent *agent, const JsonValue *args);
 
 // Built-in Native Tools
 
+/* Workspace root captured at harness init; the shell sandbox anchors here. */
+static char g_workspace_root[4096];
+static bool g_workspace_root_set = false;
+
 static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     // Super Agent Harness Physical Denial: Router session has no execution rights
@@ -566,7 +570,9 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         close(pipefd[1]);
         /* Confine every shell to the workspace by kernel rule, not by parsing.
            Plan mode may stack its own stricter policy on top of this. */
-        if (g_harness) sandbox_apply(g_harness->cwd);
+        /* H27: anchor Landlock to the root captured at init, never to the mutable
+           cwd: tool_bash's cd used to move the confinement root with it. */
+        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         if (g_harness && g_harness->plan_mode) {
             apply_plan_mode_kernel_sandbox();
         }
@@ -637,8 +643,6 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
-static char g_workspace_root[4096];
-static bool g_workspace_root_set = false;
 
 /* Secrets and operator state that file tools must never expose or mutate. */
 static bool is_secret_path(const char *path) {
@@ -5973,7 +5977,7 @@ int belya_harness_spawn_task(BelyaHarness *h, const char *command) {
         }
         close(master_fd);
         setpgid(0, 0);
-        if (h) sandbox_apply(h->cwd);
+        if (h) sandbox_apply(g_workspace_root_set ? g_workspace_root : h->cwd);
         execlp("bash", "bash", "-c", command, (char *)NULL);
         _exit(127);
     }
