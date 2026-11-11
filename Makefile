@@ -55,7 +55,7 @@ test: guard-non-root $(TEST_TARGET) $(MCP_HTTP_TEST_TARGET)
 # Root-run builds in the shared workspace leave root-owned __pycache__ and
 # binaries behind. The service user then cannot write them, and a valid Python
 # file is reported as a syntax error. Refuse root on a plain host; CI runners
-# and containers are expected to build as root and are allowed through.
+# and the verification image set CI=true and are allowed through.
 guard-non-root:
 	@if [ "$$(id -u)" = "0" ] && [ ! -e /.dockerenv ] && [ -z "$$CI" ] && [ "$(ALLOW_ROOT_TESTS)" != "1" ]; then \
 	  echo "[test] REFUSED: running as root outside CI." >&2; \
