@@ -141,7 +141,13 @@ char *belya_harness_preflight_check(const char *path) {
 
     char *const c_argv[] = {"gcc", "-fsyntax-only", "-std=c99", "-Wall", (char *)path, NULL};
     char *const cpp_argv[] = {"g++", "-fsyntax-only", "-Wall", (char *)path, NULL};
-    char *const py_argv[] = {"python3", "-m", "py_compile", (char *)path, NULL};
+    /* Compile in memory: `python3 -m py_compile` writes bytecode into
+       <dir>/__pycache__, so a root-owned or read-only cache directory turns a
+       valid file into a false "syntax error". compile() checks the source
+       without writing anything to disk. */
+    char *const py_argv[] = {"python3", "-c",
+        "import sys; compile(open(sys.argv[1], 'rb').read(), sys.argv[1], 'exec')",
+        (char *)path, NULL};
     char *const js_argv[] = {"node", "--check", (char *)path, NULL};
     char *const rs_argv[] = {"rustc", "--emit=metadata", "-o", "/dev/null", (char *)path, NULL};
     char *const go_argv[] = {"go", "vet", (char *)path, NULL};

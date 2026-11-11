@@ -3664,8 +3664,32 @@ void test_sota_parity_pillars(void) {
     fprintf(fp, "def valid_func(x, y):\n    return x + y\n");
     fclose(fp);
     char *py_clean = belya_harness_preflight_check("test_syntax_valid.py");
-    assert(py_clean == NULL);
     unlink("test_syntax_valid.py");
+    assert(py_clean == NULL);
+
+    // The preflight must not write bytecode anywhere: a cache directory the
+    // caller cannot write is exactly what produced the false "syntax error".
+    {
+        char probe_tmpl[] = "/tmp/belya_preflight_XXXXXX";
+        char *probe_dir = mkdtemp(probe_tmpl);
+        assert(probe_dir != NULL);
+        char probe_src[512];
+        snprintf(probe_src, sizeof(probe_src), "%s/valid.py", probe_dir);
+        FILE *probe_fp = fopen(probe_src, "w");
+        assert(probe_fp != NULL);
+        fprintf(probe_fp, "def valid_func(x, y):\n    return x + y\n");
+        fclose(probe_fp);
+
+        char *probe_err = belya_harness_preflight_check(probe_src);
+        char probe_cache[512];
+        snprintf(probe_cache, sizeof(probe_cache), "%s/__pycache__", probe_dir);
+        bool cache_created = (access(probe_cache, F_OK) == 0);
+
+        unlink(probe_src);
+        rmdir(probe_dir);
+        assert(probe_err == NULL);
+        assert(cache_created == false);
+    }
 
     // Test JSON syntax preflight
     fp = fopen("test_broken.json", "w");

@@ -6,6 +6,11 @@
 # Docker daemon, where host paths are not visible.
 FROM ubuntu:24.04
 
+# This image is the gate, and it builds as root by design: `make test` refuses
+# root runs outside CI so root-owned artifacts cannot leak into a shared
+# workspace, and the refusal would otherwise fire inside this build.
+ENV CI=true
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential libcurl4-openssl-dev libsqlite3-dev python3 ca-certificates git ripgrep \
