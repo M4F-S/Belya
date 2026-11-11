@@ -48,9 +48,21 @@ $(TARGET): $(OBJS) | $(BUILD_DIR)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-test: $(TEST_TARGET) $(MCP_HTTP_TEST_TARGET)
+test: guard-non-root $(TEST_TARGET) $(MCP_HTTP_TEST_TARGET)
 	./$(TEST_TARGET)
 	./$(MCP_HTTP_TEST_TARGET)
+
+# Root-run builds in the shared workspace leave root-owned __pycache__ and
+# binaries behind. The service user then cannot write them, and a valid Python
+# file is reported as a syntax error. Refuse root on a plain host; CI runners
+# and containers are expected to build as root and are allowed through.
+guard-non-root:
+	@if [ "$$(id -u)" = "0" ] && [ ! -e /.dockerenv ] && [ -z "$$CI" ] && [ "$(ALLOW_ROOT_TESTS)" != "1" ]; then \
+	  echo "[test] REFUSED: running as root outside CI." >&2; \
+	  echo "[test] Root-owned artifacts break the suite for the service user." >&2; \
+	  echo "[test] Run 'make test' as the workspace owner instead." >&2; \
+	  exit 1; \
+	fi
 
 $(MCP_HTTP_TEST_TARGET): mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c mcp_http.h mcp_client.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ mcp_http_selftest.c mcp_http.c mcp_client.c minijson.c $(LIBS)
@@ -185,7 +197,7 @@ deploy: $(TARGET)
 release:
 	$(MAKE) clean
 	$(MAKE) $(TARGET)
-	$(MAKE) test
+	$(MAKE) test ALLOW_ROOT_TESTS=1
 	$(MAKE) deploy
 
 clean:
@@ -196,7 +208,7 @@ clean:
 gdrive:
 	@./scripts/sync_to_gdrive.sh
 
-.PHONY: all test benchmark arena clean gdrive deploy release
+.PHONY: all test guard-non-root benchmark arena clean gdrive deploy release
 
 # drift-guard
 drift:
