@@ -6371,9 +6371,14 @@ char *belya_harness_web_search(BelyaHarness *h, const char *query, const char *p
     if (!h) return xstrdup("Error: Invalid harness.");
     if (!query || strlen(query) == 0) return xstrdup("Error: Missing query argument.");
 
-    const char *prov = provider ? provider : "brave";
     const char *brave_key = getenv("BRAVE_API_KEY");
     const char *tavily_key = getenv("TAVILY_API_KEY");
+    /* Choose a provider that actually has a key when the caller is silent.
+       Defaulting to Brave made a Tavily-only install answer every unqualified
+       search with "Brave search requested but BRAVE_API_KEY is not set". */
+    const char *prov = (provider && provider[0])
+                           ? provider
+                           : (brave_key ? "brave" : (tavily_key ? "tavily" : "brave"));
 
     if (strstr(query, "mock_test_search") != NULL || getenv("BELYA_MOCK_SEARCH") != NULL) {
         DynString ds = dyn_str_new();
