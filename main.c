@@ -381,7 +381,33 @@ int main(int argc, char **argv) {
         "- search_files: Returns max 50 matches. Use file_glob or regex to narrow scope.\n"
         "- For large files (>200 lines), use read_file with offset and limit parameters.";
 
-    BelyaAgent *agent = belya_agent_init(gateway, "belya_memory.sqlite", default_system_prompt);
+    /* Telegram is a phone chat, not a terminal. The CLI prompt above asks for
+       hypothesis narration and engineering evidence; on Telegram that reaches
+       the user as a wall of steps and code. This contract overrides it for the
+       daemon only. */
+    const char *telegram_channel_contract =
+        "\n\n=== Channel Contract (Telegram) ===\n"
+        "You are replying to a person in a phone chat. They read your message, not your terminal or tool log.\n"
+        "- Answer the actual question first, in plain conversational prose. Lead with the answer.\n"
+        "- Default to 1-6 short sentences. Expand only when the user explicitly asks for detail, a plan or a report.\n"
+        "- Do NOT include code blocks, file paths, line numbers, command lines, tool names, JSON or telemetry (turn/step/token counts) unless the user explicitly asks for code.\n"
+        "- Do NOT narrate your hypothesis, investigation or tool calls. Rule 2 of the Execution Protocol (state the hypothesis in response text) does not apply on this channel; report the outcome only.\n"
+        "- If work is unfinished, say so in one sentence and name the next action. Do not attach a step list.\n"
+        "- No headings, no tables, no 'Bottom line'/'Open items' report scaffolding.\n"
+        "These formatting rules take precedence over any repository guideline that asks for reports or evidence dumps.\n";
+
+    char *daemon_prompt = NULL;
+    if (telegram_mode) {
+        size_t plen = strlen(default_system_prompt) + strlen(telegram_channel_contract) + 1;
+        daemon_prompt = malloc(plen);
+        if (daemon_prompt) {
+            snprintf(daemon_prompt, plen, "%s%s", default_system_prompt, telegram_channel_contract);
+        }
+    }
+
+    BelyaAgent *agent = belya_agent_init(gateway, "belya_memory.sqlite",
+                                         daemon_prompt ? daemon_prompt : default_system_prompt);
+    free(daemon_prompt);
     if (!agent) {
         fprintf(stderr, "\033[1;31m[Error] Failed to initialize agent (OOM or DB failure).\033[0m\n");
         model_gateway_free(gateway);
