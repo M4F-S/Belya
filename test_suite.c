@@ -234,6 +234,15 @@ void test_session_checkpointing(void) {
     assert(strcmp(agent->messages[3].role, "tool") == 0);
     assert(strstr(agent->messages[3].content, "void *alloc()") != NULL);
 
+    // The system prompt is code, not session state: a resume must keep the
+    // prompt the current process built, not the one the session was saved with.
+    free(agent->messages[0].content);
+    agent->messages[0].content = xstrdup("PROMPT_REFRESHED");
+    assert(belya_agent_load_session(agent, "test_sess_001"));
+    assert(agent->msg_count == 5);
+    assert(strstr(agent->messages[0].content, "PROMPT_REFRESHED") != NULL);
+    assert(strstr(agent->messages[0].content, "System Root Instructions") == NULL);
+
     belya_agent_free(agent);
     model_gateway_free(gw);
     unlink("test_session_db.sqlite");

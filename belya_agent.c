@@ -1123,6 +1123,16 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
         return false;
     }
 
+    /* The system prompt belongs to the process, not to the session: a resumed
+       conversation must not resurrect the prompt it was created with, or a
+       prompt fix never reaches an existing chat. */
+    char *current_system = NULL;
+    if (agent->msg_count > 0 && agent->messages[0].role &&
+        strcmp(agent->messages[0].role, "system") == 0 &&
+        agent->messages[0].content) {
+        current_system = xstrdup(agent->messages[0].content);
+    }
+
     // Free existing messages in agent
     for (size_t i = 0; i < agent->msg_count; i++) {
         free_single_message(&agent->messages[i]);
@@ -1132,6 +1142,16 @@ bool belya_agent_load_session(BelyaAgent *agent, const char *session_id) {
     agent->messages = loaded;
     agent->msg_count = count;
     agent->msg_cap = cap;
+
+    if (current_system) {
+        if (agent->msg_count > 0 && agent->messages[0].role &&
+            strcmp(agent->messages[0].role, "system") == 0) {
+            free(agent->messages[0].content);
+            agent->messages[0].content = current_system;
+        } else {
+            free(current_system);
+        }
+    }
 
     char load_summary[256];
     snprintf(load_summary, sizeof(load_summary), "Session '%s' restored (%zu messages)", session_id, count);
