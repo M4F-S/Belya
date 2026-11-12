@@ -969,6 +969,10 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 TelegramStream sctx;
                 memset(&sctx, 0, sizeof(sctx));
                 sctx.bot = bot;
+                /* Deliver only the finished answer. Streaming intermediate
+                   content put investigation narration into the chat; the
+                   per-step typing action still shows progress. */
+                sctx.disabled = true;
                 snprintf(sctx.chat_id, sizeof(sctx.chat_id), "%s", chat_id_str);
                 sctx.buf = dyn_str_new();
                 if (harness->agent && harness->agent->gateway) {
@@ -1111,7 +1115,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         telegram_bot_send_chat_action(bot, chat_id_str, "typing");
                         ModelGatewayResponse final_resp = belya_agent_step_forced_text(
                             harness->agent,
-                            "Synthesize your complete, detailed answer and findings to the user now without calling any more tools."
+                            "Report the outcome to the user now in plain conversational language: what you found or did, and anything still unfinished. Do not call tools. No code, no file paths, no step list, no telemetry - 1 to 5 short sentences."
                         );
                         if (final_resp.content && strlen(final_resp.content) > 0) {
                             if (final_response_text) free(final_response_text);
