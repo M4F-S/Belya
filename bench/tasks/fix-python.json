@@ -1,0 +1,11 @@
+{
+  "id": "fix-python",
+  "category": "code-fix",
+  "fixture": "fix-python",
+  "prompt": "stats.py computes the mean wrongly: for [2,4,6] it prints 6 but the mean is 4. Fix the bug in stats.py and do not change check.sh. Run `sh check.sh` before you answer.",
+  "timeout_s": 240,
+  "expect": {
+    "cmd": "sh check.sh"
+  },
+  "max_tool_calls": 25
+}

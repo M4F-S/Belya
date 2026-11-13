@@ -1,0 +1,18 @@
+{
+  "id": "memory-contradiction",
+  "category": "memory",
+  "seed": [
+    "For the analytics service we use PostgreSQL.",
+    "Correction: the analytics service must use SQLite, not PostgreSQL."
+  ],
+  "setup_check": {
+    "sql": "select count(*) from agent_memory where content like '%SQLite%'"
+  },
+  "prompt": "Which database are we using for the analytics service? One sentence.",
+  "timeout_s": 360,
+  "expect": {
+    "contains": "SQLite",
+    "min_chars": 15
+  },
+  "max_tool_calls": 12
+}

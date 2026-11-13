@@ -1,0 +1,13 @@
+{
+  "id": "research-price",
+  "category": "research",
+  "prompt": "Search the web for the current retail price of a Raspberry Pi 5 with 8GB RAM at a major retailer. Report the price and currency with one source URL. Two sentences maximum.",
+  "timeout_s": 240,
+  "expect": {
+    "min_chars": 40
+  },
+  "require_tools": [
+    "web_search"
+  ],
+  "max_tool_calls": 15
+}

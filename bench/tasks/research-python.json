@@ -1,0 +1,13 @@
+{
+  "id": "research-python",
+  "category": "research",
+  "prompt": "Search the web for the latest stable Python release and report its version number and release date, with one source URL. Two sentences maximum.",
+  "timeout_s": 240,
+  "expect": {
+    "min_chars": 40
+  },
+  "require_tools": [
+    "web_search"
+  ],
+  "max_tool_calls": 15
+}
