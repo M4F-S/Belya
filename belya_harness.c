@@ -494,6 +494,16 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         if (strlen(dest) == 0) dest = getenv("HOME");
         if (!dest) dest = ".";
 
+        /* A shell metacharacter in the target means this is not a plain
+           `cd <path>`: `cd /x 2>/dev/null || cd ~` used to be treated as one
+           giant path and failed. Hand the whole command to the shell instead
+           of guessing what the user meant. */
+        bool shell_syntax = false;
+        for (const char *p = dest; *p; p++) {
+            if (strchr("|<>&$`*?(){}[]", *p)) { shell_syntax = true; break; }
+        }
+        if (shell_syntax) break;
+
         char clean_path[4096];
         size_t dlen = strlen(dest);
         if (dlen >= 2 && ((dest[0] == '"' && dest[dlen-1] == '"') || (dest[0] == '\'' && dest[dlen-1] == '\''))) {

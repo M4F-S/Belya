@@ -1200,6 +1200,17 @@ void test_all_17_tools_exhaustive(void) {
     if (strlen(orig_test_cwd) > 0) { int ret = chdir(orig_test_cwd); (void)ret; }
     if (h) snprintf(h->cwd, sizeof(h->cwd), "%s", orig_test_cwd);
 
+    // 1c. A shell fallback after cd must go to the shell, not be read as one path.
+    JsonValue *b_cd2 = json_create_object();
+    json_obj_add(b_cd2, "command", json_create_string("cd /tmp 2>/dev/null || cd /"));
+    char *out_cd2 = cb_bash(agent, b_cd2);
+    assert(out_cd2 != NULL);
+    assert(strstr(out_cd2, "Failed to change directory") == NULL);
+    free(out_cd2);
+    json_free(b_cd2);
+    if (strlen(orig_test_cwd) > 0) { int ret = chdir(orig_test_cwd); (void)ret; }
+    if (h) snprintf(h->cwd, sizeof(h->cwd), "%s", orig_test_cwd);
+
     JsonValue *b2 = json_create_object();
     char *out_b2 = cb_bash(agent, b2);
     assert(out_b2 && strstr(out_b2, "Missing command") != NULL);
