@@ -148,8 +148,19 @@ void belya_agent_free(BelyaAgent *agent);
 /* ==========================================================================
    Phase 1a — Persistent, parallel, inspectable subagents
    Contract: one row per child in `subagents`, every child message in
-   `subagent_messages` with a contiguous per-child idx. A child runs bounded
-   turns on the parent's whitelist harness and stops at budget_tokens.
+   `subagent_messages` with a contiguous per-child idx (1 = child system
+   prompt, 2 = task). A child runs bounded turns on the parent's whitelist
+   harness and stops at budget_tokens.
+
+   Budget rule: checked before each turn; the turn that crosses the budget is
+   recorded, then the child is marked `failed` with an error naming the budget.
+   `steps` counts turns actually executed, `spent_tokens` the tokens the
+   gateway reported for them.
+
+   Parent tools (belya_harness.c): spawn_subagent gains `wait` (default true
+   keeps the blocking envelope) and, with wait=false, returns {"id","status"};
+   check_subagent / collect_subagent / cancel_subagent take {"id"} and always
+   answer text, never NULL.
    ========================================================================== */
 #define BELYA_SUBAGENT_MAX_PARALLEL 4
 #define BELYA_SUBAGENT_DEFAULT_BUDGET 50000

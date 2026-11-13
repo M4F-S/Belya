@@ -4086,6 +4086,7 @@ static BelyaAgent *p1a_agent(ModelGateway **out_gw) {
     ModelGateway *gw = model_gateway_init("http://127.0.0.1:1/v1/chat/completions", "test", "fake-model");
     assert(gw != NULL);
     gw->streaming = false;
+    gw->max_retries = 0;   /* hermetic: a stray real call fails instantly */
     gw->chat_complete = p1a_fake_complete;
     BelyaAgent *agent = belya_agent_init(gw, P1A_DB, "Parent orchestrator system prompt.");
     assert(agent != NULL);
@@ -4127,6 +4128,18 @@ static char *p1a_text(BelyaAgent *agent, const char *sql) {
     }
     sqlite3_finalize(st);
     return out;
+}
+
+/* Mutations return no result row, so sqlite3_exec never calls the callback and
+   p1a_query() would answer -1. Use this for anything that is not a SELECT. */
+static bool p1a_exec(BelyaAgent *agent, const char *sql) {
+    char *err = NULL;
+    if (sqlite3_exec(agent->db, sql, 0, 0, &err) != SQLITE_OK) {
+        fprintf(stderr, "[phase1a] exec failed: %s (%s)\n", sql, err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
 }
 
 static bool p1a_has_column(BelyaAgent *agent, const char *table, const char *column) {
@@ -4265,7 +4278,7 @@ void test_phase1a_subagent_schema_and_fork(void) {
     free(dflt);
     free(id);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a schema & fork PASSED (55/58)\n");
+    printf("  -> Phase 1a schema & fork PASSED (55/59)\n");
 }
 
 void test_phase1a_parallel_isolation(void) {
@@ -4335,12 +4348,12 @@ void test_phase1a_parallel_isolation(void) {
         assert(probes[i].ok == 1);
     }
     assert(p1a_query(agent, "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id LIKE 'busy-%';") == 120);
-    assert(p1a_query(agent, "DELETE FROM subagent_messages WHERE subagent_id LIKE 'busy-%';") >= 0);
+    assert(p1a_exec(agent, "DELETE FROM subagent_messages WHERE subagent_id LIKE 'busy-%';"));
 
     free(a);
     free(b);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a parallel isolation PASSED (56/58)\n");
+    printf("  -> Phase 1a parallel isolation PASSED (56/59)\n");
 }
 
 void test_phase1a_budget_and_cancel(void) {
@@ -4394,7 +4407,7 @@ void test_phase1a_budget_and_cancel(void) {
     free(cancel_id);
     free(id);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a budget & cancel PASSED (57/58)\n");
+    printf("  -> Phase 1a budget & cancel PASSED (57/59)\n");
 }
 
 void test_phase1a_fifty_forks_no_leak(void) {
@@ -4428,8 +4441,129 @@ void test_phase1a_fifty_forks_no_leak(void) {
     assert(rss_after - rss_before < 64.0);
 
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a 50 forks PASSED (58/58, fds %d->%d, RSS %.1f->%.1f MB)\n",
+    printf("  -> Phase 1a 50 forks PASSED (58/59, fds %d->%d, RSS %.1f->%.1f MB)\n",
            fds_before, fds_after, rss_before, rss_after);
+}
+
+/* T1.4: the parent-facing surface. spawn_subagent gains wait=false (handle),
+   plus check/collect/cancel tools; the default wait=true path keeps the
+   existing blocking envelope contract. */
+void test_phase1a_parent_tools(void) {
+    printf("[Test] Phase 1a: Parent-Facing Subagent Tools...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+    p1a_reset_fake(0);
+
+    BelyaToolCallback spawn = get_tool_cb(h, "spawn_subagent");
+    BelyaToolCallback check = get_tool_cb(h, "check_subagent");
+    BelyaToolCallback collect = get_tool_cb(h, "collect_subagent");
+    BelyaToolCallback cancel = get_tool_cb(h, "cancel_subagent");
+    assert(spawn != NULL);
+    assert(check != NULL);
+    assert(collect != NULL);
+    assert(cancel != NULL);
+
+    /* wait=false hands back a handle instead of blocking the parent. */
+    JsonValue *spawn_args = json_create_object();
+    json_obj_add(spawn_args, "task", json_create_string("tool handle probe"));
+    json_obj_add(spawn_args, "role", json_create_string("worker"));
+    json_obj_add(spawn_args, "budget_tokens", json_create_number(1000));
+    json_obj_add(spawn_args, "wait", json_create_bool(false));
+    char *handle_json = spawn(agent, spawn_args);
+    assert(handle_json != NULL);
+    JsonValue *handle = json_parse(handle_json);
+    assert(handle != NULL);
+    const char *handle_id = json_obj_get_str(handle, "id");
+    assert(handle_id != NULL);
+    assert(strlen(handle_id) >= 8);
+    const char *handle_status = json_obj_get_str(handle, "status");
+    assert(handle_status != NULL);
+    assert(strcmp(handle_status, "running") == 0);
+    char child_id[128];
+    snprintf(child_id, sizeof(child_id), "%s", handle_id);
+    json_free(handle);
+    free(handle_json);
+    json_free(spawn_args);
+
+    /* check_subagent reports the live row. */
+    JsonValue *id_args = json_create_object();
+    json_obj_add(id_args, "id", json_create_string(child_id));
+    char *status_report = check(agent, id_args);
+    assert(status_report != NULL);
+    assert(strstr(status_report, "running") != NULL);
+
+    /* A running child has nothing to hand over yet. */
+    char *early = collect(agent, id_args);
+    assert(early != NULL);
+    assert(strstr(early, "running") != NULL);
+
+    /* The handle addresses the same child the engine runs. */
+    assert(belya_subagent_run(agent, child_id) == true);
+    char *done_report = collect(agent, id_args);
+    assert(done_report != NULL);
+    assert(strstr(done_report, "child-answer") != NULL);
+
+    /* Cancel tool: terminal, and reported as such. */
+    JsonValue *spawn2 = json_create_object();
+    json_obj_add(spawn2, "task", json_create_string("cancel via tool"));
+    json_obj_add(spawn2, "wait", json_create_bool(false));
+    json_obj_add(spawn2, "budget_tokens", json_create_number(1000));
+    char *handle2_json = spawn(agent, spawn2);
+    assert(handle2_json != NULL);
+    JsonValue *handle2 = json_parse(handle2_json);
+    assert(handle2 != NULL);
+    const char *handle2_id = json_obj_get_str(handle2, "id");
+    assert(handle2_id != NULL);
+    char second_id[128];
+    snprintf(second_id, sizeof(second_id), "%s", handle2_id);
+    json_free(handle2);
+    free(handle2_json);
+    json_free(spawn2);
+
+    JsonValue *id2_args = json_create_object();
+    json_obj_add(id2_args, "id", json_create_string(second_id));
+    char *cancel_report = cancel(agent, id2_args);
+    assert(cancel_report != NULL);
+    assert(strstr(cancel_report, "cancelled") != NULL);
+    char *after_cancel = check(agent, id2_args);
+    assert(after_cancel != NULL);
+    assert(strstr(after_cancel, "cancelled") != NULL);
+
+    /* An unknown id is a text error, never NULL and never a crash. */
+    JsonValue *bad_args = json_create_object();
+    json_obj_add(bad_args, "id", json_create_string("no-such-child"));
+    char *bad_report = check(agent, bad_args);
+    assert(bad_report != NULL);
+    assert(strstr(bad_report, "unknown") != NULL);
+
+    /* Back-compat: default wait=true still returns the blocking envelope. */
+    JsonValue *legacy_args = json_create_object();
+    json_obj_add(legacy_args, "task", json_create_string("legacy envelope probe"));
+    json_obj_add(legacy_args, "max_turns", json_create_number(1));
+    char *envelope = spawn(agent, legacy_args);
+    assert(envelope != NULL);
+    assert(strstr(envelope, "Subagent Task Execution Envelope") != NULL);
+
+    free(envelope);
+    json_free(legacy_args);
+    free(bad_report);
+    json_free(bad_args);
+    free(after_cancel);
+    free(cancel_report);
+    json_free(id2_args);
+    free(done_report);
+    free(early);
+    free(status_report);
+    json_free(id_args);
+
+    /* belya_harness_free() frees the agent it was handed — do not free it twice. */
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    p1a_wipe_db_files();
+    printf("  -> Phase 1a parent tools PASSED (59/59)\n");
 }
 
 int main(void) {
@@ -4492,7 +4626,8 @@ int main(void) {
     test_phase1a_parallel_isolation();
     test_phase1a_budget_and_cancel();
     test_phase1a_fifty_forks_no_leak();
-    printf("================ All Tests Passed Successfully (58/58 - 100%%) ================\n\n");
+    test_phase1a_parent_tools();
+    printf("================ All Tests Passed Successfully (59/59 - 100%%) ================\n\n");
     return 0;
 }
 
