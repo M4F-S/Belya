@@ -1,0 +1,13 @@
+{
+  "id": "research",
+  "category": "research",
+  "prompt": "Search the web for the most recent model release from Nous Research and name it, with one source URL. Answer in two sentences.",
+  "timeout_s": 240,
+  "expect": {
+    "min_chars": 60
+  },
+  "require_tools": [
+    "web_search"
+  ],
+  "max_tool_calls": 15
+}

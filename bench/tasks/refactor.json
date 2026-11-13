@@ -1,0 +1,17 @@
+{
+  "id": "refactor",
+  "category": "multi-file",
+  "fixture": "refactor",
+  "fast": true,
+  "prompt": "Three source files define the same TIMEOUT_MS constant separately. Move the single definition into a new config.h and include it from a.c, b.c and c.c. Keep everything compiling and do not change check.sh. Run `sh check.sh` before you answer.",
+  "timeout_s": 300,
+  "expect": {
+    "cmd": "sh check.sh"
+  },
+  "require_tools": [
+    "write_file",
+    "edit_file",
+    "apply_patch"
+  ],
+  "max_tool_calls": 30
+}

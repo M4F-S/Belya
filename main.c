@@ -216,6 +216,7 @@ int main(int argc, char **argv) {
     bool company_mode = false;
     const char *resume_session_id = NULL;
     const char *headless_prompt = NULL;
+    const char *stats_json_path = NULL;
     bool no_probe = false;
     bool stage_mode = false;
     const char *preset_name = NULL;
@@ -290,6 +291,8 @@ int main(int argc, char **argv) {
             resume_session_id = argv[++i];
         } else if ((strcmp(argv[i], "--headless") == 0 || strcmp(argv[i], "--eval") == 0 || strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--prompt") == 0) && i + 1 < argc) {
             headless_prompt = argv[++i];
+        } else if (strcmp(argv[i], "--stats-json") == 0 && i + 1 < argc) {
+            stats_json_path = argv[++i];
         } else if (argv[i][0] != '-' && !headless_prompt) {
             headless_prompt = argv[i];
         }
@@ -487,6 +490,30 @@ int main(int argc, char **argv) {
         } else {
             printf("Executing headless mission (Model: %s):\n\"%s\"\n\n", model, headless_prompt);
             belya_harness_execute_turn(harness, headless_prompt);
+            if (stats_json_path) {
+                JsonValue *st = json_create_object();
+                if (st) {
+                    json_obj_add(st, "ok", json_create_bool(true));
+                    json_obj_add(st, "model", json_create_string(model ? model : ""));
+                    json_obj_add(st, "prompt_tokens", json_create_number((double)agent->total_prompt_tokens));
+                    json_obj_add(st, "completion_tokens", json_create_number((double)agent->total_completion_tokens));
+                    json_obj_add(st, "cached_tokens", json_create_number((double)agent->total_cached_tokens));
+                    json_obj_add(st, "steps", json_create_number((double)harness->last_turn_steps));
+                    json_obj_add(st, "tool_calls", json_create_number((double)harness->last_turn_tool_calls));
+                    json_obj_add(st, "elapsed_ms", json_create_number(harness->last_turn_latency_ms));
+                    char *js = json_serialize(st);
+                    if (js) {
+                        FILE *sf = fopen(stats_json_path, "w");
+                        if (sf) {
+                            fputs(js, sf);
+                            fputc('\n', sf);
+                            fclose(sf);
+                        }
+                        free(js);
+                    }
+                    json_free(st);
+                }
+            }
             if (agent->total_prompt_tokens > 0 || agent->total_completion_tokens > 0) {
                 printf("\n[Session Economics]: Prompt Tokens: %zu | Completion Tokens: %zu | Cached Tokens: %zu | Total: %zu\n",
                     agent->total_prompt_tokens, agent->total_completion_tokens, agent->total_cached_tokens,

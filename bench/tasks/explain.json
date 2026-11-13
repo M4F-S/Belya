@@ -1,0 +1,17 @@
+{
+  "id": "explain",
+  "category": "comprehension",
+  "fixture": "explain",
+  "fast": true,
+  "prompt": "List the files in this directory and explain in three short sentences what the program does. Do not modify anything.",
+  "timeout_s": 180,
+  "expect": {
+    "min_chars": 120
+  },
+  "require_tools": [
+    "list_dir",
+    "bash",
+    "read_file"
+  ],
+  "max_tool_calls": 12
+}

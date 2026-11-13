@@ -1,0 +1,18 @@
+{
+  "id": "fix-bug",
+  "category": "code-fix",
+  "fixture": "fix-bug",
+  "fast": true,
+  "prompt": "The C program sum.c prints the wrong total: for the array 1,2,3 it must print 6 but it prints 5. Find and fix the bug in sum.c. Do not modify check.sh. Run `sh check.sh` to verify your fix before you answer.",
+  "timeout_s": 240,
+  "expect": {
+    "cmd": "sh check.sh"
+  },
+  "require_tools": [
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "bash"
+  ],
+  "max_tool_calls": 25
+}

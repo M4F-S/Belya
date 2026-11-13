@@ -1,0 +1,15 @@
+{
+  "id": "write-test",
+  "category": "testing",
+  "fixture": "write-test",
+  "prompt": "Write test_mathlib.c that tests add() and mul() including a failure case, and a run_tests.sh that compiles mathlib.c with your test and runs it. The script must exit 0 when the tests pass. Run `sh run_tests.sh` before you answer.",
+  "timeout_s": 300,
+  "expect": {
+    "cmd": "sh run_tests.sh"
+  },
+  "require_tools": [
+    "write_file",
+    "bash"
+  ],
+  "max_tool_calls": 30
+}

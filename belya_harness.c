@@ -7910,6 +7910,8 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
     double turn_t0 = get_time_ms();
     belya_harness_reset_turn_state(h);
+    h->last_turn_steps = 0;
+    h->last_turn_tool_calls = 0;
 
     if (h->stage_mode) {
         printf("\n\033[1;36m┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\033[0m\n");
@@ -7967,6 +7969,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
         } else {
             for (size_t i = 0; i < resp.tool_call_count; i++) {
                 ModelParsedToolCall *tc = &resp.tool_calls[i];
+                h->last_turn_tool_calls++;
                 printf("\n\033[1;33m[Tool Call Request]:\033[0m %s(%s)\n", tc->name, tc->arguments_json);
 
                 BelyaRegisteredTool *matched = NULL;
@@ -8105,6 +8108,7 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
     double turn_t1 = get_time_ms();
     h->last_turn_latency_ms = turn_t1 - turn_t0;
+    h->last_turn_steps = (size_t)step_idx;
     if (h->stage_mode) {
         printf("\033[1;36m[STAGE TURN SUMMARY]\033[0m Turn Duration: \033[1;32m%.1f ms\033[0m | Prompt Tokens: %zu | Completion Tokens: %zu | Peak RSS: \033[1;32m%.2f MB\033[0m\n\n",
                h->last_turn_latency_ms, h->agent->total_prompt_tokens, h->agent->total_completion_tokens, belya_get_current_rss_mb());

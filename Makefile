@@ -128,6 +128,12 @@ benchmark: $(BENCHMARK_TARGET) $(TARGET)
 
 arena: benchmark
 
+# Task benchmark (Phase 0): real binary, fixtures, stats-json.
+# Not part of `verify` - it spends model tokens. BENCH=all for the full set.
+BENCH ?= fast
+bench: $(TARGET)
+	python3 bench/run_bench.py --bin ./$(TARGET) --tasks $(BENCH) --out bench/latest.json
+
 $(BENCHMARK_TARGET): $(BENCHMARK_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(BENCHMARK_SRCS) $(LIBS)
 
@@ -208,7 +214,7 @@ clean:
 gdrive:
 	@./scripts/sync_to_gdrive.sh
 
-.PHONY: all test guard-non-root benchmark arena clean gdrive deploy release
+.PHONY: all test guard-non-root benchmark arena bench clean gdrive deploy release
 
 # drift-guard
 drift:
