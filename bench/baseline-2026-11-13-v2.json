@@ -17,7 +17,8 @@
       "research-price",
       "research-python",
       "research",
-      "write-test"
+      "write-test",
+      "long-context"
     ],
     "runs": 1,
     "post_fix_reruns": [
@@ -26,7 +27,7 @@
       "refactor-rename",
       "memory-contradiction"
     ],
-    "note": "single run per task; memory-fact re-run after the contains-check fix"
+    "note": "single run per task; long-context forces compaction with MAX_CONTEXT_TOKENS=6000 and is expected to fail until Phase 3 (pinned facts)"
   },
   "results": [
     {
@@ -473,6 +474,28 @@
       "answer_chars": 2331,
       "answer_excerpt": "Both files are written, verified, and the mandated run passes with exit 0.\n\n## Files created\n\n**`test_mathlib.c`** \u2014 self-contained harness (libc only), 18 real assertions:\n- `add()`: basic, identity/zero, negative operands\n- `mul()`: basic, zero, identity, all negative sign combinations\n- **Cross-checks**: distributivity `mul(add(2,3),2) == add(mul(2,2),mul(3,2))`\n- **Failure case**: a deliberate",
       "workspace": "/opt/data/work/belya-fix/bench/.work/write-test-1"
+    },
+    {
+      "task": "long-context",
+      "category": "context",
+      "run": 1,
+      "ok": false,
+      "reasons": [
+        "missing output: '7742'"
+      ],
+      "wall_ms": 1998,
+      "exit_code": 0,
+      "steps": 1,
+      "tool_calls": 0,
+      "over_tool_cap": false,
+      "seed_failures": [],
+      "tools": [],
+      "prompt_tokens": 6073,
+      "completion_tokens": 155,
+      "cached_tokens": 4736,
+      "answer_chars": 300,
+      "answer_excerpt": "I don't have that \u2014 no locker code was ever mentioned in our conversation. The prior entries were all repeated status updates with no decisions or access details, and nothing was stored for me to retrieve.\n\nYou'd need to check your Berlin office facilities onboarding email or ask the office manager.",
+      "workspace": "/opt/data/work/belya-fix/bench/.work/long-context-1"
     }
   ]
 }

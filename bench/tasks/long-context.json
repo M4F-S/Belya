@@ -1,0 +1,21 @@
+{
+  "id": "long-context",
+  "category": "context",
+  "session_seed": {
+    "session_id": "bench_longctx",
+    "messages": 200,
+    "needle_at": 7,
+    "needle": "My locker code at the Berlin office is 7742.",
+    "filler": "We discussed routine project status, build logs, deployment windows and scheduling details for the Berlin and Cairo teams. No decisions were made in this exchange; it was status only, repeated for context volume."
+  },
+  "prompt": "What is my locker code at the Berlin office? Answer with the number only.",
+  "timeout_s": 300,
+  "expect": {
+    "contains": "7742"
+  },
+  "max_tool_calls": 10,
+  "env": {
+    "MAX_CONTEXT_TOKENS": "6000"
+  },
+  "note": "Compaction is forced by MAX_CONTEXT_TOKENS=6000; the needle sits at message 7."
+}
