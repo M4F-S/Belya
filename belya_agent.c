@@ -3062,3 +3062,58 @@ void belya_agent_free(BelyaAgent *agent) {
     }
     free(agent);
 }
+
+/* ==========================================================================
+   Phase 1a — persistent parallel subagents.
+   Contract-only stubs (RED step of TDD): the test suite defines the behaviour
+   first; the engine lands in the following commits. Every entry point here
+   reports "not implemented" rather than pretending to work.
+   ========================================================================== */
+bool belya_subagent_schema_init(BelyaAgent *agent) {
+    (void)agent;
+    return false;
+}
+
+char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task, long long budget_tokens) {
+    (void)parent; (void)role; (void)task; (void)budget_tokens;
+    return NULL;
+}
+
+BelyaSubagent *belya_subagent_get(BelyaAgent *agent, const char *id) {
+    (void)agent; (void)id;
+    return NULL;
+}
+
+void belya_subagent_free(BelyaSubagent *sa) {
+    (void)sa;
+}
+
+int belya_subagent_step(BelyaAgent *parent, const char *id) {
+    (void)parent; (void)id;
+    return -1;
+}
+
+bool belya_subagent_run(BelyaAgent *parent, const char *id) {
+    (void)parent; (void)id;
+    return false;
+}
+
+bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, size_t count, size_t max_parallel) {
+    (void)parent; (void)ids; (void)count; (void)max_parallel;
+    return false;
+}
+
+char *belya_subagent_collect(BelyaAgent *parent, const char *id) {
+    (void)parent; (void)id;
+    return NULL;
+}
+
+bool belya_subagent_cancel(BelyaAgent *parent, const char *id) {
+    (void)parent; (void)id;
+    return false;
+}
+
+char *belya_subagent_list_json(BelyaAgent *parent) {
+    (void)parent;
+    return NULL;
+}
