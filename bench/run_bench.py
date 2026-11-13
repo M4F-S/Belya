@@ -119,6 +119,7 @@ def run_one(binary, task, run_idx, base_env):
     env.setdefault("GIT_AUTHOR_EMAIL", "bench@local")
     env.setdefault("GIT_COMMITTER_NAME", "bench")
     env.setdefault("GIT_COMMITTER_EMAIL", "bench@local")
+    env.update(task.get("env") or {})
 
     # Optional seed turns: run real turns first (e.g. "remember X") so the
     # measured turn exercises recall instead of a hand-written fixture.
@@ -140,6 +141,29 @@ def run_one(binary, task, run_idx, base_env):
                 seed_failures.append("seed verification found no matching memory")
         except Exception as e:  # noqa: BLE001 - report, don't crash the run
             seed_failures.append(f"seed verification error: {e}")
+
+    # Optional session replay: pre-load a long synthetic session so the measured
+    # turn exercises compaction instead of a short prompt.
+    sess = task.get("session_seed")
+    if sess:
+        sid = sess.get("session_id", "bench_longctx")
+        subprocess.run([str(binary), "-p", "Initialize.", "--stats-json", str(ws / ".warm.json")],
+                       cwd=ws, env=env, capture_output=True, text=True, timeout=180)
+        con = sqlite3.connect(ws / "belya_memory.sqlite")
+        n = int(sess.get("messages", 200))
+        needle_at = int(sess.get("needle_at", 7))
+        needle = sess.get("needle", "")
+        filler = sess.get("filler", "Routine status update with no decisions.")
+        con.execute("DELETE FROM session_messages WHERE session_id=?", (sid,))
+        rows = []
+        for i in range(n):
+            role = "user" if i % 2 == 0 else "assistant"
+            text = needle if i == needle_at else f"{filler} (entry {i})"
+            rows.append((sid, i, role, text))
+        con.executemany("INSERT INTO session_messages (session_id, idx, role, content) VALUES (?,?,?,?)", rows)
+        con.commit()
+        con.close()
+        cmd.extend(["--resume", sid])
 
     started = time.time()
     timed_out = False

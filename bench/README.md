@@ -58,6 +58,10 @@ bench/
   exercises the real memory path instead of a hand-written database.
 - `setup_check.sql` runs against `belya_memory.sqlite` after seeding; if it
   returns nothing the run is failed as a *setup* failure, not a recall failure.
+- `session_seed` pre-loads a synthetic session (`messages`, `needle_at`,
+  `needle`, `filler`) and runs the task with `--resume`; use `env` to force
+  compaction (e.g. `{"MAX_CONTEXT_TOKENS": "6000"}`) so long-context tests
+  exercise eviction instead of just a long prompt.
 
 ## Adding a task
 
