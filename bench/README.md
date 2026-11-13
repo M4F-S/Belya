@@ -54,6 +54,10 @@ bench/
 - `require_tools` passes if **any** listed tool was used.
 - `max_tool_calls` is recorded, not scored — a correct answer reached in many
   calls is still correct.
+- `seed` is a list of prompts run first in the same workspace, so a recall task
+  exercises the real memory path instead of a hand-written database.
+- `setup_check.sql` runs against `belya_memory.sqlite` after seeding; if it
+  returns nothing the run is failed as a *setup* failure, not a recall failure.
 
 ## Adding a task
 

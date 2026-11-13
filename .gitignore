@@ -54,3 +54,5 @@ belya.new
 # Task benchmark scratch
 bench/.work/
 bench/latest.json
+bench/skills/
+bench/phase0b*.json

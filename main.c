@@ -501,6 +501,15 @@ int main(int argc, char **argv) {
                     json_obj_add(st, "steps", json_create_number((double)harness->last_turn_steps));
                     json_obj_add(st, "tool_calls", json_create_number((double)harness->last_turn_tool_calls));
                     json_obj_add(st, "elapsed_ms", json_create_number(harness->last_turn_latency_ms));
+                    const char *final_answer = "";
+                    for (size_t mi = agent->msg_count; mi > 0; mi--) {
+                        BelyaMessage *m = &agent->messages[mi - 1];
+                        if (m->role && strcmp(m->role, "assistant") == 0 && m->content && m->content[0]) {
+                            final_answer = m->content;
+                            break;
+                        }
+                    }
+                    json_obj_add(st, "answer", json_create_string(final_answer));
                     char *js = json_serialize(st);
                     if (js) {
                         FILE *sf = fopen(stats_json_path, "w");

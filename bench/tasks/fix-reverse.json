@@ -1,0 +1,11 @@
+{
+  "id": "fix-reverse",
+  "category": "code-fix",
+  "fixture": "fix-reverse",
+  "prompt": "reverse.c should print 'cba' for the string 'abc' but it prints 'cbc'. Fix the off-by-one in reverse.c, do not change check.sh, and run `sh check.sh` before answering.",
+  "timeout_s": 240,
+  "expect": {
+    "cmd": "sh check.sh"
+  },
+  "max_tool_calls": 25
+}

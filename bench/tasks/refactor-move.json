@@ -1,0 +1,11 @@
+{
+  "id": "refactor-move",
+  "category": "multi-file",
+  "fixture": "refactor-move",
+  "prompt": "Move helper() out of main.c into a new helper.c with a helper.h declaration, include it from main.c, and keep the program printing 42 when built as `cc main.c helper.c -o app`. Do not change check.sh. Run `sh check.sh` before answering.",
+  "timeout_s": 300,
+  "expect": {
+    "cmd": "sh check.sh"
+  },
+  "max_tool_calls": 30
+}

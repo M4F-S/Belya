@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -119,6 +120,27 @@ def run_one(binary, task, run_idx, base_env):
     env.setdefault("GIT_COMMITTER_NAME", "bench")
     env.setdefault("GIT_COMMITTER_EMAIL", "bench@local")
 
+    # Optional seed turns: run real turns first (e.g. "remember X") so the
+    # measured turn exercises recall instead of a hand-written fixture.
+    seed_failures = []
+    for i, seed_prompt in enumerate(task.get("seed") or []):
+        try:
+            subprocess.run([str(binary), "-p", seed_prompt], cwd=ws, env=env,
+                           capture_output=True, text=True,
+                           timeout=task.get("timeout_s", 240))
+        except subprocess.TimeoutExpired:
+            seed_failures.append(f"seed {i} timed out")
+    setup = task.get("setup_check") or {}
+    if setup.get("sql"):
+        try:
+            con = sqlite3.connect(ws / "belya_memory.sqlite")
+            seeded = bool(con.execute(setup["sql"]).fetchone()[0])
+            con.close()
+            if not seeded:
+                seed_failures.append("seed verification found no matching memory")
+        except Exception as e:  # noqa: BLE001 - report, don't crash the run
+            seed_failures.append(f"seed verification error: {e}")
+
     started = time.time()
     timed_out = False
     try:
@@ -140,7 +162,7 @@ def run_one(binary, task, run_idx, base_env):
             stats = {}
 
     tools = TOOL_RE.findall(ANSI_RE.sub("", stdout))
-    answer = final_answer(stdout)
+    answer = (stats.get("answer") or "").strip() or final_answer(stdout)
     reasons = []
 
     if timed_out:
@@ -149,6 +171,7 @@ def run_one(binary, task, run_idx, base_env):
         reasons.append(f"exit={rc}")
 
     exp = task.get("expect", {})
+    reasons.extend(seed_failures)
     if exp.get("cmd"):
         try:
             chk = subprocess.run(["sh", "-c", exp["cmd"]], cwd=ws, capture_output=True,
@@ -157,7 +180,7 @@ def run_one(binary, task, run_idx, base_env):
                 reasons.append("check failed: " + (chk.stdout + chk.stderr).strip()[:200])
         except subprocess.TimeoutExpired:
             reasons.append("check timed out")
-    if exp.get("contains") and exp["contains"] not in stdout:
+    if exp.get("contains") and exp["contains"] not in (answer + "\n" + stdout):
         reasons.append(f"missing output: {exp['contains']!r}")
     if exp.get("min_chars") and len(answer) < int(exp["min_chars"]):
         reasons.append(f"answer too short ({len(answer)} < {exp['min_chars']})")
@@ -179,11 +202,13 @@ def run_one(binary, task, run_idx, base_env):
         "steps": stats.get("steps"),
         "tool_calls": stats.get("tool_calls", len(tools)),
         "over_tool_cap": over_cap,
+        "seed_failures": seed_failures,
         "tools": tools,
         "prompt_tokens": stats.get("prompt_tokens"),
         "completion_tokens": stats.get("completion_tokens"),
         "cached_tokens": stats.get("cached_tokens"),
         "answer_chars": len(answer),
+        "answer_excerpt": answer[:400],
         "workspace": str(ws),
     }
 
