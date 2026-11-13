@@ -170,6 +170,11 @@ struct BelyaHarness {
     bool stage_mode;
     double last_turn_latency_ms;
 
+    /* Headless benchmark telemetry (--stats-json): steps and requested tool
+       calls for the most recent turn. Reset at the start of every turn. */
+    size_t last_turn_steps;
+    size_t last_turn_tool_calls;
+
     // Super Agent Harness: Dual VTable Structural Isolation
     bool is_router;
     bool is_worker;
