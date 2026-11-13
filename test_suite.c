@@ -4142,6 +4142,11 @@ static bool p1a_exec(BelyaAgent *agent, const char *sql) {
     return true;
 }
 
+/* Same, without the diagnostic: for statements expected to be rejected. */
+static bool p1a_exec_quiet(BelyaAgent *agent, const char *sql) {
+    return sqlite3_exec(agent->db, sql, 0, 0, NULL) == SQLITE_OK;
+}
+
 static bool p1a_has_column(BelyaAgent *agent, const char *table, const char *column) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -4258,6 +4263,16 @@ void test_phase1a_subagent_schema_and_fork(void) {
 
     /* Fork persists the child's own system prompt + task, indexed from 1. */
     p1a_assert_message_chain(agent, id);
+
+    /* A position is unique per child: a duplicate idx is refused by the schema,
+       not merely avoided by the writer. */
+    {
+        char dup_sql[512];
+        snprintf(dup_sql, sizeof(dup_sql),
+                 "INSERT INTO subagent_messages (subagent_id, idx, role, content) "
+                 "VALUES ('%s', 1, 'system', 'duplicate position');", id);
+        assert(p1a_exec_quiet(agent, dup_sql) == false);
+    }
 
     /* Defaults and refusals. */
     char *dflt = belya_subagent_fork(agent, "worker", "no budget given", 0);
