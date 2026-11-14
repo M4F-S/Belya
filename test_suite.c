@@ -4037,7 +4037,7 @@ void test_sota_dominance_pillars(void) {
 #define P1A_DB "test_subagents.sqlite"
 
 static pthread_mutex_t g_p1a_fake_mu = PTHREAD_MUTEX_INITIALIZER;
-static int g_p1a_fake_mode = 0;   /* 0 = answer immediately, 1 = tool call forever */
+static int g_p1a_fake_mode = 0;   /* 0 = answer now, 1 = tools forever, 2 = tool then answer */
 static int g_p1a_fake_calls = 0;
 
 static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValue *messages, const JsonValue *tools) {
@@ -4051,7 +4051,8 @@ static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValu
 
     r.prompt_tokens = 60;
     r.completion_tokens = 10;
-    if (mode == 0) {
+    bool want_tool = (mode == 1) || (mode == 2 && n == 1);
+    if (!want_tool) {
         char buf[64];
         snprintf(buf, sizeof(buf), "child-answer-%03d", n);
         r.content = xstrdup(buf);
@@ -4421,6 +4422,34 @@ void test_phase1a_budget_and_cancel(void) {
     assert(strstr(collected, "budget") != NULL);
     free(collected);
     belya_subagent_free(sa);
+
+    /* The realistic path: one tool call, then a final answer. */
+    p1a_reset_fake(2);
+    char *mix = belya_subagent_fork(agent, "worker", "call a tool, then answer", 10000);
+    assert(mix != NULL);
+    assert(belya_subagent_run(agent, mix) == true);
+    BelyaSubagent *msa = belya_subagent_get(agent, mix);
+    assert(msa != NULL);
+    assert(msa->status && strcmp(msa->status, "done") == 0);
+    assert(msa->error == NULL);
+    assert(msa->steps == 2);
+    assert(msa->spent_tokens == 140);
+    assert(msa->summary != NULL);
+    assert(strstr(msa->summary, "child-answer") != NULL);
+    belya_subagent_free(msa);
+    p1a_assert_message_chain(agent, mix);
+    {
+        char tsql[512];
+        /* The tool result carries its call id, or the transcript cannot be
+           replayed to a provider that requires tool_call_id. */
+        snprintf(tsql, sizeof(tsql),
+                 "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' "
+                 "AND role='tool' AND tool_call_id IS NOT NULL AND tool_call_id <> '';", mix);
+        assert(p1a_query(agent, tsql) == 1);
+        snprintf(tsql, sizeof(tsql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", mix);
+        assert(p1a_query(agent, tsql) == 5);  /* system, user, assistant(tool), tool, assistant */
+    }
+    free(mix);
 
     /* Cancellation is terminal: no further work, nothing to collect. */
     char *cancel_id = belya_subagent_fork(agent, "worker", "cancel me", 5000);
