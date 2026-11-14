@@ -4971,6 +4971,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     JsonValue *ap_tgt = json_create_object();
     json_obj_add(ap_tgt, "type", json_create_string("string"));
     json_obj_add(ap_tgt, "description", json_create_string("Target directory path to audit"));
+    /* Both halves were built and then dropped: ap_props never reached the schema
+       (so the tool advertised no parameters) and ap_tgt never reached ap_props.
+       The orphaned objects also leaked on every harness init. */
+    json_obj_add(ap_props, "target_path", ap_tgt);
+    json_obj_add(audit_params, "properties", ap_props);
     REGISTER_IF_PERMITTED("audit_security_variants", "Run Mythos variant analysis across codebase to detect unsafe sinks, buffer overflows, and memory vulnerabilities", audit_params, PERM_ALLOW, tool_audit_security_variants);
 
     // 23. ask_user (Claude Code AskUserQuestion / Hermes clarify parity)

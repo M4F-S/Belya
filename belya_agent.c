@@ -3114,11 +3114,12 @@ static bool subagent_ensure_column(BelyaAgent *agent, const char *table, const c
 }
 
 static bool subagent_persist_message(BelyaAgent *agent, const char *id, long long idx,
-                                     const char *role, const char *content, const char *tool_calls_json) {
+                                     const char *role, const char *content,
+                                     const char *tool_call_id, const char *tool_calls_json) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(agent->db,
-                           "INSERT INTO subagent_messages (subagent_id, idx, role, content, tool_calls_json) "
-                           "VALUES (?1, ?2, ?3, ?4, ?5);",
+                           "INSERT INTO subagent_messages (subagent_id, idx, role, content, "
+                           "tool_call_id, tool_calls_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
                            -1, &st, NULL) != SQLITE_OK) {
         return false;
     }
@@ -3126,8 +3127,10 @@ static bool subagent_persist_message(BelyaAgent *agent, const char *id, long lon
     sqlite3_bind_int64(st, 2, idx);
     sqlite3_bind_text(st, 3, role, -1, SQLITE_STATIC);
     sqlite3_bind_text(st, 4, content ? content : "", -1, SQLITE_STATIC);
-    if (tool_calls_json) sqlite3_bind_text(st, 5, tool_calls_json, -1, SQLITE_STATIC);
+    if (tool_call_id) sqlite3_bind_text(st, 5, tool_call_id, -1, SQLITE_STATIC);
     else sqlite3_bind_null(st, 5);
+    if (tool_calls_json) sqlite3_bind_text(st, 6, tool_calls_json, -1, SQLITE_STATIC);
+    else sqlite3_bind_null(st, 6);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -3159,6 +3162,7 @@ bool belya_subagent_schema_init(BelyaAgent *agent) {
         "  idx INTEGER NOT NULL,"
         "  role TEXT NOT NULL,"
         "  content TEXT NOT NULL,"
+        "  tool_call_id TEXT,"
         "  tool_calls_json TEXT,"
         "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");");
@@ -3166,6 +3170,7 @@ bool belya_subagent_schema_init(BelyaAgent *agent) {
     ok = ok && subagent_ensure_column(agent, "subagents", "error", "TEXT");
     ok = ok && subagent_ensure_column(agent, "subagents", "steps", "INTEGER DEFAULT 0");
     ok = ok && subagent_ensure_column(agent, "subagents", "workspace", "TEXT");
+    ok = ok && subagent_ensure_column(agent, "subagent_messages", "tool_call_id", "TEXT");
     /* One row per (child, position): a gap or a duplicate is a bug, not data. */
     ok = ok && subagent_exec(agent,
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_messages_unique "
@@ -3273,8 +3278,8 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
     if (st) sqlite3_finalize(st);
 
     /* The child's own transcript starts at fork: system prompt, then task. */
-    if (ok) ok = subagent_persist_message(parent, id, 1, "system", sys.data, NULL);
-    if (ok) ok = subagent_persist_message(parent, id, 2, "user", task, NULL);
+    if (ok) ok = subagent_persist_message(parent, id, 1, "system", sys.data, NULL, NULL);
+    if (ok) ok = subagent_persist_message(parent, id, 2, "user", task, NULL, NULL);
     dyn_str_free(&sys);
 
     if (ok) {
@@ -3396,16 +3401,409 @@ char *belya_subagent_list_json(BelyaAgent *agent) {
     return out;
 }
 
-/* T1.3: one bounded turn on the child's own harness. Not implemented yet. */
-int belya_subagent_step(BelyaAgent *parent, const char *id) {
-    (void)parent; (void)id;
-    return -1;
+/* ==========================================================================
+   T1.3 / T1.6 — one bounded turn on the child's own harness, persisted per step.
+
+   A step is: budget gate -> one model turn -> execute its tool calls on the
+   child's harness -> persist the assistant message, every tool result and the
+   row update in ONE transaction. The child's history is replayed from SQLite
+   when a run opens, so a step never depends on in-memory state.
+   ========================================================================== */
+
+#define BELYA_SUBAGENT_MAX_TURNS 50
+#define BELYA_SUBAGENT_MAX_TOOLS_PER_TURN 8
+#define BELYA_SUBAGENT_TOOL_RESULT_LIMIT 8000
+
+typedef struct {
+    char *tool_call_id;
+    char *name;
+    char *content;
+} SubagentObservation;
+
+typedef struct {
+    BelyaAgent *agent;
+    BelyaHarness *harness;
+    ModelGateway *gateway;
+    BelyaSubagent *row;
+    BelyaHarness *saved_active;
+} SubagentRuntime;
+
+static long long subagent_next_idx(BelyaAgent *parent, const char *id) {
+    sqlite3_stmt *st = NULL;
+    long long next = 0;
+    if (sqlite3_prepare_v2(parent->db,
+            "SELECT COALESCE(MAX(idx), 0) + 1 FROM subagent_messages WHERE subagent_id = ?1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
+    if (sqlite3_step(st) == SQLITE_ROW) next = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return next;
 }
 
-/* T1.3: drive a child to a terminal state. */
+static char *subagent_message_text(BelyaAgent *parent, const char *id, long long idx) {
+    sqlite3_stmt *st = NULL;
+    char *out = NULL;
+    if (sqlite3_prepare_v2(parent->db,
+            "SELECT content FROM subagent_messages WHERE subagent_id = ?1 AND idx = ?2;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, idx);
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        out = subagent_dup_text(sqlite3_column_text(st, 0));
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+static bool subagent_update_row(BelyaAgent *parent, const char *id, const char *status,
+                                const char *summary, const char *error,
+                                long long spent, long long steps) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(parent->db,
+            "UPDATE subagents SET status = ?2, summary = ?3, error = ?4, spent_tokens = ?5, "
+            "steps = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    if (summary) sqlite3_bind_text(st, 3, summary, -1, SQLITE_STATIC);
+    else sqlite3_bind_null(st, 3);
+    if (error) sqlite3_bind_text(st, 4, error, -1, SQLITE_STATIC);
+    else sqlite3_bind_null(st, 4);
+    sqlite3_bind_int64(st, 5, spent);
+    sqlite3_bind_int64(st, 6, steps);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* Rebuild the child's conversation from SQLite (idx 1 is already the agent's
+   system prompt). tool_calls are restored so the next API call stays valid. */
+static size_t subagent_replay_messages(BelyaAgent *parent, BelyaAgent *child, const char *id) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(parent->db,
+            "SELECT idx, role, content, tool_call_id, tool_calls_json FROM subagent_messages "
+            "WHERE subagent_id = ?1 ORDER BY idx ASC;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
+    size_t replayed = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        long long idx = sqlite3_column_int64(st, 0);
+        if (idx <= 1) continue;   /* system prompt is owned by the runtime */
+        const char *role = (const char *)sqlite3_column_text(st, 1);
+        const char *content = (const char *)sqlite3_column_text(st, 2);
+        const char *tcid = (const char *)sqlite3_column_text(st, 3);
+        const char *tcjson = (const char *)sqlite3_column_text(st, 4);
+        belya_agent_add_message(child, role ? role : "user", content ? content : "");
+        BelyaMessage *m = &child->messages[child->msg_count - 1];
+        if (tcid && tcid[0]) {
+            free(m->tool_call_id);
+            m->tool_call_id = xstrdup(tcid);
+        }
+        if (tcjson && tcjson[0]) {
+            JsonValue *arr = json_parse(tcjson);
+            if (arr && arr->type == JSON_ARRAY && arr->u.array.count > 0) {
+                m->tool_call_count = arr->u.array.count;
+                m->tool_calls = calloc(m->tool_call_count, sizeof(ModelParsedToolCall));
+                if (m->tool_calls) {
+                    for (size_t k = 0; k < m->tool_call_count; k++) {
+                        JsonValue *o = arr->u.array.items[k];
+                        const char *tid = json_obj_get_str(o, "id");
+                        const char *tname = json_obj_get_str(o, "name");
+                        const char *targs = json_obj_get_str(o, "arguments");
+                        m->tool_calls[k].id = xstrdup(tid ? tid : "");
+                        m->tool_calls[k].name = xstrdup(tname ? tname : "");
+                        m->tool_calls[k].arguments_json = xstrdup(targs ? targs : "{}");
+                    }
+                } else {
+                    m->tool_call_count = 0;
+                }
+            }
+            if (arr) json_free(arr);
+        }
+        replayed++;
+    }
+    sqlite3_finalize(st);
+    return replayed;
+}
+
+static char *subagent_tool_calls_json(const ModelGatewayResponse *resp) {
+    JsonValue *arr = json_create_array();
+    for (size_t i = 0; i < resp->tool_call_count; i++) {
+        JsonValue *o = json_create_object();
+        const ModelParsedToolCall *tc = &resp->tool_calls[i];
+        json_obj_add(o, "id", json_create_string(tc->id ? tc->id : ""));
+        json_obj_add(o, "name", json_create_string(tc->name ? tc->name : ""));
+        json_obj_add(o, "arguments", json_create_string(tc->arguments_json ? tc->arguments_json : "{}"));
+        json_arr_add(arr, o);
+    }
+    char *out = json_serialize(arr);
+    json_free(arr);
+    return out;
+}
+
+static SubagentRuntime *subagent_runtime_open(BelyaAgent *parent, const char *id) {
+    if (!parent || !parent->db || !parent->gateway || !id || !id[0]) return NULL;
+
+    BelyaSubagent *row = belya_subagent_get(parent, id);
+    if (!row) return NULL;
+    if (!row->status || strcmp(row->status, "running") != 0) {
+        belya_subagent_free(row);
+        return NULL;
+    }
+
+    char *sys = subagent_message_text(parent, id, 1);
+    if (!sys) {
+        belya_subagent_free(row);
+        return NULL;
+    }
+
+    const char *model = (row->model && row->model[0]) ? row->model : parent->gateway->model;
+    ModelGateway *gw = model_gateway_init(parent->gateway->endpoint, parent->gateway->api_key, model);
+    if (!gw) {
+        free(sys);
+        belya_subagent_free(row);
+        return NULL;
+    }
+    gw->streaming = false;
+    gw->max_retries = 0;
+    /* Same transport as the parent, so the test seam and any custom
+       chat_complete keep working for children. */
+    gw->chat_complete = parent->gateway->chat_complete;
+
+    BelyaAgent *child = belya_agent_init(gw, ":memory:", sys);
+    free(sys);
+    if (!child) {
+        model_gateway_free(gw);
+        belya_subagent_free(row);
+        return NULL;
+    }
+
+    SubagentRuntime *rt = calloc(1, sizeof(SubagentRuntime));
+    if (!rt) {
+        belya_agent_free(child);
+        model_gateway_free(gw);
+        belya_subagent_free(row);
+        return NULL;
+    }
+    rt->agent = child;
+    rt->gateway = gw;
+    rt->row = row;
+    rt->saved_active = belya_harness_get_active();
+    rt->harness = belya_harness_init(child);
+    if (!rt->harness) {
+        belya_harness_set_active(rt->saved_active);
+        belya_agent_free(child);
+        model_gateway_free(gw);
+        belya_subagent_free(row);
+        free(rt);
+        return NULL;
+    }
+    subagent_replay_messages(parent, child, id);
+    return rt;
+}
+
+static void subagent_runtime_close(SubagentRuntime *rt) {
+    if (!rt) return;
+    /* belya_harness_free() frees the agent it was handed: never free both. */
+    if (rt->harness) belya_harness_free(rt->harness);
+    else if (rt->agent) belya_agent_free(rt->agent);
+    belya_harness_set_active(rt->saved_active);
+    if (rt->gateway) model_gateway_free(rt->gateway);
+    belya_subagent_free(rt->row);
+    free(rt);
+}
+
+static void subagent_apply_status(SubagentRuntime *rt, const char *status,
+                                  const char *summary, const char *error) {
+    free(rt->row->status);
+    rt->row->status = xstrdup(status ? status : "running");
+    free(rt->row->summary);
+    rt->row->summary = summary ? xstrdup(summary) : NULL;
+    free(rt->row->error);
+    rt->row->error = error ? xstrdup(error) : NULL;
+}
+
+/* Assistant message + tool results + row update, atomically. */
+static bool subagent_commit_step(BelyaAgent *parent, const char *id,
+                                 const char *assistant_content, const char *assistant_tcs,
+                                 SubagentObservation *obs, size_t obs_count,
+                                 const char *status, const char *summary, const char *error,
+                                 long long spent, long long steps) {
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_exec(parent->db, "BEGIN IMMEDIATE;", NULL, NULL, NULL) == SQLITE_OK;
+    long long idx = ok ? subagent_next_idx(parent, id) : 0;
+    if (ok && idx <= 0) ok = false;
+    if (ok && (assistant_content || assistant_tcs)) {
+        ok = subagent_persist_message(parent, id, idx, "assistant",
+                                      assistant_content ? assistant_content : "",
+                                      NULL, assistant_tcs);
+        idx++;
+    }
+    for (size_t i = 0; ok && i < obs_count; i++) {
+        ok = subagent_persist_message(parent, id, idx, "tool", obs[i].content,
+                                      obs[i].tool_call_id, NULL);
+        idx++;
+    }
+    if (ok) ok = subagent_update_row(parent, id, status, summary, error, spent, steps);
+    if (ok && sqlite3_exec(parent->db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK) ok = false;
+    if (!ok) sqlite3_exec(parent->db, "ROLLBACK;", NULL, NULL, NULL);
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    return ok;
+}
+
+/* Run one tool call on the child's harness. Recursion is refused here as well as
+   in the tool layer, so a child can never fork its own children. */
+static char *subagent_run_tool(SubagentRuntime *rt, const ModelParsedToolCall *tc) {
+    if (!tc || !tc->name || !tc->name[0]) return xstrdup("Error: malformed tool call.");
+    if (strcmp(tc->name, "spawn_subagent") == 0 || strcmp(tc->name, "dispatch_agent") == 0) {
+        return xstrdup("Tool not available in subagent sandbox.");
+    }
+    BelyaToolCallback cb = NULL;
+    for (size_t i = 0; i < rt->harness->tool_count; i++) {
+        if (rt->harness->tools[i].name && strcmp(rt->harness->tools[i].name, tc->name) == 0) {
+            cb = rt->harness->tools[i].callback;
+            break;
+        }
+    }
+    if (!cb) return xstrdup("Tool not available in subagent sandbox.");
+
+    JsonValue *args = tc->arguments_json ? json_parse(tc->arguments_json) : NULL;
+    if (!args || args->type != JSON_OBJECT) {
+        if (args) json_free(args);
+        args = json_create_object();
+    }
+    char *out = cb(rt->agent, args);
+    json_free(args);
+    if (!out) return xstrdup("(no output)");
+    if (strlen(out) > BELYA_SUBAGENT_TOOL_RESULT_LIMIT) out[BELYA_SUBAGENT_TOOL_RESULT_LIMIT] = '\0';
+    return out;
+}
+
+static void subagent_observations_free(SubagentObservation *obs, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        free(obs[i].tool_call_id);
+        free(obs[i].name);
+        free(obs[i].content);
+    }
+}
+
+static int subagent_runtime_step(BelyaAgent *parent, SubagentRuntime *rt) {
+    BelyaSubagent *row = rt->row;
+    char reason[192];
+
+    /* Budget gate before the turn: a child never starts one it cannot afford. */
+    if (row->budget_tokens > 0 && row->spent_tokens >= row->budget_tokens) {
+        snprintf(reason, sizeof(reason), "token budget exhausted (%lld of %lld tokens)",
+                 row->spent_tokens, row->budget_tokens);
+        if (!subagent_commit_step(parent, row->id, NULL, NULL, NULL, 0, "failed", NULL, reason,
+                                  row->spent_tokens, row->steps)) {
+            return -1;
+        }
+        subagent_apply_status(rt, "failed", NULL, reason);
+        return 0;
+    }
+    if (row->steps >= BELYA_SUBAGENT_MAX_TURNS) {
+        snprintf(reason, sizeof(reason), "step cap reached (%d turns)", BELYA_SUBAGENT_MAX_TURNS);
+        if (!subagent_commit_step(parent, row->id, NULL, NULL, NULL, 0, "failed", NULL, reason,
+                                  row->spent_tokens, row->steps)) {
+            return -1;
+        }
+        subagent_apply_status(rt, "failed", NULL, reason);
+        return 0;
+    }
+
+    ModelGatewayResponse resp = belya_agent_step(rt->agent);
+    bool has_calls = resp.has_tool_call && resp.tool_call_count > 0;
+
+    if (!has_calls && (!resp.content || !resp.content[0])) {
+        model_gateway_response_free(&resp);
+        const char *why = "model returned no content";
+        if (!subagent_commit_step(parent, row->id, NULL, NULL, NULL, 0, "failed", NULL, why,
+                                  row->spent_tokens, row->steps)) {
+            return -1;
+        }
+        subagent_apply_status(rt, "failed", NULL, why);
+        return -1;
+    }
+
+    long long spent = row->spent_tokens + (long long)(resp.prompt_tokens + resp.completion_tokens);
+    long long steps = row->steps + 1;
+    char *tcs = has_calls ? subagent_tool_calls_json(&resp) : NULL;
+
+    SubagentObservation obs[BELYA_SUBAGENT_MAX_TOOLS_PER_TURN];
+    size_t obs_count = 0;
+    memset(obs, 0, sizeof(obs));
+    if (has_calls) {
+        size_t limit = resp.tool_call_count < BELYA_SUBAGENT_MAX_TOOLS_PER_TURN
+                       ? resp.tool_call_count : BELYA_SUBAGENT_MAX_TOOLS_PER_TURN;
+        for (size_t i = 0; i < limit; i++) {
+            char *result = subagent_run_tool(rt, &resp.tool_calls[i]);
+            belya_agent_add_tool_result(rt->agent, resp.tool_calls[i].id,
+                                        resp.tool_calls[i].name, result);
+            obs[obs_count].tool_call_id = xstrdup(resp.tool_calls[i].id ? resp.tool_calls[i].id : "");
+            obs[obs_count].name = xstrdup(resp.tool_calls[i].name ? resp.tool_calls[i].name : "");
+            obs[obs_count].content = xstrdup(result ? result : "");   /* owned by obs */
+            obs_count++;
+            free(result);
+        }
+    }
+
+    const char *status = "running";
+    const char *error = NULL;
+    char *summary = NULL;
+    if (!has_calls) {
+        status = "done";
+        summary = xstrdup(resp.content ? resp.content : "");
+    } else if (row->budget_tokens > 0 && spent >= row->budget_tokens) {
+        status = "failed";
+        snprintf(reason, sizeof(reason), "token budget exhausted (%lld of %lld tokens)",
+                 spent, row->budget_tokens);
+        error = reason;
+    }
+
+    bool committed = subagent_commit_step(parent, row->id, resp.content, tcs, obs, obs_count,
+                                          status, summary, error, spent, steps);
+    subagent_observations_free(obs, obs_count);
+    free(tcs);
+    model_gateway_response_free(&resp);
+    if (!committed) {
+        free(summary);
+        return -1;
+    }
+
+    rt->row->spent_tokens = spent;
+    rt->row->steps = steps;
+    /* apply_status copies before freeing the old value, so passing the local
+       summary (not rt->row->summary) is required. */
+    subagent_apply_status(rt, status, summary, error);
+    free(summary);
+    return strcmp(status, "running") == 0 ? 1 : 0;
+}
+
+int belya_subagent_step(BelyaAgent *parent, const char *id) {
+    SubagentRuntime *rt = subagent_runtime_open(parent, id);
+    if (!rt) return -1;
+    int rc = subagent_runtime_step(parent, rt);
+    subagent_runtime_close(rt);
+    return rc;
+}
+
 bool belya_subagent_run(BelyaAgent *parent, const char *id) {
-    (void)parent; (void)id;
-    return false;
+    SubagentRuntime *rt = subagent_runtime_open(parent, id);
+    if (!rt) return false;
+    int rc = 1;
+    while (rc == 1) rc = subagent_runtime_step(parent, rt);
+    bool done = (rc == 0) && rt->row->status && strcmp(rt->row->status, "done") == 0;
+    subagent_runtime_close(rt);
+    return done;
 }
 
 /* T1.5: bounded pthread pool (max_parallel, capped at BELYA_SUBAGENT_MAX_PARALLEL). */
