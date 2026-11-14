@@ -11,6 +11,7 @@
 #include "belya_harness.h"
 #include "minifrontmatter.h"
 #include <time.h>
+#include <pthread.h>
 #include <ctype.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -3205,6 +3206,9 @@ static void subagent_parent_digest(BelyaAgent *parent, char *out, size_t cap) {
     }
 }
 
+/* Serialises the fork transaction on the shared connection (see fork). */
+static pthread_mutex_t g_subagent_write_lock = PTHREAD_MUTEX_INITIALIZER;
+
 char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task, long long budget_tokens) {
     if (!parent || !parent->db || !task || !task[0]) return NULL;
     if (!belya_subagent_schema_init(parent)) return NULL;
@@ -3241,11 +3245,19 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
     const char *parent_session = (session_env && session_env[0]) ? session_env : "main";
 
     sqlite3_stmt *st = NULL;
-    bool ok = sqlite3_prepare_v2(parent->db,
-        "INSERT INTO subagents (id, parent_session, role, status, task, workspace, model, "
-        "budget_tokens, spent_tokens, steps) "
-        "VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, 0, 0);",
-        -1, &st, NULL) == SQLITE_OK;
+    /* One transaction for the row plus both messages: atomic (no half-child) and
+       one fsync instead of three. The mutex exists because fork writes on the
+       parent's connection; two threads cannot hold a transaction on it at once.
+       When T1.5 gives each worker its own connection this becomes the DB's job. */
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_exec(parent->db, "BEGIN IMMEDIATE;", NULL, NULL, NULL) == SQLITE_OK;
+    if (ok) {
+        ok = sqlite3_prepare_v2(parent->db,
+            "INSERT INTO subagents (id, parent_session, role, status, task, workspace, model, "
+            "budget_tokens, spent_tokens, steps) "
+            "VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?6, ?7, 0, 0);",
+            -1, &st, NULL) == SQLITE_OK;
+    }
     if (ok) {
         sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
         sqlite3_bind_text(st, 2, parent_session, -1, SQLITE_STATIC);
@@ -3265,14 +3277,13 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
     if (ok) ok = subagent_persist_message(parent, id, 2, "user", task, NULL);
     dyn_str_free(&sys);
 
-    if (!ok) {
-        char cleanup[160];
-        snprintf(cleanup, sizeof(cleanup), "DELETE FROM subagent_messages WHERE subagent_id='%s';", id);
-        subagent_exec(parent, cleanup);
-        snprintf(cleanup, sizeof(cleanup), "DELETE FROM subagents WHERE id='%s';", id);
-        subagent_exec(parent, cleanup);
-        return NULL;
+    if (ok) {
+        ok = sqlite3_exec(parent->db, "COMMIT;", NULL, NULL, NULL) == SQLITE_OK;
     }
+    if (!ok) sqlite3_exec(parent->db, "ROLLBACK;", NULL, NULL, NULL);
+    pthread_mutex_unlock(&g_subagent_write_lock);
+
+    if (!ok) return NULL;
     return xstrdup(id);
 }
 

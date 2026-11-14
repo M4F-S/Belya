@@ -4274,6 +4274,20 @@ void test_phase1a_subagent_schema_and_fork(void) {
         assert(p1a_exec_quiet(agent, dup_sql) == false);
     }
 
+    /* Fork is one transaction: a failure after the row insert leaves nothing
+       behind. The trigger aborts on the task message (idx 2), i.e. after the
+       subagents row already exists. */
+    assert(p1a_exec(agent,
+        "CREATE TRIGGER p1a_fail BEFORE INSERT ON subagent_messages "
+        "WHEN NEW.content = 'force-fork-failure' BEGIN SELECT RAISE(ABORT, 'forced'); END;"));
+    {
+        long long rows_before = p1a_query(agent, "SELECT COUNT(*) FROM subagents;");
+        assert(rows_before >= 1);
+        assert(belya_subagent_fork(agent, "worker", "force-fork-failure", 100) == NULL);
+        assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents;") == rows_before);
+    }
+    assert(p1a_exec(agent, "DROP TRIGGER p1a_fail;"));
+
     /* Defaults and refusals. */
     char *dflt = belya_subagent_fork(agent, "worker", "no budget given", 0);
     assert(dflt != NULL);
