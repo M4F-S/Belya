@@ -3597,7 +3597,10 @@ static SubagentRuntime *subagent_runtime_open(BelyaAgent *parent, const char *id
     rt->gateway = gw;
     rt->row = row;
     rt->saved_active = belya_harness_get_active();
-    rt->harness = belya_harness_init(child);
+    /* Role "worker" keeps the full tool set but skips the agent mesh: every
+       harness would otherwise bind the same /tmp/belya_almaz_mesh.sock and two
+       parallel children would collide. */
+    rt->harness = belya_harness_init_bounded(child, NULL, "worker");
     if (!rt->harness) {
         belya_harness_set_active(rt->saved_active);
         belya_agent_free(child);
@@ -3806,8 +3809,59 @@ bool belya_subagent_run(BelyaAgent *parent, const char *id) {
     return done;
 }
 
-/* T1.5: bounded pthread pool (max_parallel, capped at BELYA_SUBAGENT_MAX_PARALLEL). */
+/* T1.5 — bounded pool. Workers claim the next id atomically, so a child that
+   fails does not stall the queue. Returns true only when every child finished
+   `done`. */
+typedef struct {
+    BelyaAgent *parent;
+    const char *const *ids;
+    size_t count;
+    size_t next;
+    size_t completed;
+    size_t failures;
+} SubagentPool;
+
+static void *subagent_pool_worker(void *ud) {
+    SubagentPool *pool = (SubagentPool *)ud;
+    for (;;) {
+        size_t i = __sync_fetch_and_add(&pool->next, 1);
+        if (i >= pool->count) break;
+        bool ok = belya_subagent_run(pool->parent, pool->ids[i]);
+        __sync_fetch_and_add(&pool->completed, 1);
+        if (!ok) __sync_fetch_and_add(&pool->failures, 1);
+    }
+    return NULL;
+}
+
 bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, size_t count, size_t max_parallel) {
-    (void)parent; (void)ids; (void)count; (void)max_parallel;
-    return false;
+    if (!parent || !parent->db || !ids || count == 0) return false;
+
+    size_t workers = (max_parallel == 0) ? 1 : max_parallel;
+    if (workers > BELYA_SUBAGENT_MAX_PARALLEL) workers = BELYA_SUBAGENT_MAX_PARALLEL;
+    if (workers > count) workers = count;
+
+    SubagentPool pool;
+    memset(&pool, 0, sizeof(pool));
+    pool.parent = parent;
+    pool.ids = ids;
+    pool.count = count;
+
+    if (workers <= 1) {
+        subagent_pool_worker(&pool);
+        return pool.failures == 0 && pool.completed == count;
+    }
+
+    pthread_t *threads = calloc(workers, sizeof(pthread_t));
+    if (!threads) return false;
+    size_t started = 0;
+    for (size_t i = 0; i < workers; i++) {
+        if (pthread_create(&threads[i], NULL, subagent_pool_worker, &pool) != 0) break;
+        started++;
+    }
+    for (size_t i = 0; i < started; i++) pthread_join(threads[i], NULL);
+    /* If a thread could not start, drain the remaining ids on this thread
+       instead of silently reporting success for work nobody ran. */
+    subagent_pool_worker(&pool);
+    free(threads);
+    return pool.failures == 0 && pool.completed == count;
 }

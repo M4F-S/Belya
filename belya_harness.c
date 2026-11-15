@@ -37,7 +37,14 @@ static inline int landlock_restrict_self(const int ruleset_fd, const __u32 flags
 #endif
 #endif
 
+/* Thread-local: parallel subagents each build their own harness, and the tools
+   they run must see their own harness (cwd, permissions), not the last one any
+   thread happened to create. */
+#if defined(__GNUC__)
+static __thread BelyaHarness *g_harness = NULL;
+#else
 static BelyaHarness *g_harness = NULL;
+#endif
 const char *g_active_custom_script_path = NULL;
 
 BelyaHarness *belya_harness_get_active(void) {
@@ -2140,109 +2147,137 @@ static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
     return result.data;
 }
 
+/* Phase 1a T1.4 — the parent-facing subagent surface. Every tool answers with
+   text (never NULL), so a model always has something to read. */
 static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     if (!agent || !agent->gateway || !agent->gateway->endpoint) {
         return xstrdup("Error: Model gateway is offline or unconfigured.");
     }
     const char *task = json_obj_get_str(args, "task");
     const char *instructions = json_obj_get_str(args, "instructions");
-    double max_turns_num = json_obj_get_num(args, "max_turns", 5);
+    const char *role = json_obj_get_str(args, "role");
+    bool wait = json_obj_get_bool(args, "wait", true);
+    double budget_num = json_obj_get_num(args, "budget_tokens", (double)BELYA_SUBAGENT_DEFAULT_BUDGET);
 
-    if (!task) return xstrdup("Error: Missing subagent task argument.");
+    if (!task || !task[0]) return xstrdup("Error: Missing subagent task argument.");
 
-    DynString sys = dyn_str_new();
-    dyn_str_append(&sys, "You are a specialized subagent worker. Execute the assigned task and provide a concise, direct answer.");
-    if (g_harness && strlen(g_harness->cwd) > 0) {
-        dyn_str_appendf(&sys, "\n\nWorkspace Root: %s\nIMPORTANT: Use current directory or relative paths for all file tools.\n", g_harness->cwd);
+    /* The engine's fork takes one task string; instructions ride along. */
+    DynString full_task = dyn_str_new();
+    dyn_str_append(&full_task, task);
+    if (instructions && instructions[0]) {
+        dyn_str_appendf(&full_task, "\n\nAdditional instructions:\n%s", instructions);
     }
-    if (instructions && strlen(instructions) > 0) {
-        dyn_str_append(&sys, "\nTask instructions:\n");
-        dyn_str_append(&sys, instructions);
-    }
+    long long budget = (budget_num > 0) ? (long long)budget_num : BELYA_SUBAGENT_DEFAULT_BUDGET;
 
-    ModelGateway *sub_gw = model_gateway_init(agent->gateway->endpoint, agent->gateway->api_key, agent->gateway->model);
-    if (!sub_gw) {
-        dyn_str_free(&sys);
-        return xstrdup("Error: Out of memory initializing subagent gateway.");
-    }
-    sub_gw->streaming = false; // Run silent to avoid stdout collision
+    char *id = belya_subagent_fork(agent, role, full_task.data, budget);
+    dyn_str_free(&full_task);
+    if (!id) return xstrdup("Error: could not fork a subagent (database unavailable).");
 
-    BelyaAgent *sub_agent = belya_agent_init(sub_gw, ":memory:", sys.data);
-    if (!sub_agent) {
-        model_gateway_free(sub_gw);
-        dyn_str_free(&sys);
-        return xstrdup("Error: Out of memory initializing subagent.");
-    }
-    dyn_str_free(&sys);
-
-    BelyaHarness *saved_harness = g_harness;
-    BelyaHarness *sub_harness = belya_harness_init(sub_agent);
-    if (saved_harness && strlen(saved_harness->cwd) > 0) {
-        snprintf(sub_harness->cwd, sizeof(sub_harness->cwd), "%s", saved_harness->cwd);
-    }
-    belya_agent_add_message(sub_agent, "user", task);
-
-    int turns = (int)max_turns_num;
-    if (turns <= 0 || turns > 10) turns = 5;
-
-    DynString tool_log = dyn_str_new();
-    DynString final_ans = dyn_str_new();
-    bool running = true;
-    size_t tool_executions = 0;
-
-    while (running && turns-- > 0) {
-        ModelGatewayResponse resp = belya_agent_step(sub_agent);
-        if (!resp.has_tool_call) {
-            if (resp.content) dyn_str_append(&final_ans, resp.content);
-            running = false;
-        } else {
-            for (size_t i = 0; i < resp.tool_call_count; i++) {
-                ModelParsedToolCall *tc = &resp.tool_calls[i];
-                BelyaRegisteredTool *matched = NULL;
-                for (size_t t = 0; t < sub_harness->tool_count; t++) {
-                    if (strcmp(sub_harness->tools[t].name, tc->name) == 0 &&
-                        strcmp(tc->name, "spawn_subagent") != 0 &&
-                        strcmp(tc->name, "dispatch_agent") != 0) {
-                        matched = &sub_harness->tools[t];
-                        break;
-                    }
-                }
-                if (matched && matched->callback) {
-                    JsonValue *p_args = json_parse(tc->arguments_json);
-                    char *obs = matched->callback(sub_agent, p_args);
-                    json_free(p_args);
-                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, obs);
-
-                    dyn_str_appendf(&tool_log, "• [%s](%s) => %s\n", tc->name, tc->arguments_json ? tc->arguments_json : "", obs ? obs : "");
-                    tool_executions++;
-                    if (obs) free(obs);
-                } else {
-                    belya_agent_add_tool_result(sub_agent, tc->id, tc->name, "Tool not available in subagent sandbox.");
-                }
-            }
-        }
-        model_gateway_response_free(&resp);
+    if (!wait) {
+        JsonValue *out = json_create_object();
+        json_obj_add(out, "id", json_create_string(id));
+        json_obj_add(out, "status", json_create_string("running"));
+        json_obj_add(out, "role", json_create_string((role && role[0]) ? role : "worker"));
+        json_obj_add(out, "budget_tokens", json_create_number((double)budget));
+        char *text = json_serialize(out);
+        json_free(out);
+        free(id);
+        return text;
     }
 
-    belya_harness_free(sub_harness);
-    g_harness = saved_harness;
-    if (saved_harness && strlen(saved_harness->cwd) > 0) {
-        if (chdir(saved_harness->cwd) != 0) { /* best-effort restore */ }
-    }
-    model_gateway_free(sub_gw);
+    /* Blocking form: the historical envelope, now produced by the engine so the
+       child inherits the parent's transport and budget. */
+    bool done = belya_subagent_run(agent, id);
+    char *summary = belya_subagent_collect(agent, id);
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
 
     DynString envelope = dyn_str_new();
-    dyn_str_appendf(&envelope, "=== Subagent Task Execution Envelope ===\nTask: %s\nTools Executed: %zu\n\n", task, tool_executions);
-    if (tool_log.len > 0) {
-        dyn_str_append(&envelope, "Execution Trace:\n");
-        dyn_str_append(&envelope, tool_log.data);
-        dyn_str_append(&envelope, "\n");
+    dyn_str_appendf(&envelope,
+        "=== Subagent Task Execution Envelope ===\nTask: %s\nSubagent: %s\nStatus: %s\n"
+        "Steps: %lld | Tokens: %lld/%lld\n\n",
+        task, id, sa && sa->status ? sa->status : "unknown",
+        sa ? sa->steps : 0LL, sa ? sa->spent_tokens : 0LL,
+        sa ? sa->budget_tokens : budget);
+    if (sa && sa->error && sa->error[0]) {
+        dyn_str_appendf(&envelope, "Reason: %s\n\n", sa->error);
     }
-    dyn_str_appendf(&envelope, "Final Output:\n%s", final_ans.len > 0 ? final_ans.data : "(Completed without final text)");
-    dyn_str_free(&tool_log);
-    dyn_str_free(&final_ans);
-
+    dyn_str_appendf(&envelope, "Final Output:\n%s",
+                    summary ? summary : "(no result; the child did not finish)");
+    if (!done) dyn_str_append(&envelope, "\n\n[child did not reach a done state]");
+    free(summary);
+    if (sa) belya_subagent_free(sa);
+    free(id);
     return envelope.data;
+}
+
+static char *tool_check_subagent(BelyaAgent *agent, const JsonValue *args) {
+    const char *id = json_obj_get_str(args, "id");
+    if (!id || !id[0]) return xstrdup("Error: missing subagent id.");
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    if (!sa) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Error: unknown subagent '%s'.", id);
+        return ds.data;
+    }
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds,
+        "Subagent %s\n  Role: %s\n  Status: %s\n  Steps: %lld\n  Tokens: %lld/%lld\n  Task: %s\n",
+        sa->id ? sa->id : id, sa->role ? sa->role : "", sa->status ? sa->status : "",
+        sa->steps, sa->spent_tokens, sa->budget_tokens, sa->task ? sa->task : "");
+    if (sa->summary && sa->summary[0]) dyn_str_appendf(&ds, "  Summary: %s\n", sa->summary);
+    if (sa->error && sa->error[0]) dyn_str_appendf(&ds, "  Reason: %s\n", sa->error);
+    belya_subagent_free(sa);
+    return ds.data;
+}
+
+static char *tool_collect_subagent(BelyaAgent *agent, const JsonValue *args) {
+    const char *id = json_obj_get_str(args, "id");
+    if (!id || !id[0]) return xstrdup("Error: missing subagent id.");
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    if (!sa) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Error: unknown subagent '%s'.", id);
+        return ds.data;
+    }
+    DynString ds = dyn_str_new();
+    const char *status = sa->status ? sa->status : "";
+    if (strcmp(status, "done") == 0) {
+        dyn_str_appendf(&ds, "%s", (sa->summary && sa->summary[0]) ? sa->summary
+                                                                 : "done: no summary recorded");
+    } else if (strcmp(status, "failed") == 0) {
+        dyn_str_appendf(&ds, "Subagent %s failed: %s", id,
+                        (sa->error && sa->error[0]) ? sa->error : "unknown reason");
+    } else if (strcmp(status, "cancelled") == 0) {
+        dyn_str_appendf(&ds, "Subagent %s was cancelled; nothing to collect.", id);
+    } else {
+        dyn_str_appendf(&ds,
+            "Subagent %s is still running (steps: %lld, tokens: %lld/%lld); nothing to collect yet.",
+            id, sa->steps, sa->spent_tokens, sa->budget_tokens);
+    }
+    belya_subagent_free(sa);
+    return ds.data;
+}
+
+static char *tool_cancel_subagent(BelyaAgent *agent, const JsonValue *args) {
+    const char *id = json_obj_get_str(args, "id");
+    if (!id || !id[0]) return xstrdup("Error: missing subagent id.");
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    if (!sa) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Error: unknown subagent '%s'.", id);
+        return ds.data;
+    }
+    const char *status = sa->status ? sa->status : "";
+    if (belya_subagent_cancel(agent, id)) {
+        belya_subagent_free(sa);
+        DynString ok = dyn_str_new();
+        dyn_str_appendf(&ok, "Subagent %s cancelled.", id);
+        return ok.data;
+    }
+    DynString ds = dyn_str_new();
+    dyn_str_appendf(&ds, "Subagent %s is %s; nothing to cancel.", id, status);
+    belya_subagent_free(sa);
+    return ds.data;
 }
 
 // ==================== Belya Agency Subagent Dispatch, Rollback Guard & Triage ====================
@@ -4542,6 +4577,22 @@ static void harness_on_pre_compact_hook(void *ud) {
     }
 }
 
+/* Phase 1a: the id-only schema shared by check/collect/cancel_subagent. */
+static JsonValue *subagent_id_schema(const char *desc) {
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    JsonValue *props = json_create_object();
+    JsonValue *idp = json_create_object();
+    json_obj_add(idp, "type", json_create_string("string"));
+    json_obj_add(idp, "description", json_create_string(desc));
+    json_obj_add(props, "id", idp);
+    json_obj_add(params, "properties", props);
+    JsonValue *req = json_create_array();
+    json_arr_add(req, json_create_string("id"));
+    json_obj_add(params, "required", req);
+    return params;
+}
+
 BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_whitelist, const char *role_name) {
     BelyaHarness *h = calloc(1, sizeof(BelyaHarness));
     if (!h) return NULL;
@@ -4804,13 +4855,36 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(sub_props, "instructions", sub_inst);
     JsonValue *sub_turns = json_create_object();
     json_obj_add(sub_turns, "type", json_create_string("number"));
-    json_obj_add(sub_turns, "description", json_create_string("Max execution turns (default: 5)"));
+    json_obj_add(sub_turns, "description", json_create_string("Max execution turns (legacy hint; the engine bounds turns and budget itself)"));
     json_obj_add(sub_props, "max_turns", sub_turns);
+    JsonValue *sub_role = json_create_object();
+    json_obj_add(sub_role, "type", json_create_string("string"));
+    json_obj_add(sub_role, "description", json_create_string("Role for the child (default: worker); a matching agent manifest adds instructions"));
+    json_obj_add(sub_props, "role", sub_role);
+    JsonValue *sub_budget = json_create_object();
+    json_obj_add(sub_budget, "type", json_create_string("number"));
+    json_obj_add(sub_budget, "description", json_create_string("Hard token budget for the child (default: 50000)"));
+    json_obj_add(sub_props, "budget_tokens", sub_budget);
+    JsonValue *sub_wait = json_create_object();
+    json_obj_add(sub_wait, "type", json_create_string("boolean"));
+    json_obj_add(sub_wait, "description", json_create_string("true (default) blocks and returns the result envelope; false returns {id,status} immediately"));
+    json_obj_add(sub_props, "wait", sub_wait);
     json_obj_add(sub_params, "properties", sub_props);
     JsonValue *sub_req = json_create_array();
     json_arr_add(sub_req, json_create_string("task"));
     json_obj_add(sub_params, "required", sub_req);
     REGISTER_IF_PERMITTED("spawn_subagent", "Spawn an autonomous subagent worker in an isolated sandbox context", sub_params, PERM_ALLOW, tool_spawn_subagent);
+
+    // 12b-12d. Phase 1a subagent inspection surface
+    REGISTER_IF_PERMITTED("check_subagent", "Report a subagent's status, step count and token spend by id",
+                          subagent_id_schema("Subagent id returned by spawn_subagent with wait=false"),
+                          PERM_ALLOW, tool_check_subagent);
+    REGISTER_IF_PERMITTED("collect_subagent", "Hand back a subagent's result (summary, failure reason, or current progress) by id",
+                          subagent_id_schema("Subagent id to collect"),
+                          PERM_ALLOW, tool_collect_subagent);
+    REGISTER_IF_PERMITTED("cancel_subagent", "Cancel a running subagent by id; terminal, nothing is collected afterwards",
+                          subagent_id_schema("Subagent id to cancel"),
+                          PERM_ALLOW, tool_cancel_subagent);
 
     // 13. define_tool (Self-Tooling Dynamic Evolution)
     JsonValue *def_params = json_create_object();
