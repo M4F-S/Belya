@@ -211,4 +211,40 @@ bool belya_subagent_cancel(BelyaAgent *parent, const char *id);
 /* JSON array of children for the /agents view. Caller frees. */
 char *belya_subagent_list_json(BelyaAgent *parent);
 
+/* ---------------------------------------------------------------------------
+   Phase 1b — durability: a child outlives the process.
+
+   T1.7 resume, T1.8 orphan sweep at boot, T1.9 artifacts + GC, T1.10 /agents.
+
+   Contract:
+   - resume() only from "paused". A "running" row already has a live runtime and
+     two owners of one transcript would duplicate turns; done/failed/cancelled
+     are terminal. Resume reloads the transcript from SQLite and continues at the
+     persisted idx, so nothing is replayed twice.
+   - sweep_orphans() is the boot step: any "running" row means a process died
+     mid-turn, so it becomes "paused" (resumable by tool). Idempotent, and it
+     touches nothing else.
+   - artifacts are paths plus a size measured at add time; a path that does not
+     exist is refused, because the table must not claim what is not there.
+   - gc() deletes terminal children ("done", "failed", "cancelled") older than
+     the cutoff together with their messages and artifacts, and never touches
+     running/paused ones. No message and no artifact may outlive its child.
+   - the /agents report is plain text: exactly one line per child, newest first,
+     or "No subagents." when there are none. Caller frees.
+   --------------------------------------------------------------------------- */
+#define BELYA_SUBAGENT_GC_DEFAULT_SECONDS (7LL * 24LL * 60LL * 60LL)
+
+typedef struct {
+    size_t swept;      /* running -> paused at boot */
+    size_t collected;  /* done/failed children removed by GC */
+} BelyaSubagentBootReport;
+
+bool belya_subagent_resume(BelyaAgent *agent, const char *id);
+size_t belya_subagent_sweep_orphans(BelyaAgent *agent);
+BelyaSubagentBootReport belya_subagent_boot(BelyaAgent *agent);
+bool belya_subagent_add_artifact(BelyaAgent *agent, const char *id, const char *path);
+char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id);
+size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds);
+char *belya_subagent_agents_report(BelyaAgent *agent);
+
 #endif

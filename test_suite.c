@@ -4308,7 +4308,7 @@ void test_phase1a_subagent_schema_and_fork(void) {
     free(dflt);
     free(id);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a schema & fork PASSED (55/59)\n");
+    printf("  -> Phase 1a schema & fork PASSED (55/63)\n");
 }
 
 void test_phase1a_parallel_isolation(void) {
@@ -4383,7 +4383,7 @@ void test_phase1a_parallel_isolation(void) {
     free(a);
     free(b);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a parallel isolation PASSED (56/59)\n");
+    printf("  -> Phase 1a parallel isolation PASSED (56/63)\n");
 }
 
 void test_phase1a_budget_and_cancel(void) {
@@ -4465,7 +4465,7 @@ void test_phase1a_budget_and_cancel(void) {
     free(cancel_id);
     free(id);
     p1a_teardown(agent, gw);
-    printf("  -> Phase 1a budget & cancel PASSED (57/59)\n");
+    printf("  -> Phase 1a budget & cancel PASSED (57/63)\n");
 }
 
 void test_phase1a_fifty_forks_no_leak(void) {
@@ -4621,7 +4621,296 @@ void test_phase1a_parent_tools(void) {
     belya_harness_free(h);
     model_gateway_free(gw);
     p1a_wipe_db_files();
-    printf("  -> Phase 1a parent tools PASSED (59/59)\n");
+    printf("  -> Phase 1a parent tools PASSED (59/63)\n");
+}
+
+/* ==========================================================================
+   Phase 1b — durability. RED: the engine bodies are stubs, so every assert
+   below fails behaviourally. A "restart" is a fresh BelyaAgent over the same
+   DB file: that is exactly what the service does, and nothing else survives it.
+   ========================================================================== */
+
+static BelyaAgent *p1a_agent_on_existing_db(ModelGateway **out_gw) {
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:1/v1/chat/completions", "test", "fake-model");
+    assert(gw != NULL);
+    gw->streaming = false;
+    gw->max_retries = 0;
+    gw->chat_complete = p1a_fake_complete;
+    BelyaAgent *agent = belya_agent_init(gw, P1A_DB, "Parent orchestrator system prompt.");
+    assert(agent != NULL);
+    *out_gw = gw;
+    return agent;
+}
+
+static void p1a_set_status(BelyaAgent *agent, const char *id, const char *status) {
+    char sql[512];
+    snprintf(sql, sizeof(sql), "UPDATE subagents SET status='%s' WHERE id='%s';", status, id);
+    assert(p1a_exec(agent, sql));
+}
+
+static void p1a_set_age_days(BelyaAgent *agent, const char *id, int days) {
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "UPDATE subagents SET updated_at=datetime('now','-%d days') WHERE id='%s';", days, id);
+    assert(p1a_exec(agent, sql));
+}
+
+/* T1.7 + T1.8: fork, take a turn, "restart", sweep, resume, finish, deliver. */
+void test_phase1b_resume_after_restart(void) {
+    printf("[Test] Phase 1b: Resume After Restart...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    p1a_reset_fake(1);   /* a tool call, so the child is still running after one turn */
+    char *id = belya_subagent_fork(agent, "worker", "survive a restart and finish", 200000);
+    assert(id != NULL);
+    assert(belya_subagent_step(agent, id) == 1);
+
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    assert(sa != NULL && sa->status != NULL && strcmp(sa->status, "running") == 0);
+    assert(sa->steps == 1);
+    belya_subagent_free(sa);
+
+    char q[512];
+    snprintf(q, sizeof(q), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", id);
+    long long msgs_before = p1a_query(agent, q);
+    assert(msgs_before >= 4);   /* system, task, assistant(tool call), tool result */
+    snprintf(q, sizeof(q), "SELECT content FROM subagent_messages WHERE subagent_id='%s' AND idx=3;", id);
+    char *tool_turn_before = p1a_text(agent, q);
+    assert(tool_turn_before != NULL);
+
+    char *id_keep = xstrdup(id);
+    free(id);
+    belya_agent_free(agent);          /* process gone; the DB file stays */
+    model_gateway_free(gw);
+
+    /* ---- restart: no memory, only SQLite ---- */
+    ModelGateway *gw2 = NULL;
+    BelyaAgent *agent2 = p1a_agent_on_existing_db(&gw2);
+    BelyaSubagentBootReport boot = belya_subagent_boot(agent2);
+    assert(boot.swept == 1);          /* running at boot = the process died mid-turn */
+    assert(boot.collected == 0);
+
+    BelyaSubagent *paused = belya_subagent_get(agent2, id_keep);
+    assert(paused != NULL && paused->status != NULL && strcmp(paused->status, "paused") == 0);
+    assert(paused->steps == 1);
+    belya_subagent_free(paused);
+
+    assert(belya_subagent_resume(agent2, id_keep) == true);
+    BelyaSubagent *resumed = belya_subagent_get(agent2, id_keep);
+    assert(resumed != NULL && resumed->status != NULL && strcmp(resumed->status, "running") == 0);
+    belya_subagent_free(resumed);
+
+    snprintf(q, sizeof(q), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", id_keep);
+    assert(p1a_query(agent2, q) == msgs_before);   /* replay, never duplicate */
+
+    p1a_reset_fake(0);   /* the next turn answers, so the child finishes */
+    assert(belya_subagent_run(agent2, id_keep) == true);
+
+    BelyaSubagent *done = belya_subagent_get(agent2, id_keep);
+    assert(done != NULL && done->status != NULL && strcmp(done->status, "done") == 0);
+    assert(done->summary != NULL && strstr(done->summary, "child-answer") != NULL);
+    assert(done->steps == 2);
+    belya_subagent_free(done);
+
+    char *collected = belya_subagent_collect(agent2, id_keep);
+    assert(collected != NULL && strstr(collected, "child-answer") != NULL);
+    free(collected);
+
+    assert(p1a_query(agent2, q) == msgs_before + 1);   /* exactly one new message */
+    snprintf(q, sizeof(q),
+             "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND idx=(SELECT MAX(idx) FROM subagent_messages WHERE subagent_id='%s');",
+             id_keep, id_keep);
+    assert(p1a_query(agent2, q) == 1);
+    snprintf(q, sizeof(q), "SELECT content FROM subagent_messages WHERE subagent_id='%s' AND idx=3;", id_keep);
+    char *tool_turn_after = p1a_text(agent2, q);
+    assert(tool_turn_after != NULL);
+    assert(strcmp(tool_turn_before, tool_turn_after) == 0);   /* history untouched */
+
+    /* terminal children refuse a resume */
+    assert(belya_subagent_resume(agent2, id_keep) == false);
+    assert(belya_subagent_resume(agent2, "missing-child") == false);
+    char *cancelled = belya_subagent_fork(agent2, "worker", "cancel then try to resume", 1000);
+    assert(cancelled != NULL);
+    assert(belya_subagent_cancel(agent2, cancelled) == true);
+    assert(belya_subagent_resume(agent2, cancelled) == false);
+    free(cancelled);
+
+    /* A paused child whose transcript is gone must stay paused: resume proves
+       the state loads before flipping the status. */
+    char *broken = belya_subagent_fork(agent2, "worker", "broken transcript", 1000);
+    assert(broken != NULL);
+    p1a_set_status(agent2, broken, "paused");
+    snprintf(q, sizeof(q), "DELETE FROM subagent_messages WHERE subagent_id='%s';", broken);
+    assert(p1a_exec(agent2, q));
+    assert(belya_subagent_resume(agent2, broken) == false);
+    BelyaSubagent *still_paused = belya_subagent_get(agent2, broken);
+    assert(still_paused != NULL && still_paused->status != NULL &&
+           strcmp(still_paused->status, "paused") == 0);
+    belya_subagent_free(still_paused);
+    free(broken);
+
+    free(tool_turn_before);
+    free(tool_turn_after);
+    free(id_keep);
+    p1a_teardown(agent2, gw2);
+    printf("  -> Phase 1b resume PASSED (60/63, %lld messages preserved across the restart)\n", msgs_before);
+}
+
+/* T1.8: only "running" rows move, and only at boot. */
+void test_phase1b_orphan_sweep(void) {
+    printf("[Test] Phase 1b: Orphan Sweep At Boot...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    char *a = belya_subagent_fork(agent, "worker", "still running at boot", 1000);
+    char *b = belya_subagent_fork(agent, "worker", "finished child", 1000);
+    char *c = belya_subagent_fork(agent, "worker", "cancelled child", 1000);
+    char *d = belya_subagent_fork(agent, "worker", "already paused child", 1000);
+    assert(a && b && c && d);
+
+    assert(p1a_exec(agent, "UPDATE subagents SET updated_at='2000-01-01 00:00:00';"));
+    p1a_set_status(agent, b, "done");
+    p1a_set_status(agent, c, "cancelled");
+    p1a_set_status(agent, d, "paused");
+    /* Keep the terminal rows recent: this test is about the sweep, and GC now
+       collects cancelled children too. */
+    assert(p1a_exec(agent, "UPDATE subagents SET updated_at=datetime('now') WHERE status IN ('done','cancelled');"));
+
+    assert(belya_subagent_sweep_orphans(agent) == 1);
+    BelyaSubagent *sa = belya_subagent_get(agent, a);
+    assert(sa != NULL && sa->status != NULL && strcmp(sa->status, "paused") == 0);
+    belya_subagent_free(sa);
+    BelyaSubagent *sb = belya_subagent_get(agent, b);
+    assert(sb != NULL && sb->status != NULL && strcmp(sb->status, "done") == 0);
+    belya_subagent_free(sb);
+    BelyaSubagent *sc = belya_subagent_get(agent, c);
+    assert(sc != NULL && sc->status != NULL && strcmp(sc->status, "cancelled") == 0);
+    belya_subagent_free(sc);
+    BelyaSubagent *sd = belya_subagent_get(agent, d);
+    assert(sd != NULL && sd->status != NULL && strcmp(sd->status, "paused") == 0);
+    belya_subagent_free(sd);
+
+    /* Only the swept row moved in time; the others are untouched. */
+    char q[512];
+    snprintf(q, sizeof(q), "SELECT COUNT(*) FROM subagents WHERE id='%s' AND updated_at > '2000-01-01 00:00:00';", a);
+    assert(p1a_query(agent, q) == 1);
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents WHERE updated_at='2000-01-01 00:00:00';") == 1);
+
+    assert(belya_subagent_sweep_orphans(agent) == 0);   /* idempotent */
+
+    p1a_set_status(agent, d, "running");
+    BelyaSubagentBootReport boot = belya_subagent_boot(agent);
+    assert(boot.swept == 1);
+    assert(boot.collected == 0);   /* the done row is recent, so GC keeps it */
+
+    free(a); free(b); free(c); free(d);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1b orphan sweep PASSED (61/63)\n");
+}
+
+/* T1.9: artifacts record paths, GC removes children with their messages/artifacts. */
+void test_phase1b_artifacts_and_gc(void) {
+    printf("[Test] Phase 1b: Artifacts And GC...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    char *owner = belya_subagent_fork(agent, "worker", "owns an artifact", 1000);
+    assert(owner != NULL);
+    const char *path = "test_phase1b_artifact.txt";
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    assert(fwrite("0123456789abcdef", 1, 16, f) == 16);
+    fclose(f);
+
+    assert(belya_subagent_add_artifact(agent, owner, path) == true);
+    assert(belya_subagent_add_artifact(agent, owner, "test_phase1b_missing.txt") == false);
+    assert(belya_subagent_add_artifact(agent, "missing-child", path) == false);
+
+    char *aj = belya_subagent_artifacts_json(agent, owner);
+    assert(aj != NULL);
+    assert(strstr(aj, path) != NULL);
+    assert(strstr(aj, "16") != NULL);
+    assert(strstr(aj, "test_phase1b_missing.txt") == NULL);
+    free(aj);
+
+    char *g1 = belya_subagent_fork(agent, "worker", "old done one", 1000);
+    char *g2 = belya_subagent_fork(agent, "worker", "old done two", 1000);
+    char *g3 = belya_subagent_fork(agent, "worker", "recent done", 1000);
+    char *g4 = belya_subagent_fork(agent, "worker", "old but running", 1000);
+    assert(g1 && g2 && g3 && g4);
+    p1a_set_status(agent, g1, "done");
+    p1a_set_status(agent, g2, "failed");
+    p1a_set_status(agent, g3, "done");
+    p1a_set_age_days(agent, g1, 10);
+    p1a_set_age_days(agent, g2, 10);
+    p1a_set_age_days(agent, g4, 10);
+    assert(belya_subagent_add_artifact(agent, g1, path) == true);
+    /* Cancelled children are terminal too: they must not accumulate forever. */
+    char *g5 = belya_subagent_fork(agent, "worker", "old cancelled", 1000);
+    assert(g5 != NULL);
+    p1a_set_status(agent, g5, "cancelled");
+    p1a_set_age_days(agent, g5, 10);
+
+    assert(belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS) == 3);
+    assert(belya_subagent_get(agent, g1) == NULL);
+    assert(belya_subagent_get(agent, g2) == NULL);
+    assert(belya_subagent_get(agent, g5) == NULL);
+    BelyaSubagent *keep3 = belya_subagent_get(agent, g3);
+    assert(keep3 != NULL);
+    belya_subagent_free(keep3);
+    BelyaSubagent *keep4 = belya_subagent_get(agent, g4);
+    assert(keep4 != NULL && keep4->status != NULL && strcmp(keep4->status, "running") == 0);
+    belya_subagent_free(keep4);
+
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id NOT IN (SELECT id FROM subagents);") == 0);
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagent_artifacts WHERE subagent_id NOT IN (SELECT id FROM subagents);") == 0);
+    assert(belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS) == 0);
+
+    unlink(path);
+    free(owner); free(g1); free(g2); free(g3); free(g4); free(g5);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1b artifacts and GC PASSED (62/63)\n");
+}
+
+/* T1.10: the /agents view. */
+void test_phase1b_agents_report(void) {
+    printf("[Test] Phase 1b: Agents Report...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    char *empty = belya_subagent_agents_report(agent);
+    assert(empty != NULL && strstr(empty, "No subagents") != NULL);
+    free(empty);
+
+    char *a = belya_subagent_fork(agent, "worker", "report running child", 1000);
+    char *b = belya_subagent_fork(agent, "reviewer", "report done child", 0);
+    assert(a && b);
+    p1a_set_status(agent, b, "done");
+    char sql[512];
+    snprintf(sql, sizeof(sql), "UPDATE subagents SET spent_tokens=1234, summary='all good' WHERE id='%s';", b);
+    assert(p1a_exec(agent, sql));
+
+    char *report = belya_subagent_agents_report(agent);
+    assert(report != NULL);
+    assert(strstr(report, a) != NULL);
+    assert(strstr(report, b) != NULL);
+    assert(strstr(report, "running") != NULL);
+    assert(strstr(report, "done") != NULL);
+    assert(strstr(report, "1234") != NULL);
+    assert(strstr(report, "50000") != NULL);   /* the budget default is shown */
+    int lines = 0;
+    for (const char *p = report; *p; p++) if (*p == '\n') lines++;
+    assert(lines == 2);
+
+    free(report);
+    free(a); free(b);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1b agents report PASSED (63/63)\n");
 }
 
 int main(void) {
@@ -4685,7 +4974,11 @@ int main(void) {
     test_phase1a_budget_and_cancel();
     test_phase1a_fifty_forks_no_leak();
     test_phase1a_parent_tools();
-    printf("================ All Tests Passed Successfully (59/59 - 100%%) ================\n\n");
+    test_phase1b_resume_after_restart();
+    test_phase1b_orphan_sweep();
+    test_phase1b_artifacts_and_gc();
+    test_phase1b_agents_report();
+    printf("================ All Tests Passed Successfully (63/63 - 100%%) ================\n\n");
     return 0;
 }
 

@@ -7181,7 +7181,7 @@ static void harness_completion_hook(const char *buf, linenoiseCompletions *lc) {
             "/rollback", "/export", "/export-sharegpt", "/export-dpo", "/cache", "/reflect", "/clear",
             "/compact", "/memory", "/model", "/diff", "/doctor", "/probe", "/cost",
             "/tasks", "/cron", "/dream", "/plan", "/bg",
-            "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", "/company", NULL
+            "/openrouter", "/ollama", "/key", "/cwd", "/mcp", "/agency", "/company", "/agents", NULL
         };
         for (int i = 0; commands[i]; i++) {
             if (strncmp(buf, commands[i], strlen(buf)) == 0) {
@@ -7240,6 +7240,12 @@ void belya_harness_repl(BelyaHarness *h) {
                 printf("FTS5 Memory:     \033[1;33m%s\033[0m\n", h->agent->has_fts5 ? "Enabled (BM25)" : "Standard");
                 printf("Prompt Caching:  \033[1;33m%s\033[0m\n", h->agent->gateway->prompt_caching ? "Enabled" : "Disabled");
                 printf("Connected MCPs:  \033[1;33m%zu servers\033[0m\n\n", h->mcp_server_count);
+                continue;
+            }
+            if (strcmp(input_buf, "/agents") == 0) {
+                char *report = belya_subagent_agents_report(h->agent);
+                printf("\n\033[1;36m=== Subagent Children ===\033[0m\n%s\n", report ? report : "No subagents.\n");
+                free(report);
                 continue;
             }
             if (strncmp(input_buf, "/diff", 5) == 0) {
