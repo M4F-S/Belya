@@ -2174,9 +2174,20 @@ static char *tool_spawn_subagent(BelyaAgent *agent, const JsonValue *args) {
     if (!id) return xstrdup("Error: could not fork a subagent (database unavailable).");
 
     if (!wait) {
+        /* Phase 1c.1: a handle is only useful if something actually runs the
+           child. Start it now; if no worker slot is free, cancel it and say so
+           rather than handing back a handle to work nobody will ever do. */
+        if (!belya_subagent_start_background(agent, id)) {
+            belya_subagent_cancel(agent, id);
+            free(id);
+            return xstrdup("Error: could not start the subagent in the background "
+                           "(no free worker slot, or the child could not run). "
+                           "Nothing was left running; retry later or use wait=true.");
+        }
         JsonValue *out = json_create_object();
         json_obj_add(out, "id", json_create_string(id));
         json_obj_add(out, "status", json_create_string("running"));
+        json_obj_add(out, "background", json_create_bool(true));
         json_obj_add(out, "role", json_create_string((role && role[0]) ? role : "worker"));
         json_obj_add(out, "budget_tokens", json_create_number((double)budget));
         char *text = json_serialize(out);
@@ -2291,9 +2302,17 @@ static char *tool_resume_subagent(BelyaAgent *agent, const JsonValue *args) {
         return ds.data;
     }
     const char *status = sa->status ? sa->status : "";
-    if (strcmp(status, "paused") != 0) {
+    bool is_paused = (strcmp(status, "paused") == 0);
+    bool is_stranded = (strcmp(status, "running") == 0) && !belya_subagent_is_live(id);
+    if (!is_paused && !is_stranded) {
         DynString ds = dyn_str_new();
-        dyn_str_appendf(&ds, "Subagent %s is %s; only paused children can be resumed.", id, status);
+        if (strcmp(status, "running") == 0) {
+            dyn_str_appendf(&ds, "Subagent %s is already running in this process; "
+                                 "use check_subagent or collect_subagent.", id);
+        } else {
+            dyn_str_appendf(&ds, "Subagent %s is %s; only a paused or a stranded "
+                                 "'running' child can be resumed.", id, status);
+        }
         belya_subagent_free(sa);
         return ds.data;
     }
@@ -2303,7 +2322,10 @@ static char *tool_resume_subagent(BelyaAgent *agent, const JsonValue *args) {
     char *saved_task = xstrdup(task);
     belya_subagent_free(sa);
 
-    bool done = belya_subagent_resume_and_run(agent, id);
+    /* Phase 1c.1: a "running" row with no owner (e.g. forked by an older
+       wait=false that never executed) is adopted; a paused one is resumed. */
+    bool done = is_paused ? belya_subagent_resume_and_run(agent, id)
+                          : belya_subagent_run_stranded(agent, id);
 
     /* Reload row for the envelope. */
     BelyaSubagent *sa2 = belya_subagent_get(agent, id);
@@ -4918,7 +4940,7 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     json_obj_add(sub_props, "budget_tokens", sub_budget);
     JsonValue *sub_wait = json_create_object();
     json_obj_add(sub_wait, "type", json_create_string("boolean"));
-    json_obj_add(sub_wait, "description", json_create_string("true (default) blocks and returns the result envelope; false returns {id,status} immediately"));
+    json_obj_add(sub_wait, "description", json_create_string("true (default) blocks and returns the result envelope; false starts the child on a background worker (max 4 at once) and returns {id,status,background} - poll with check_subagent/collect_subagent"));
     json_obj_add(sub_props, "wait", sub_wait);
     json_obj_add(sub_params, "properties", sub_props);
     JsonValue *sub_req = json_create_array();
@@ -4936,8 +4958,8 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     REGISTER_IF_PERMITTED("cancel_subagent", "Cancel a running subagent by id; terminal, nothing is collected afterwards",
                           subagent_id_schema("Subagent id to cancel"),
                           PERM_ALLOW, tool_cancel_subagent);
-    REGISTER_IF_PERMITTED("resume_subagent", "Resume a paused subagent and run it to completion in this call",
-                          subagent_id_schema("Subagent id to resume (must be 'paused')"),
+    REGISTER_IF_PERMITTED("resume_subagent", "Resume a paused subagent, or adopt a stranded 'running' one, and run it to completion in this call",
+                          subagent_id_schema("Subagent id to resume (must be 'paused' or a stranded 'running' child)"),
                           PERM_ALLOW, tool_resume_subagent);
 
     // 13. define_tool (Self-Tooling Dynamic Evolution)

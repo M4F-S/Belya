@@ -1338,6 +1338,13 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
     }
 
     printf("\033[1;33m[Telegram Bot] Service shutting down gracefully.\033[0m\n");
+
+    /* Phase 1c.1: do not let a background child outlive the agent it writes
+       through. Give in-flight children a bounded window; anything still running
+       is swept to "paused" at the next boot, so nothing is lost. */
+    if (!belya_subagent_background_drain(2000)) {
+        fprintf(stderr, "[subagents] shutdown: background children still running\n");
+    }
 }
 
 void telegram_bot_stop(TelegramBot *bot) {
