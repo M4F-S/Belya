@@ -3177,6 +3177,19 @@ bool belya_subagent_schema_init(BelyaAgent *agent) {
         "ON subagent_messages(subagent_id, idx);");
     ok = ok && subagent_exec(agent,
         "CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);");
+    /* 1b: artifacts are paths the child produced, with the size at add time. */
+    ok = ok && subagent_exec(agent,
+        "CREATE TABLE IF NOT EXISTS subagent_artifacts ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  subagent_id TEXT NOT NULL,"
+        "  path TEXT NOT NULL,"
+        "  bytes INTEGER NOT NULL DEFAULT 0,"
+        "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+        "  UNIQUE(subagent_id, path)"
+        ");");
+    ok = ok && subagent_exec(agent,
+        "CREATE INDEX IF NOT EXISTS idx_subagent_artifacts_child "
+        "ON subagent_artifacts(subagent_id);");
     return ok;
 }
 
@@ -3897,41 +3910,214 @@ bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, siz
 }
 
 /* ==========================================================================
-   Phase 1b — durability (T1.7-T1.10). RED: honest stubs, so the contract tests
-   fail on behaviour rather than on linking or on a NULL dereference.
+   Phase 1b — durability (T1.7-T1.10): a child outlives the process.
    ========================================================================== */
+
+static bool subagent_child_exists(BelyaAgent *agent, const char *id) {
+    if (!agent || !agent->db || !id || !id[0]) return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(agent->db, "SELECT 1 FROM subagents WHERE id=?1;", -1, &st, NULL) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    bool exists = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return exists;
+}
+
+static bool subagent_exec_param(sqlite3 *db, const char *sql, const char *param) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_text(st, 1, param, -1, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* T1.7: paused -> running, and only that. A running child already has a live
+   runtime (two owners would duplicate turns); terminal children stay terminal. */
 bool belya_subagent_resume(BelyaAgent *agent, const char *id) {
-    (void)agent; (void)id;
-    return false;
+    if (!subagent_child_exists(agent, id)) return false;
+    sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_prepare_v2(agent->db,
+            "UPDATE subagents SET status='running', updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=?1 AND status='paused';", -1, &st, NULL) == SQLITE_OK;
+    size_t changed = 0;
+    if (ok) {
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+        changed = (size_t)sqlite3_changes(agent->db);
+    }
+    if (st) sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    if (!ok || changed != 1) return false;
+
+    /* Prove the transcript can actually be loaded before claiming the child is
+       runnable: a broken child must stay paused, not become a zombie "running"
+       row that no runtime owns and that only a reboot would clean up. */
+    SubagentRuntime *runtime = subagent_runtime_open(agent, id);
+    if (!runtime) {
+        pthread_mutex_lock(&g_subagent_write_lock);
+        ok = subagent_exec_param(agent->db,
+                "UPDATE subagents SET status='paused' WHERE id=?1 AND status='running';", id);
+        pthread_mutex_unlock(&g_subagent_write_lock);
+        if (!ok) fprintf(stderr, "[subagent] resume revert failed for %s\n", id);
+        return false;
+    }
+    subagent_runtime_close(runtime);
+    return true;
 }
 
+/* T1.8: a "running" row at boot means the process died mid-turn. Pausing keeps
+   the work resumable instead of pretending it is still alive. */
 size_t belya_subagent_sweep_orphans(BelyaAgent *agent) {
-    (void)agent;
-    return 0;
+    if (!agent || !agent->db) return 0;
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_exec(agent->db,
+            "UPDATE subagents SET status='paused', updated_at=CURRENT_TIMESTAMP "
+            "WHERE status='running';", NULL, NULL, NULL) == SQLITE_OK;
+    size_t swept = ok ? (size_t)sqlite3_changes(agent->db) : 0;
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    if (!ok) fprintf(stderr, "[subagent] orphan sweep failed\n");
+    return swept;
 }
 
+/* T1.9: children are deleted last, so their messages and artifacts are gone
+   before the row disappears — no message or artifact may outlive its child. */
+size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds) {
+    if (!agent || !agent->db) return 0;
+    if (older_than_seconds < 0) older_than_seconds = 0;
+
+    char cutoff[64];
+    snprintf(cutoff, sizeof(cutoff), "-%lld seconds", older_than_seconds);
+
+    /* Terminal states only. Cancelled is included: it can never be resumed, so
+       leaving it behind accumulates transcripts nobody will ever read. */
+    static const char *where =
+        "status IN ('done','failed','cancelled') AND updated_at < datetime('now', ?1)";
+
+    char sql[512];
+    size_t collected = 0;
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", NULL, NULL, NULL) == SQLITE_OK;
+
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM subagent_artifacts WHERE subagent_id IN "
+             "(SELECT id FROM subagents WHERE %s);", where);
+    if (ok) ok = subagent_exec_param(agent->db, sql, cutoff);
+
+    snprintf(sql, sizeof(sql),
+             "DELETE FROM subagent_messages WHERE subagent_id IN "
+             "(SELECT id FROM subagents WHERE %s);", where);
+    if (ok) ok = subagent_exec_param(agent->db, sql, cutoff);
+
+    snprintf(sql, sizeof(sql), "DELETE FROM subagents WHERE %s;", where);
+    if (ok) {
+        ok = subagent_exec_param(agent->db, sql, cutoff);
+        if (ok) collected = (size_t)sqlite3_changes(agent->db);
+    }
+
+    if (ok && sqlite3_exec(agent->db, "COMMIT;", NULL, NULL, NULL) != SQLITE_OK) ok = false;
+    if (!ok) sqlite3_exec(agent->db, "ROLLBACK;", NULL, NULL, NULL);
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    if (!ok) fprintf(stderr, "[subagent] gc failed\n");
+    return collected;
+}
+
+/* The boot sequence: pause whatever the dead process left running, then collect
+   terminal children nobody will collect. Called once, at daemon start. */
 BelyaSubagentBootReport belya_subagent_boot(BelyaAgent *agent) {
-    (void)agent;
     BelyaSubagentBootReport report = {0, 0};
+    report.swept = belya_subagent_sweep_orphans(agent);
+    report.collected = belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS);
     return report;
 }
 
+/* T1.9: artifacts are paths plus a size measured now. A missing file is
+   refused: the table must never claim what is not there. */
 bool belya_subagent_add_artifact(BelyaAgent *agent, const char *id, const char *path) {
-    (void)agent; (void)id; (void)path;
-    return false;
+    if (!agent || !agent->db || !id || !id[0] || !path || !path[0]) return false;
+    struct stat sb;
+    if (stat(path, &sb) != 0 || !S_ISREG(sb.st_mode)) return false;
+    if (!subagent_child_exists(agent, id)) return false;
+
+    sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
+    bool ok = sqlite3_prepare_v2(agent->db,
+            "INSERT INTO subagent_artifacts (subagent_id, path, bytes) VALUES (?1, ?2, ?3) "
+            "ON CONFLICT(subagent_id, path) DO UPDATE SET bytes=excluded.bytes;",
+            -1, &st, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, path, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)sb.st_size);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+    }
+    if (st) sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    return ok;
 }
 
 char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id) {
-    (void)agent; (void)id;
-    return xstrdup("[]");
+    if (!agent || !agent->db || !id) return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(agent->db,
+            "SELECT path, bytes FROM subagent_artifacts WHERE subagent_id=?1 ORDER BY id;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    JsonValue *arr = json_create_array();
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        JsonValue *obj = json_create_object();
+        json_obj_add(obj, "path", json_create_string((const char *)sqlite3_column_text(st, 0)));
+        json_obj_add(obj, "bytes", json_create_number((double)sqlite3_column_int64(st, 1)));
+        json_arr_add(arr, obj);
+    }
+    sqlite3_finalize(st);
+    char *out = json_serialize(arr);
+    json_free(arr);
+    return out;
 }
 
-size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds) {
-    (void)agent; (void)older_than_seconds;
-    return 0;
-}
-
+/* T1.10: one line per child, newest first. The id is printed in full so the
+   line can be fed straight back to check/collect/cancel. */
 char *belya_subagent_agents_report(BelyaAgent *agent) {
-    (void)agent;
-    return xstrdup("");
+    if (!agent || !agent->db) return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(agent->db,
+            "SELECT id, role, status, spent_tokens, budget_tokens, task FROM subagents "
+            "ORDER BY created_at DESC, rowid DESC;", -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    DynString out = dyn_str_new();
+    size_t count = 0;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *id = (const char *)sqlite3_column_text(st, 0);
+        const char *role = (const char *)sqlite3_column_text(st, 1);
+        const char *status = (const char *)sqlite3_column_text(st, 2);
+        long long spent = sqlite3_column_int64(st, 3);
+        long long budget = sqlite3_column_int64(st, 4);
+        const char *task = (const char *)sqlite3_column_text(st, 5);
+
+        char snippet[49];
+        size_t k = 0;
+        for (const char *p = task ? task : ""; *p && k < sizeof(snippet) - 1; p++) {
+            snippet[k++] = (*p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p;
+        }
+        snippet[k] = '\0';
+
+        char line[640];
+        snprintf(line, sizeof(line), "%s · %s · %s · %lld/%lld tokens · %s\n",
+                 id ? id : "?", role ? role : "?", status ? status : "?",
+                 spent, budget, snippet);
+        dyn_str_append(&out, line);
+        count++;
+    }
+    sqlite3_finalize(st);
+    if (count == 0) dyn_str_append(&out, "No subagents.\n");
+    char *report = xstrdup(out.data ? out.data : "");
+    dyn_str_free(&out);
+    return report;
 }

@@ -226,9 +226,9 @@ char *belya_subagent_list_json(BelyaAgent *parent);
      touches nothing else.
    - artifacts are paths plus a size measured at add time; a path that does not
      exist is refused, because the table must not claim what is not there.
-   - gc() deletes "done" and "failed" children older than the cutoff together
-     with their messages and artifacts, and never touches running/paused/
-     cancelled. No message and no artifact may outlive its child.
+   - gc() deletes terminal children ("done", "failed", "cancelled") older than
+     the cutoff together with their messages and artifacts, and never touches
+     running/paused ones. No message and no artifact may outlive its child.
    - the /agents report is plain text: exactly one line per child, newest first,
      or "No subagents." when there are none. Caller frees.
    --------------------------------------------------------------------------- */

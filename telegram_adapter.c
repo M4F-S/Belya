@@ -631,6 +631,14 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
     harness->permission_prompt_fn = telegram_permission_prompt_callback;
     harness->permission_userdata = &prompt_ctx;
 
+    /* 1b: children left "running" by the previous process are paused so a tool
+       can resume them; terminal children nobody will collect are removed.
+       Exactly once, before the first fork of this process. */
+    BelyaSubagentBootReport sub_boot = belya_subagent_boot(harness->agent);
+    if (sub_boot.swept || sub_boot.collected) {
+        printf("[subagents] boot: %zu paused, %zu collected\n", sub_boot.swept, sub_boot.collected);
+    }
+
     printf("\033[1;32m=== Belya Telegram Bot Daemon Online (v7.0.0) ===\033[0m\n");
     printf("Allowed Chat ID: \033[1;36m%s\033[0m\n", strlen(bot->allowed_chat_id) > 0 ? bot->allowed_chat_id : "[None - Zero Trust Mode]");
     printf("Model:           \033[1;33m%s\033[0m\n", harness->agent->gateway->model);
@@ -693,6 +701,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         "<b>Context Messages:</b> <code>%zu (%zu estimated tokens)</code>\n\n"
                         "<b>Commands:</b>\n"
                         "/status - System status & token budget\n"
+                        "/agents - Subagent children: status & spend\n"
                         "/cache - Prompt cache economics & hit rates\n"
                         "/tools - List registered VPS tools\n"
                         "/agency - Multi-agent orchestration pipeline\n"
@@ -778,6 +787,23 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         harness->agent->gateway->prompt_caching ? "Enabled" : "Disabled",
                         hit_rate, total_c, total_p);
                     telegram_bot_send_message(bot, chat_id_str, status_msg);
+                    continue;
+                }
+
+                if (strcmp(text, "/agents") == 0) {
+                    char *report = belya_subagent_agents_report(harness->agent);
+                    if (!report) {
+                        telegram_bot_send_message(bot, chat_id_str,
+                            "⚠️ Could not read the subagent table.");
+                        continue;
+                    }
+                    char escaped[4096];
+                    telegram_html_escape(report, escaped, sizeof(escaped));
+                    char agents_msg[4400];
+                    snprintf(agents_msg, sizeof(agents_msg),
+                             "👷 <b>Subagent children</b>\n<pre>%s</pre>", escaped);
+                    telegram_bot_send_message(bot, chat_id_str, agents_msg);
+                    free(report);
                     continue;
                 }
 

@@ -4737,6 +4737,20 @@ void test_phase1b_resume_after_restart(void) {
     assert(belya_subagent_resume(agent2, cancelled) == false);
     free(cancelled);
 
+    /* A paused child whose transcript is gone must stay paused: resume proves
+       the state loads before flipping the status. */
+    char *broken = belya_subagent_fork(agent2, "worker", "broken transcript", 1000);
+    assert(broken != NULL);
+    p1a_set_status(agent2, broken, "paused");
+    snprintf(q, sizeof(q), "DELETE FROM subagent_messages WHERE subagent_id='%s';", broken);
+    assert(p1a_exec(agent2, q));
+    assert(belya_subagent_resume(agent2, broken) == false);
+    BelyaSubagent *still_paused = belya_subagent_get(agent2, broken);
+    assert(still_paused != NULL && still_paused->status != NULL &&
+           strcmp(still_paused->status, "paused") == 0);
+    belya_subagent_free(still_paused);
+    free(broken);
+
     free(tool_turn_before);
     free(tool_turn_after);
     free(id_keep);
@@ -4761,7 +4775,9 @@ void test_phase1b_orphan_sweep(void) {
     p1a_set_status(agent, b, "done");
     p1a_set_status(agent, c, "cancelled");
     p1a_set_status(agent, d, "paused");
-    assert(p1a_exec(agent, "UPDATE subagents SET updated_at=datetime('now') WHERE status='done';"));
+    /* Keep the terminal rows recent: this test is about the sweep, and GC now
+       collects cancelled children too. */
+    assert(p1a_exec(agent, "UPDATE subagents SET updated_at=datetime('now') WHERE status IN ('done','cancelled');"));
 
     assert(belya_subagent_sweep_orphans(agent) == 1);
     BelyaSubagent *sa = belya_subagent_get(agent, a);
@@ -4781,7 +4797,7 @@ void test_phase1b_orphan_sweep(void) {
     char q[512];
     snprintf(q, sizeof(q), "SELECT COUNT(*) FROM subagents WHERE id='%s' AND updated_at > '2000-01-01 00:00:00';", a);
     assert(p1a_query(agent, q) == 1);
-    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents WHERE updated_at='2000-01-01 00:00:00';") == 2);
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents WHERE updated_at='2000-01-01 00:00:00';") == 1);
 
     assert(belya_subagent_sweep_orphans(agent) == 0);   /* idempotent */
 
@@ -4833,10 +4849,16 @@ void test_phase1b_artifacts_and_gc(void) {
     p1a_set_age_days(agent, g2, 10);
     p1a_set_age_days(agent, g4, 10);
     assert(belya_subagent_add_artifact(agent, g1, path) == true);
+    /* Cancelled children are terminal too: they must not accumulate forever. */
+    char *g5 = belya_subagent_fork(agent, "worker", "old cancelled", 1000);
+    assert(g5 != NULL);
+    p1a_set_status(agent, g5, "cancelled");
+    p1a_set_age_days(agent, g5, 10);
 
-    assert(belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS) == 2);
+    assert(belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS) == 3);
     assert(belya_subagent_get(agent, g1) == NULL);
     assert(belya_subagent_get(agent, g2) == NULL);
+    assert(belya_subagent_get(agent, g5) == NULL);
     BelyaSubagent *keep3 = belya_subagent_get(agent, g3);
     assert(keep3 != NULL);
     belya_subagent_free(keep3);
@@ -4849,7 +4871,7 @@ void test_phase1b_artifacts_and_gc(void) {
     assert(belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS) == 0);
 
     unlink(path);
-    free(owner); free(g1); free(g2); free(g3); free(g4);
+    free(owner); free(g1); free(g2); free(g3); free(g4); free(g5);
     p1a_teardown(agent, gw);
     printf("  -> Phase 1b artifacts and GC PASSED (62/63)\n");
 }
@@ -4956,7 +4978,7 @@ int main(void) {
     test_phase1b_orphan_sweep();
     test_phase1b_artifacts_and_gc();
     test_phase1b_agents_report();
-    printf("================ All Tests Passed Successfully (59/59 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (63/63 - 100%%) ================\n\n");
     return 0;
 }
 
