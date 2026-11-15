@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <dirent.h>
+#include <pthread.h>
 
 #ifndef __has_feature
 #define __has_feature(x) 0
@@ -4026,6 +4028,602 @@ void test_sota_dominance_pillars(void) {
     printf("  -> SOTA Dominance Pillars (TUI Dominance, Stdio LSP, Speculative Multi-Worktree, Agent Mesh IPC) PASSED (54/54)\n");
 }
 
+/* ==========================================================================
+   Phase 1a — persistent parallel subagents.
+   TDD RED step: these tests define the contract before the engine exists.
+   Fixtures are hermetic — a fake chat_complete, a file-backed DB in the repo
+   root (WAL needs a real file), no network.
+   ========================================================================== */
+#define P1A_DB "test_subagents.sqlite"
+
+static pthread_mutex_t g_p1a_fake_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_p1a_fake_mode = 0;   /* 0 = answer now, 1 = tools forever, 2 = tool then answer */
+static int g_p1a_fake_calls = 0;
+
+static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValue *messages, const JsonValue *tools) {
+    (void)self; (void)messages; (void)tools;
+    ModelGatewayResponse r;
+    memset(&r, 0, sizeof(r));
+    pthread_mutex_lock(&g_p1a_fake_mu);
+    int n = ++g_p1a_fake_calls;
+    int mode = g_p1a_fake_mode;
+    pthread_mutex_unlock(&g_p1a_fake_mu);
+
+    r.prompt_tokens = 60;
+    r.completion_tokens = 10;
+    bool want_tool = (mode == 1) || (mode == 2 && n == 1);
+    if (!want_tool) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "child-answer-%03d", n);
+        r.content = xstrdup(buf);
+        r.has_tool_call = false;
+    } else {
+        r.has_tool_call = true;
+        r.tool_call_count = 1;
+        r.tool_calls = calloc(1, sizeof(ModelParsedToolCall));
+        assert(r.tool_calls != NULL);
+        r.tool_calls[0].id = xstrdup("call_p1a");
+        r.tool_calls[0].name = xstrdup("recall_memory");
+        r.tool_calls[0].arguments_json = xstrdup("{\"query\":\"budget probe\"}");
+    }
+    return r;
+}
+
+static void p1a_reset_fake(int mode) {
+    pthread_mutex_lock(&g_p1a_fake_mu);
+    g_p1a_fake_mode = mode;
+    g_p1a_fake_calls = 0;
+    pthread_mutex_unlock(&g_p1a_fake_mu);
+}
+
+static void p1a_wipe_db_files(void) {
+    unlink(P1A_DB);
+    unlink(P1A_DB "-wal");
+    unlink(P1A_DB "-shm");
+}
+
+static BelyaAgent *p1a_agent(ModelGateway **out_gw) {
+    p1a_wipe_db_files();
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:1/v1/chat/completions", "test", "fake-model");
+    assert(gw != NULL);
+    gw->streaming = false;
+    gw->max_retries = 0;   /* hermetic: a stray real call fails instantly */
+    gw->chat_complete = p1a_fake_complete;
+    BelyaAgent *agent = belya_agent_init(gw, P1A_DB, "Parent orchestrator system prompt.");
+    assert(agent != NULL);
+    *out_gw = gw;
+    return agent;
+}
+
+static void p1a_teardown(BelyaAgent *agent, ModelGateway *gw) {
+    belya_agent_free(agent);
+    model_gateway_free(gw);
+    p1a_wipe_db_files();
+}
+
+static int p1a_cb_count(void *ud, int argc, char **argv, char **col) {
+    (void)argc; (void)col;
+    long long *out = (long long *)ud;
+    *out = (argv && argv[0]) ? atoll(argv[0]) : 0;
+    return 0;
+}
+
+static long long p1a_query(BelyaAgent *agent, const char *sql) {
+    long long out = -1;
+    char *err = NULL;
+    if (sqlite3_exec(agent->db, sql, p1a_cb_count, &out, &err) != SQLITE_OK) {
+        fprintf(stderr, "[phase1a] query failed: %s (%s)\n", sql, err ? err : "?");
+        sqlite3_free(err);
+        return -1;
+    }
+    return out;
+}
+
+static char *p1a_text(BelyaAgent *agent, const char *sql) {
+    sqlite3_stmt *st = NULL;
+    char *out = NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &st, NULL) != SQLITE_OK) return NULL;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(st, 0);
+        if (txt) out = xstrdup((const char *)txt);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+/* Mutations return no result row, so sqlite3_exec never calls the callback and
+   p1a_query() would answer -1. Use this for anything that is not a SELECT. */
+static bool p1a_exec(BelyaAgent *agent, const char *sql) {
+    char *err = NULL;
+    if (sqlite3_exec(agent->db, sql, 0, 0, &err) != SQLITE_OK) {
+        fprintf(stderr, "[phase1a] exec failed: %s (%s)\n", sql, err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+/* Same, without the diagnostic: for statements expected to be rejected. */
+static bool p1a_exec_quiet(BelyaAgent *agent, const char *sql) {
+    return sqlite3_exec(agent->db, sql, 0, 0, NULL) == SQLITE_OK;
+}
+
+static bool p1a_has_column(BelyaAgent *agent, const char *table, const char *column) {
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name='%s';", table, column);
+    return p1a_query(agent, sql) == 1;
+}
+
+static int p1a_count_fds(void) {
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return -1;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] != '.') n++;
+    }
+    closedir(d);
+    return n;
+}
+
+/* A child's persisted history must be 1..N with no gap and no duplicate. */
+static void p1a_assert_message_chain(BelyaAgent *agent, const char *id) {
+    char sql[512];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", id);
+    long long total = p1a_query(agent, sql);
+    assert(total > 0);
+    snprintf(sql, sizeof(sql), "SELECT MIN(idx) FROM subagent_messages WHERE subagent_id='%s';", id);
+    assert(p1a_query(agent, sql) == 1);
+    snprintf(sql, sizeof(sql), "SELECT MAX(idx) FROM subagent_messages WHERE subagent_id='%s';", id);
+    assert(p1a_query(agent, sql) == total);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(DISTINCT idx) FROM subagent_messages WHERE subagent_id='%s';", id);
+    assert(p1a_query(agent, sql) == total);
+    /* The chain starts with the child's own system prompt and task. */
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND idx=1 AND role='system';", id);
+    assert(p1a_query(agent, sql) == 1);
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND idx=2 AND role='user';", id);
+    assert(p1a_query(agent, sql) == 1);
+}
+
+typedef struct {
+    const char *db_path;
+    int writer_id;
+    int ok;
+} P1ABusyProbe;
+
+static void *p1a_busy_writer(void *ud) {
+    P1ABusyProbe *p = (P1ABusyProbe *)ud;
+    sqlite3 *db = NULL;
+    p->ok = 0;
+    if (sqlite3_open(p->db_path, &db) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_busy_timeout(db, 5000);
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", 0, 0, 0);
+    for (int i = 1; i <= 60; i++) {
+        char sql[256];
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO subagent_messages (subagent_id, idx, role, content) "
+                 "VALUES ('busy-%d', %d, 'assistant', 'probe');", p->writer_id, i);
+        if (sqlite3_exec(db, sql, 0, 0, 0) != SQLITE_OK) {
+            sqlite3_close(db);
+            return NULL;
+        }
+    }
+    p->ok = 1;
+    sqlite3_close(db);
+    return NULL;
+}
+
+void test_phase1a_subagent_schema_and_fork(void) {
+    printf("[Test] Phase 1a: Subagent Schema, Idempotent Migration & Fork...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+
+    /* Migration is additive and safe to run on every boot. */
+    assert(belya_subagent_schema_init(agent) == true);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='subagents';") == 1);
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='subagent_messages';") == 1);
+
+    const char *subagent_cols[] = {"id", "parent_session", "role", "status", "task", "summary",
+                                   "workspace", "model", "budget_tokens", "spent_tokens"};
+    for (size_t i = 0; i < sizeof(subagent_cols) / sizeof(subagent_cols[0]); i++) {
+        assert(p1a_has_column(agent, "subagents", subagent_cols[i]));
+    }
+    const char *msg_cols[] = {"id", "subagent_id", "idx", "role", "content", "tool_calls_json"};
+    for (size_t i = 0; i < sizeof(msg_cols) / sizeof(msg_cols[0]); i++) {
+        assert(p1a_has_column(agent, "subagent_messages", msg_cols[i]));
+    }
+
+    /* The parent session is addressed: existing tables still answer. */
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM session_messages;") >= 0);
+
+    char *id = belya_subagent_fork(agent, "researcher", "Summarise the parity plan", 5000);
+    assert(id != NULL);
+    assert(strlen(id) >= 8);
+
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    assert(sa != NULL);
+    assert(sa->id && strcmp(sa->id, id) == 0);
+    assert(sa->status && strcmp(sa->status, "running") == 0);
+    assert(sa->role && strcmp(sa->role, "researcher") == 0);
+    assert(sa->task && strcmp(sa->task, "Summarise the parity plan") == 0);
+    assert(sa->parent_session && strlen(sa->parent_session) > 0);
+    assert(sa->budget_tokens == 5000);
+    assert(sa->spent_tokens == 0);
+    assert(sa->steps == 0);
+    assert(sa->summary == NULL);
+    assert(sa->error == NULL);
+    belya_subagent_free(sa);
+
+    /* Fork persists the child's own system prompt + task, indexed from 1. */
+    p1a_assert_message_chain(agent, id);
+
+    /* A position is unique per child: a duplicate idx is refused by the schema,
+       not merely avoided by the writer. */
+    {
+        char dup_sql[512];
+        snprintf(dup_sql, sizeof(dup_sql),
+                 "INSERT INTO subagent_messages (subagent_id, idx, role, content) "
+                 "VALUES ('%s', 1, 'system', 'duplicate position');", id);
+        assert(p1a_exec_quiet(agent, dup_sql) == false);
+    }
+
+    /* Fork is one transaction: a failure after the row insert leaves nothing
+       behind. The trigger aborts on the task message (idx 2), i.e. after the
+       subagents row already exists. */
+    assert(p1a_exec(agent,
+        "CREATE TRIGGER p1a_fail BEFORE INSERT ON subagent_messages "
+        "WHEN NEW.content = 'force-fork-failure' BEGIN SELECT RAISE(ABORT, 'forced'); END;"));
+    {
+        long long rows_before = p1a_query(agent, "SELECT COUNT(*) FROM subagents;");
+        assert(rows_before >= 1);
+        assert(belya_subagent_fork(agent, "worker", "force-fork-failure", 100) == NULL);
+        assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents;") == rows_before);
+    }
+    assert(p1a_exec(agent, "DROP TRIGGER p1a_fail;"));
+
+    /* Defaults and refusals. */
+    char *dflt = belya_subagent_fork(agent, "worker", "no budget given", 0);
+    assert(dflt != NULL);
+    BelyaSubagent *sa2 = belya_subagent_get(agent, dflt);
+    assert(sa2 != NULL);
+    assert(sa2->budget_tokens == BELYA_SUBAGENT_DEFAULT_BUDGET);
+    belya_subagent_free(sa2);
+    assert(belya_subagent_fork(agent, "worker", NULL, 100) == NULL);
+    assert(belya_subagent_get(agent, "missing-child") == NULL);
+    assert(belya_subagent_collect(agent, "missing-child") == NULL);
+    assert(belya_subagent_cancel(agent, "missing-child") == false);
+    char *json = belya_subagent_list_json(agent);
+    assert(json != NULL);
+    assert(strstr(json, id) != NULL);
+    free(json);
+
+    free(dflt);
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a schema & fork PASSED (55/59)\n");
+}
+
+void test_phase1a_parallel_isolation(void) {
+    printf("[Test] Phase 1a: Two Concurrent Children Without Corruption...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+    p1a_reset_fake(0);
+
+    size_t parent_msgs_before = agent->msg_count;
+    char *a = belya_subagent_fork(agent, "worker", "child A: count the rows", 10000);
+    char *b = belya_subagent_fork(agent, "worker", "child B: read the file", 10000);
+    assert(a != NULL);
+    assert(b != NULL);
+    assert(strcmp(a, b) != 0);
+
+    const char *ids[2] = {a, b};
+    assert(belya_subagent_run_parallel(agent, ids, 2, 2) == true);
+
+    for (int i = 0; i < 2; i++) {
+        BelyaSubagent *sa = belya_subagent_get(agent, ids[i]);
+        assert(sa != NULL);
+        assert(sa->status && strcmp(sa->status, "done") == 0);
+        assert(sa->error == NULL);
+        assert(sa->summary != NULL && strlen(sa->summary) > 0);
+        assert(sa->spent_tokens > 0);
+        assert(sa->steps >= 1);
+        char *collected = belya_subagent_collect(agent, ids[i]);
+        assert(collected != NULL);
+        assert(strcmp(collected, sa->summary) == 0);
+        free(collected);
+        belya_subagent_free(sa);
+        p1a_assert_message_chain(agent, ids[i]);
+    }
+
+    /* The parent's own transcript is untouched by child work. */
+    assert(agent->msg_count == parent_msgs_before);
+
+    /* Children never see each other's messages. */
+    char sql[512];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND content LIKE '%%%s%%';", a, b);
+    assert(p1a_query(agent, sql) == 0);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND content LIKE '%%%s%%';", b, a);
+    assert(p1a_query(agent, sql) == 0);
+
+    /* Both children answered from the same fake backend, one turn each. */
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagent_messages WHERE role='assistant';") == 2);
+
+    /* Concurrency contract: WAL plus a write timeout, not a retry loop. */
+    char *journal = p1a_text(agent, "PRAGMA journal_mode;");
+    assert(journal != NULL);
+    assert(strcasecmp(journal, "wal") == 0);
+    free(journal);
+    assert(p1a_query(agent, "PRAGMA busy_timeout;") >= 1000);
+
+    /* Two independent writers on the same file must not see SQLITE_BUSY. */
+    P1ABusyProbe probes[2];
+    pthread_t threads[2];
+    for (int i = 0; i < 2; i++) {
+        probes[i].db_path = P1A_DB;
+        probes[i].writer_id = i + 1;
+        probes[i].ok = 0;
+        assert(pthread_create(&threads[i], NULL, p1a_busy_writer, &probes[i]) == 0);
+    }
+    for (int i = 0; i < 2; i++) {
+        pthread_join(threads[i], NULL);
+        assert(probes[i].ok == 1);
+    }
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id LIKE 'busy-%';") == 120);
+    assert(p1a_exec(agent, "DELETE FROM subagent_messages WHERE subagent_id LIKE 'busy-%';"));
+
+    free(a);
+    free(b);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a parallel isolation PASSED (56/59)\n");
+}
+
+void test_phase1a_budget_and_cancel(void) {
+    printf("[Test] Phase 1a: Budget Exhaustion, Cancel & Collect...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    /* A child that keeps calling tools must stop at its token budget. */
+    p1a_reset_fake(1);   /* 70 tokens per step against a 100 token budget */
+    char *id = belya_subagent_fork(agent, "worker", "loop until the budget stops you", 100);
+    assert(id != NULL);
+    assert(belya_subagent_run(agent, id) == false);
+
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    assert(sa != NULL);
+    assert(sa->status && strcmp(sa->status, "failed") == 0);
+    assert(sa->error != NULL);
+    assert(strstr(sa->error, "budget") != NULL);
+    assert(sa->spent_tokens > 100);      /* it crossed the budget */
+    assert(sa->spent_tokens <= 140);     /* and stopped right after, no runaway */
+    assert(sa->steps == 2);
+    assert(sa->summary == NULL);
+
+    /* Every step is persisted, tool results included. */
+    p1a_assert_message_chain(agent, id);
+    char sql[512];
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' AND role='tool';", id);
+    assert(p1a_query(agent, sql) >= 1);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", id);
+    assert(p1a_query(agent, sql) >= 5);
+
+    /* The parent hears the failure, not silence. */
+    char *collected = belya_subagent_collect(agent, id);
+    assert(collected != NULL);
+    assert(strstr(collected, "budget") != NULL);
+    free(collected);
+    belya_subagent_free(sa);
+
+    /* The realistic path: one tool call, then a final answer. */
+    p1a_reset_fake(2);
+    char *mix = belya_subagent_fork(agent, "worker", "call a tool, then answer", 10000);
+    assert(mix != NULL);
+    assert(belya_subagent_run(agent, mix) == true);
+    BelyaSubagent *msa = belya_subagent_get(agent, mix);
+    assert(msa != NULL);
+    assert(msa->status && strcmp(msa->status, "done") == 0);
+    assert(msa->error == NULL);
+    assert(msa->steps == 2);
+    assert(msa->spent_tokens == 140);
+    assert(msa->summary != NULL);
+    assert(strstr(msa->summary, "child-answer") != NULL);
+    belya_subagent_free(msa);
+    p1a_assert_message_chain(agent, mix);
+    {
+        char tsql[512];
+        /* The tool result carries its call id, or the transcript cannot be
+           replayed to a provider that requires tool_call_id. */
+        snprintf(tsql, sizeof(tsql),
+                 "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s' "
+                 "AND role='tool' AND tool_call_id IS NOT NULL AND tool_call_id <> '';", mix);
+        assert(p1a_query(agent, tsql) == 1);
+        snprintf(tsql, sizeof(tsql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", mix);
+        assert(p1a_query(agent, tsql) == 5);  /* system, user, assistant(tool), tool, assistant */
+    }
+    free(mix);
+
+    /* Cancellation is terminal: no further work, nothing to collect. */
+    char *cancel_id = belya_subagent_fork(agent, "worker", "cancel me", 5000);
+    assert(cancel_id != NULL);
+    assert(belya_subagent_cancel(agent, cancel_id) == true);
+    BelyaSubagent *ca = belya_subagent_get(agent, cancel_id);
+    assert(ca != NULL);
+    assert(ca->status && strcmp(ca->status, "cancelled") == 0);
+    belya_subagent_free(ca);
+    assert(belya_subagent_run(agent, cancel_id) == false);
+    assert(belya_subagent_collect(agent, cancel_id) == NULL);
+
+    free(cancel_id);
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a budget & cancel PASSED (57/59)\n");
+}
+
+void test_phase1a_fifty_forks_no_leak(void) {
+    printf("[Test] Phase 1a: 50 Forks Without fd or Memory Growth...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+    p1a_reset_fake(0);
+
+    int fds_before = p1a_count_fds();
+    double rss_before = belya_get_current_rss_mb();
+    assert(fds_before > 0);
+
+    char *ids[50];
+    for (int i = 0; i < 50; i++) {
+        ids[i] = belya_subagent_fork(agent, "worker", "fork stress probe", 1000);
+        assert(ids[i] != NULL);
+    }
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents;") == 50);
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents WHERE status='running';") == 50);
+
+    for (int i = 0; i < 50; i++) {
+        assert(belya_subagent_cancel(agent, ids[i]) == true);
+        free(ids[i]);
+    }
+    assert(p1a_query(agent, "SELECT COUNT(*) FROM subagents WHERE status='cancelled';") == 50);
+
+    int fds_after = p1a_count_fds();
+    double rss_after = belya_get_current_rss_mb();
+    assert(fds_after - fds_before <= 2);
+    assert(rss_after - rss_before < 64.0);
+
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a 50 forks PASSED (58/59, fds %d->%d, RSS %.1f->%.1f MB)\n",
+           fds_before, fds_after, rss_before, rss_after);
+}
+
+/* T1.4: the parent-facing surface. spawn_subagent gains wait=false (handle),
+   plus check/collect/cancel tools; the default wait=true path keeps the
+   existing blocking envelope contract. */
+void test_phase1a_parent_tools(void) {
+    printf("[Test] Phase 1a: Parent-Facing Subagent Tools...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+    p1a_reset_fake(0);
+
+    BelyaToolCallback spawn = get_tool_cb(h, "spawn_subagent");
+    BelyaToolCallback check = get_tool_cb(h, "check_subagent");
+    BelyaToolCallback collect = get_tool_cb(h, "collect_subagent");
+    BelyaToolCallback cancel = get_tool_cb(h, "cancel_subagent");
+    assert(spawn != NULL);
+    assert(check != NULL);
+    assert(collect != NULL);
+    assert(cancel != NULL);
+
+    /* wait=false hands back a handle instead of blocking the parent. */
+    JsonValue *spawn_args = json_create_object();
+    json_obj_add(spawn_args, "task", json_create_string("tool handle probe"));
+    json_obj_add(spawn_args, "role", json_create_string("worker"));
+    json_obj_add(spawn_args, "budget_tokens", json_create_number(1000));
+    json_obj_add(spawn_args, "wait", json_create_bool(false));
+    char *handle_json = spawn(agent, spawn_args);
+    assert(handle_json != NULL);
+    JsonValue *handle = json_parse(handle_json);
+    assert(handle != NULL);
+    const char *handle_id = json_obj_get_str(handle, "id");
+    assert(handle_id != NULL);
+    assert(strlen(handle_id) >= 8);
+    const char *handle_status = json_obj_get_str(handle, "status");
+    assert(handle_status != NULL);
+    assert(strcmp(handle_status, "running") == 0);
+    char child_id[128];
+    snprintf(child_id, sizeof(child_id), "%s", handle_id);
+    json_free(handle);
+    free(handle_json);
+    json_free(spawn_args);
+
+    /* check_subagent reports the live row. */
+    JsonValue *id_args = json_create_object();
+    json_obj_add(id_args, "id", json_create_string(child_id));
+    char *status_report = check(agent, id_args);
+    assert(status_report != NULL);
+    assert(strstr(status_report, "running") != NULL);
+
+    /* A running child has nothing to hand over yet. */
+    char *early = collect(agent, id_args);
+    assert(early != NULL);
+    assert(strstr(early, "running") != NULL);
+
+    /* The handle addresses the same child the engine runs. */
+    assert(belya_subagent_run(agent, child_id) == true);
+    char *done_report = collect(agent, id_args);
+    assert(done_report != NULL);
+    assert(strstr(done_report, "child-answer") != NULL);
+
+    /* Cancel tool: terminal, and reported as such. */
+    JsonValue *spawn2 = json_create_object();
+    json_obj_add(spawn2, "task", json_create_string("cancel via tool"));
+    json_obj_add(spawn2, "wait", json_create_bool(false));
+    json_obj_add(spawn2, "budget_tokens", json_create_number(1000));
+    char *handle2_json = spawn(agent, spawn2);
+    assert(handle2_json != NULL);
+    JsonValue *handle2 = json_parse(handle2_json);
+    assert(handle2 != NULL);
+    const char *handle2_id = json_obj_get_str(handle2, "id");
+    assert(handle2_id != NULL);
+    char second_id[128];
+    snprintf(second_id, sizeof(second_id), "%s", handle2_id);
+    json_free(handle2);
+    free(handle2_json);
+    json_free(spawn2);
+
+    JsonValue *id2_args = json_create_object();
+    json_obj_add(id2_args, "id", json_create_string(second_id));
+    char *cancel_report = cancel(agent, id2_args);
+    assert(cancel_report != NULL);
+    assert(strstr(cancel_report, "cancelled") != NULL);
+    char *after_cancel = check(agent, id2_args);
+    assert(after_cancel != NULL);
+    assert(strstr(after_cancel, "cancelled") != NULL);
+
+    /* An unknown id is a text error, never NULL and never a crash. */
+    JsonValue *bad_args = json_create_object();
+    json_obj_add(bad_args, "id", json_create_string("no-such-child"));
+    char *bad_report = check(agent, bad_args);
+    assert(bad_report != NULL);
+    assert(strstr(bad_report, "unknown") != NULL);
+
+    /* Back-compat: default wait=true still returns the blocking envelope. */
+    JsonValue *legacy_args = json_create_object();
+    json_obj_add(legacy_args, "task", json_create_string("legacy envelope probe"));
+    json_obj_add(legacy_args, "max_turns", json_create_number(1));
+    char *envelope = spawn(agent, legacy_args);
+    assert(envelope != NULL);
+    assert(strstr(envelope, "Subagent Task Execution Envelope") != NULL);
+
+    free(envelope);
+    json_free(legacy_args);
+    free(bad_report);
+    json_free(bad_args);
+    free(after_cancel);
+    free(cancel_report);
+    json_free(id2_args);
+    free(done_report);
+    free(early);
+    free(status_report);
+    json_free(id_args);
+
+    /* belya_harness_free() frees the agent it was handed — do not free it twice. */
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    p1a_wipe_db_files();
+    printf("  -> Phase 1a parent tools PASSED (59/59)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -4082,7 +4680,12 @@ int main(void) {
     test_sota_parity_pillars();
     test_superagent_harness_upgrade();
     test_sota_dominance_pillars();
-    printf("================ All Tests Passed Successfully (54/54 - 100%%) ================\n\n");
+    test_phase1a_subagent_schema_and_fork();
+    test_phase1a_parallel_isolation();
+    test_phase1a_budget_and_cancel();
+    test_phase1a_fifty_forks_no_leak();
+    test_phase1a_parent_tools();
+    printf("================ All Tests Passed Successfully (59/59 - 100%%) ================\n\n");
     return 0;
 }
 

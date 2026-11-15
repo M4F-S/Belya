@@ -145,4 +145,70 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent);
 ModelGatewayResponse belya_agent_step_forced_text(BelyaAgent *agent, const char *instruction);
 void belya_agent_free(BelyaAgent *agent);
 
+/* ==========================================================================
+   Phase 1a — Persistent, parallel, inspectable subagents
+   Contract: one row per child in `subagents`, every child message in
+   `subagent_messages` with a contiguous per-child idx (1 = child system
+   prompt, 2 = task). A child runs bounded turns on the parent's whitelist
+   harness and stops at budget_tokens.
+
+   Budget rule: checked before each turn; the turn that crosses the budget is
+   recorded, then the child is marked `failed` with an error naming the budget.
+   `steps` counts turns actually executed, `spent_tokens` the tokens the
+   gateway reported for them.
+
+   Parent tools (belya_harness.c): spawn_subagent gains `wait` (default true
+   keeps the blocking envelope) and, with wait=false, returns {"id","status"};
+   check_subagent / collect_subagent / cancel_subagent take {"id"} and always
+   answer text, never NULL.
+   ========================================================================== */
+#define BELYA_SUBAGENT_MAX_PARALLEL 4
+#define BELYA_SUBAGENT_DEFAULT_BUDGET 50000
+
+typedef struct {
+    char *id;
+    char *parent_session;
+    char *role;
+    char *status;        /* running | paused | done | failed | cancelled */
+    char *task;
+    char *summary;       /* final answer, NULL while running */
+    char *error;         /* failure reason, NULL when healthy */
+    char *workspace;
+    char *model;
+    long long budget_tokens;
+    long long spent_tokens;
+    long long steps;
+} BelyaSubagent;
+
+/* Idempotent additive migration: creates subagents + subagent_messages. */
+bool belya_subagent_schema_init(BelyaAgent *agent);
+
+/* Fork a child from a role + task + a summary of the parent context (never the
+   full transcript). Returns the new child id (caller frees), NULL on error. */
+char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task, long long budget_tokens);
+
+/* Load one child row (caller frees with belya_subagent_free), NULL if unknown. */
+BelyaSubagent *belya_subagent_get(BelyaAgent *agent, const char *id);
+void belya_subagent_free(BelyaSubagent *sa);
+
+/* One bounded turn: 1 = still running, 0 = finished (done/failed/cancelled), -1 = error. */
+int belya_subagent_step(BelyaAgent *parent, const char *id);
+
+/* Run one child to a terminal state. true = done, false = failed/cancelled/unknown. */
+bool belya_subagent_run(BelyaAgent *parent, const char *id);
+
+/* Run `count` children with at most `max_parallel` workers (cap 4).
+   true only when every child reached `done`. */
+bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, size_t count, size_t max_parallel);
+
+/* Hand the parent a child's result: summary when done, "failed: <reason>" when
+   failed, NULL while running or after cancel. Caller frees. */
+char *belya_subagent_collect(BelyaAgent *parent, const char *id);
+
+/* Request cancellation; a running child stops at its next turn boundary. */
+bool belya_subagent_cancel(BelyaAgent *parent, const char *id);
+
+/* JSON array of children for the /agents view. Caller frees. */
+char *belya_subagent_list_json(BelyaAgent *parent);
+
 #endif
