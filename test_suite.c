@@ -4913,6 +4913,276 @@ void test_phase1b_agents_report(void) {
     printf("  -> Phase 1b agents report PASSED (63/63)\n");
 }
 
+/* ==========================================================================
+   Phase 1c — hardening: paged /agents, timed GC, resume-then-run, opt-in
+   boot auto-resume. Every assertion below is behaviour, not plumbing.
+   ========================================================================== */
+
+static size_t count_lines(const char *s) {
+    size_t n = 0;
+    for (const char *p = s; p && *p; p++) if (*p == '\n') n++;
+    return n;
+}
+
+/* Pagination must lose nothing: the pages, concatenated, ARE the full report. */
+void test_phase1c_agents_pagination(void) {
+    printf("[Test] Phase 1c: Agents Pagination...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    BelyaSubagentAgentsPage empty;
+    memset(&empty, 0, sizeof(empty));
+    assert(belya_subagent_agents_page(agent, 1, 0, &empty) == true);
+    assert(empty.total == 0);
+    assert(empty.pages == 1);
+    assert(empty.page == 1);
+    assert(empty.text != NULL && strstr(empty.text, "No subagents") != NULL);
+    belya_subagent_agents_page_free(&empty);
+    assert(empty.text == NULL);
+
+    const char *tasks[5] = {"page probe one", "page probe two", "page probe three",
+                            "page probe four", "page probe five"};
+    char *ids[5];
+    for (int i = 0; i < 5; i++) {
+        ids[i] = belya_subagent_fork(agent, "worker", tasks[i], 1000);
+        assert(ids[i] != NULL);
+    }
+
+    BelyaSubagentAgentsPage p;
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 1, 2, &p) == true);
+    assert(p.total == 5 && p.pages == 3 && p.page == 1 && count_lines(p.text) == 2);
+
+    char *joined = xstrdup(p.text);
+    belya_subagent_agents_page_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 2, 2, &p) == true);
+    assert(p.page == 2 && count_lines(p.text) == 2);
+    size_t tl = strlen(joined) + strlen(p.text) + 1;
+    char *tmp = malloc(tl);
+    assert(tmp != NULL);
+    snprintf(tmp, tl, "%s%s", joined, p.text);
+    free(joined);
+    joined = tmp;
+    belya_subagent_agents_page_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 3, 2, &p) == true);
+    assert(p.page == 3 && count_lines(p.text) == 1);
+    tl = strlen(joined) + strlen(p.text) + 1;
+    tmp = malloc(tl);
+    assert(tmp != NULL);
+    snprintf(tmp, tl, "%s%s", joined, p.text);
+    free(joined);
+    joined = tmp;
+    belya_subagent_agents_page_free(&p);
+
+    char *full = belya_subagent_agents_report(agent);
+    assert(full != NULL);
+    assert(strcmp(joined, full) == 0);   /* no child, no byte lost across pages */
+    assert(count_lines(full) == 5);
+    free(full);
+    free(joined);
+
+    /* Out-of-range pages clamp instead of erroring or showing nothing. */
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 99, 2, &p) == true);
+    assert(p.page == 3 && count_lines(p.text) == 1);
+    belya_subagent_agents_page_free(&p);
+
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 0, 2, &p) == true);
+    assert(p.page == 1 && count_lines(p.text) == 2);
+    belya_subagent_agents_page_free(&p);
+
+    /* Default page size really is the header constant. */
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 1, 0, &p) == true);
+    assert(p.pages == 1 && p.total == 5);
+    assert(count_lines(p.text) == 5);
+    assert(strlen(p.text) < 4096);   /* a default page fits one Telegram message raw */
+    belya_subagent_agents_page_free(&p);
+
+    for (int i = 0; i < 5; i++) free(ids[i]);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1c agents pagination PASSED (64/67)\n");
+}
+
+/* The timer must collect old terminal children, respect its interval, and never
+   touch a child that could still be alive. */
+void test_phase1c_gc_timer(void) {
+    printf("[Test] Phase 1c: GC Timer...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    char *old_done = belya_subagent_fork(agent, "worker", "old done child", 1000);
+    assert(old_done != NULL);
+    p1a_set_status(agent, old_done, "done");
+    p1a_set_age_days(agent, old_done, 8);
+
+    assert(belya_subagent_maybe_gc(agent, 1000, 100) == 1);      /* first tick runs */
+    assert(belya_subagent_get(agent, old_done) == NULL);         /* row really gone */
+
+    char *second = belya_subagent_fork(agent, "worker", "second old done child", 1000);
+    assert(second != NULL);
+    p1a_set_status(agent, second, "done");
+    p1a_set_age_days(agent, second, 8);
+
+    assert(belya_subagent_maybe_gc(agent, 1050, 100) == 0);      /* inside the interval */
+    BelyaSubagent *still_there = belya_subagent_get(agent, second);
+    assert(still_there != NULL && still_there->status && strcmp(still_there->status, "done") == 0);
+    belya_subagent_free(still_there);
+
+    assert(belya_subagent_maybe_gc(agent, 1101, 100) == 1);      /* interval elapsed */
+    assert(belya_subagent_get(agent, second) == NULL);
+
+    /* A running child is never collected, however old its row is. The tick at
+       1300 really executes GC (100s after 1101), so this proves the filter. */
+    char *runner = belya_subagent_fork(agent, "worker", "old running child", 1000);
+    assert(runner != NULL);
+    p1a_set_age_days(agent, runner, 30);
+    assert(belya_subagent_maybe_gc(agent, 1300, 100) == 0);
+    BelyaSubagent *alive = belya_subagent_get(agent, runner);
+    assert(alive != NULL && alive->status && strcmp(alive->status, "running") == 0);
+    belya_subagent_free(alive);
+
+    /* interval 0 falls back to the default; the clock still gates it. */
+    assert(belya_subagent_maybe_gc(agent, 1300, 0) == 0);
+    assert(belya_subagent_maybe_gc(agent, 1300 + BELYA_SUBAGENT_GC_INTERVAL_SECONDS, 0) == 0);
+    BelyaSubagent *survived = belya_subagent_get(agent, runner);
+    assert(survived != NULL);           /* still not terminal, so never collected */
+    belya_subagent_free(survived);
+
+    free(old_done);
+    free(second);
+    free(runner);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1c gc timer PASSED (65/67)\n");
+}
+
+/* resume-then-run must finish the child in the same call and must never leave a
+   "running" row that no runtime owns. */
+void test_phase1c_resume_and_run(void) {
+    printf("[Test] Phase 1c: Resume And Run...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    p1a_reset_fake(1);   /* one tool-call turn, then the child is still running */
+    char *id = belya_subagent_fork(agent, "worker", "resume and finish me", 200000);
+    assert(id != NULL);
+    assert(belya_subagent_step(agent, id) == 1);
+    char *keep = xstrdup(id);
+    free(id);
+    belya_agent_free(agent);       /* process gone */
+    model_gateway_free(gw);
+
+    ModelGateway *gw2 = NULL;
+    BelyaAgent *agent2 = p1a_agent_on_existing_db(&gw2);
+    BelyaSubagentBootReport boot = belya_subagent_boot(agent2);
+    assert(boot.swept == 1 && boot.resumed == 0);   /* policy off by default */
+
+    BelyaSubagent *paused = belya_subagent_get(agent2, keep);
+    assert(paused != NULL && paused->status && strcmp(paused->status, "paused") == 0);
+    belya_subagent_free(paused);
+
+    p1a_reset_fake(0);   /* the resumed child's next turn answers */
+    assert(belya_subagent_resume_and_run(agent2, keep) == true);
+
+    BelyaSubagent *done = belya_subagent_get(agent2, keep);
+    assert(done != NULL && done->status && strcmp(done->status, "done") == 0);
+    assert(done->summary != NULL && strstr(done->summary, "child-answer") != NULL);
+    belya_subagent_free(done);
+
+    /* Terminal children are not resumable and stay exactly as they were. */
+    assert(belya_subagent_resume_and_run(agent2, keep) == false);
+    BelyaSubagent *still_done = belya_subagent_get(agent2, keep);
+    assert(still_done != NULL && still_done->status && strcmp(still_done->status, "done") == 0);
+    belya_subagent_free(still_done);
+
+    assert(belya_subagent_resume_and_run(agent2, "missing-child") == false);
+
+    /* A paused child whose transcript is gone must end up paused, not stuck
+       "running" with nobody executing it. */
+    char *broken = belya_subagent_fork(agent2, "worker", "broken resume transcript", 1000);
+    assert(broken != NULL);
+    p1a_set_status(agent2, broken, "paused");
+    char sql[512];
+    snprintf(sql, sizeof(sql), "DELETE FROM subagent_messages WHERE subagent_id='%s';", broken);
+    assert(p1a_exec(agent2, sql));
+    assert(belya_subagent_resume_and_run(agent2, broken) == false);
+    BelyaSubagent *reverted = belya_subagent_get(agent2, broken);
+    assert(reverted != NULL && reverted->status && strcmp(reverted->status, "paused") == 0);
+    belya_subagent_free(reverted);
+    free(broken);
+
+    free(keep);
+    p1a_teardown(agent2, gw2);
+    printf("  -> Phase 1c resume-and-run PASSED (66/67)\n");
+}
+
+/* The boot policy is opt-in, capped, and off unless the operator asks for it. */
+void test_phase1c_auto_resume_policy(void) {
+    printf("[Test] Phase 1c: Auto Resume Policy...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    p1a_reset_fake(0);   /* an answer is available as soon as it runs */
+
+    char *a = belya_subagent_fork(agent, "worker", "auto resume me", 1000);
+    assert(a != NULL);
+    p1a_set_status(agent, a, "paused");
+
+    assert(setenv("BELYA_SUBAGENT_AUTO_RESUME", "1", 1) == 0);
+    BelyaSubagentBootReport boot = belya_subagent_boot(agent);
+    assert(boot.resumed == 1);
+    assert(boot.resume_failed == 0);
+    BelyaSubagent *done = belya_subagent_get(agent, a);
+    assert(done != NULL && done->status && strcmp(done->status, "done") == 0);
+    belya_subagent_free(done);
+
+    /* Off means off: a paused child stays paused across a boot. */
+    char *b = belya_subagent_fork(agent, "worker", "leave me paused", 1000);
+    assert(b != NULL);
+    p1a_set_status(agent, b, "paused");
+    assert(setenv("BELYA_SUBAGENT_AUTO_RESUME", "0", 1) == 0);
+    BelyaSubagentBootReport boot2 = belya_subagent_boot(agent);
+    assert(boot2.resumed == 0 && boot2.resume_failed == 0);
+    BelyaSubagent *paused = belya_subagent_get(agent, b);
+    assert(paused != NULL && paused->status && strcmp(paused->status, "paused") == 0);
+    belya_subagent_free(paused);
+
+    /* A garbage value is not an instruction to resume everything. */
+    assert(setenv("BELYA_SUBAGENT_AUTO_RESUME", "nonsense", 1) == 0);
+    BelyaSubagentBootReport boot3 = belya_subagent_boot(agent);
+    assert(boot3.resumed == 0);
+    BelyaSubagent *paused2 = belya_subagent_get(agent, b);
+    assert(paused2 != NULL && paused2->status && strcmp(paused2->status, "paused") == 0);
+    belya_subagent_free(paused2);
+
+    /* The cap is respected: ask for 9, only BELYA_SUBAGENT_MAX_PARALLEL run. */
+    for (int i = 0; i < 6; i++) {
+        char *c = belya_subagent_fork(agent, "worker", "cap probe", 1000);
+        assert(c != NULL);
+        p1a_set_status(agent, c, "paused");
+        free(c);
+    }
+    assert(setenv("BELYA_SUBAGENT_AUTO_RESUME", "9", 1) == 0);
+    BelyaSubagentBootReport boot4 = belya_subagent_boot(agent);
+    assert(boot4.resumed <= BELYA_SUBAGENT_MAX_PARALLEL);
+    assert(boot4.resumed >= 1);
+    assert(unsetenv("BELYA_SUBAGENT_AUTO_RESUME") == 0);
+
+    free(a);
+    free(b);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1c auto-resume policy PASSED (67/67)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -4978,7 +5248,11 @@ int main(void) {
     test_phase1b_orphan_sweep();
     test_phase1b_artifacts_and_gc();
     test_phase1b_agents_report();
-    printf("================ All Tests Passed Successfully (63/63 - 100%%) ================\n\n");
+    test_phase1c_agents_pagination();
+    test_phase1c_gc_timer();
+    test_phase1c_resume_and_run();
+    test_phase1c_auto_resume_policy();
+    printf("================ All Tests Passed Successfully (67/67 - 100%%) ================\n\n");
     return 0;
 }
 

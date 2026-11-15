@@ -39,6 +39,7 @@ typedef struct BelyaAgent {
     size_t total_prompt_tokens;
     size_t total_completion_tokens;
     size_t total_cached_tokens;
+    long long subagent_last_gc_mono; /* monotonic seconds of the last timed GC, 0 = never */
     char db_path[256];
     void (*pre_compact_hook)(void *userdata);
     void *pre_compact_userdata;
@@ -237,6 +238,8 @@ char *belya_subagent_list_json(BelyaAgent *parent);
 typedef struct {
     size_t swept;      /* running -> paused at boot */
     size_t collected;  /* done/failed children removed by GC */
+    size_t resumed;    /* paused children auto-resumed AND run to done */
+    size_t resume_failed; /* auto-resume attempts that did not reach done */
 } BelyaSubagentBootReport;
 
 bool belya_subagent_resume(BelyaAgent *agent, const char *id);
@@ -246,5 +249,39 @@ bool belya_subagent_add_artifact(BelyaAgent *agent, const char *id, const char *
 char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id);
 size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds);
 char *belya_subagent_agents_report(BelyaAgent *agent);
+
+/* ---------------------------------------------------------------------------
+   Phase 1c — hardening: paged /agents, timed GC, resume-then-run.
+   --------------------------------------------------------------------------- */
+#define BELYA_SUBAGENT_AGENTS_PER_PAGE 20
+#define BELYA_SUBAGENT_GC_INTERVAL_SECONDS (6LL * 60LL * 60LL)
+
+typedef struct {
+    char  *text;    /* body only: one line per child, or "No subagents.\n" */
+    size_t page;    /* 1-based, clamped into [1, pages] */
+    size_t pages;   /* >= 1 */
+    size_t total;   /* total children in the table */
+} BelyaSubagentAgentsPage;
+
+/* One page of the /agents view. per_page = 0 means BELYA_SUBAGENT_AGENTS_PER_PAGE.
+   An out-of-range page is clamped (never an error, never an empty page unless
+   the table is empty). `out` must be zeroed by the caller or simply declared and
+   passed; it is fully overwritten. Returns false only on a database error. */
+bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
+                                BelyaSubagentAgentsPage *out);
+void belya_subagent_agents_page_free(BelyaSubagentAgentsPage *page);
+
+/* Resume a paused child and run it to a terminal state in the SAME call, so a
+   resumed row is never left "running" with no runtime owning it. If the runtime
+   cannot be opened the row is reverted to "paused". true = child reached done. */
+bool belya_subagent_resume_and_run(BelyaAgent *agent, const char *id);
+
+/* Rate-limited GC for long-running processes. `now_mono` is monotonic seconds
+   (caller supplies it so it is testable). Returns the number collected, 0 when
+   the interval has not elapsed or nothing was collected. */
+size_t belya_subagent_maybe_gc(BelyaAgent *agent, long long now_mono, long long interval_seconds);
+
+/* Monotonic clock helper exposed so adapters do not add their own clock code. */
+long long belya_agent_monotonic_now(void);
 
 #endif
