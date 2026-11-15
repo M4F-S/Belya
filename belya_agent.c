@@ -3895,3 +3895,43 @@ bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, siz
     free(threads);
     return pool.failures == 0 && pool.completed == count;
 }
+
+/* ==========================================================================
+   Phase 1b — durability (T1.7-T1.10). RED: honest stubs, so the contract tests
+   fail on behaviour rather than on linking or on a NULL dereference.
+   ========================================================================== */
+bool belya_subagent_resume(BelyaAgent *agent, const char *id) {
+    (void)agent; (void)id;
+    return false;
+}
+
+size_t belya_subagent_sweep_orphans(BelyaAgent *agent) {
+    (void)agent;
+    return 0;
+}
+
+BelyaSubagentBootReport belya_subagent_boot(BelyaAgent *agent) {
+    (void)agent;
+    BelyaSubagentBootReport report = {0, 0};
+    return report;
+}
+
+bool belya_subagent_add_artifact(BelyaAgent *agent, const char *id, const char *path) {
+    (void)agent; (void)id; (void)path;
+    return false;
+}
+
+char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id) {
+    (void)agent; (void)id;
+    return xstrdup("[]");
+}
+
+size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds) {
+    (void)agent; (void)older_than_seconds;
+    return 0;
+}
+
+char *belya_subagent_agents_report(BelyaAgent *agent) {
+    (void)agent;
+    return xstrdup("");
+}
