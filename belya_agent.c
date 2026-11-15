@@ -4025,12 +4025,61 @@ size_t belya_subagent_gc(BelyaAgent *agent, long long older_than_seconds) {
     return collected;
 }
 
+static long long subagent_now_mono(void);
+
 /* The boot sequence: pause whatever the dead process left running, then collect
-   terminal children nobody will collect. Called once, at daemon start. */
+   terminal children, then possibly auto-resume paused children, then set the
+   GC timer so the first timed tick is one full interval later. */
 BelyaSubagentBootReport belya_subagent_boot(BelyaAgent *agent) {
-    BelyaSubagentBootReport report = {0, 0};
+    BelyaSubagentBootReport report = {0, 0, 0, 0};
+    if (!agent || !agent->db) return report;
     report.swept = belya_subagent_sweep_orphans(agent);
     report.collected = belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS);
+
+    agent->subagent_last_gc_mono = subagent_now_mono();
+
+    /* Opt-in auto-resume: BELYA_SUBAGENT_AUTO_RESUME=<n>, clamped to [0, MAX_PARALLEL]. */
+    const char *env = getenv("BELYA_SUBAGENT_AUTO_RESUME");
+    size_t max_resume = 0;
+    if (env) {
+        long val = strtol(env, NULL, 10);
+        if (val > 0) {
+            max_resume = (size_t)val;
+            if (max_resume > BELYA_SUBAGENT_MAX_PARALLEL)
+                max_resume = BELYA_SUBAGENT_MAX_PARALLEL;
+        }
+    }
+
+    if (max_resume > 0) {
+        /* Collect ids first, then run — never hold write lock while running. */
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(agent->db,
+                "SELECT id FROM subagents WHERE status='paused' ORDER BY updated_at ASC LIMIT ?1;",
+                -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)max_resume);
+            /* Collect into a simple array. */
+            size_t cap = max_resume > 0 ? max_resume : 1;
+            char **ids = calloc(cap, sizeof(char *));
+            size_t n_ids = 0;
+            while (sqlite3_step(st) == SQLITE_ROW && n_ids < cap) {
+                const unsigned char *txt = sqlite3_column_text(st, 0);
+                if (txt) ids[n_ids++] = xstrdup((const char *)txt);
+            }
+            sqlite3_finalize(st);
+
+            for (size_t i = 0; i < n_ids; i++) {
+                if (belya_subagent_resume_and_run(agent, ids[i]))
+                    report.resumed++;
+                else
+                    report.resume_failed++;
+                free(ids[i]);
+            }
+            free(ids);
+        } else {
+            sqlite3_finalize(st);
+        }
+    }
+
     return report;
 }
 
@@ -4081,6 +4130,21 @@ char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id) {
     return out;
 }
 
+/* One rendered line for one row: "<id> · <role> · <status> · <spent>/<budget> tokens · <snippet>\n" */
+static void subagent_format_line(char *line, size_t line_sz, const char *id, const char *role,
+                                 const char *status, long long spent, long long budget,
+                                 const char *task) {
+    char snippet[49];
+    size_t k = 0;
+    for (const char *p = task ? task : ""; *p && k < sizeof(snippet) - 1; p++) {
+        snippet[k++] = (*p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p;
+    }
+    snippet[k] = '\0';
+    snprintf(line, line_sz, "%s · %s · %s · %lld/%lld tokens · %s\n",
+             id ? id : "?", role ? role : "?", status ? status : "?",
+             spent, budget, snippet);
+}
+
 /* T1.10: one line per child, newest first. The id is printed in full so the
    line can be fed straight back to check/collect/cancel. */
 char *belya_subagent_agents_report(BelyaAgent *agent) {
@@ -4101,17 +4165,8 @@ char *belya_subagent_agents_report(BelyaAgent *agent) {
         long long budget = sqlite3_column_int64(st, 4);
         const char *task = (const char *)sqlite3_column_text(st, 5);
 
-        char snippet[49];
-        size_t k = 0;
-        for (const char *p = task ? task : ""; *p && k < sizeof(snippet) - 1; p++) {
-            snippet[k++] = (*p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p;
-        }
-        snippet[k] = '\0';
-
         char line[640];
-        snprintf(line, sizeof(line), "%s · %s · %s · %lld/%lld tokens · %s\n",
-                 id ? id : "?", role ? role : "?", status ? status : "?",
-                 spent, budget, snippet);
+        subagent_format_line(line, sizeof(line), id, role, status, spent, budget, task);
         dyn_str_append(&out, line);
         count++;
     }
@@ -4120,4 +4175,134 @@ char *belya_subagent_agents_report(BelyaAgent *agent) {
     char *report = xstrdup(out.data ? out.data : "");
     dyn_str_free(&out);
     return report;
+}
+
+/* Phase 1c: subagent_status_of returns xstrdup'd status, NULL when unknown. */
+static char *subagent_status_of(BelyaAgent *agent, const char *id) {
+    if (!agent || !agent->db || !id || !id[0]) return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(agent->db,
+            "SELECT status FROM subagents WHERE id = ?1;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
+    char *status = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(st, 0);
+        if (txt) status = xstrdup((const char *)txt);
+    }
+    sqlite3_finalize(st);
+    return status;
+}
+
+/* Phase 1c: paged view, one page of the subagent table. */
+bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
+                                BelyaSubagentAgentsPage *out) {
+    if (!agent || !agent->db || !out) return false;
+    if (per_page == 0) per_page = BELYA_SUBAGENT_AGENTS_PER_PAGE;
+
+    /* Count */
+    sqlite3_stmt *st = NULL;
+    size_t total = 0;
+    if (sqlite3_prepare_v2(agent->db,
+            "SELECT COUNT(*) FROM subagents;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return false;
+    }
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        total = (size_t)sqlite3_column_int64(st, 0);
+    }
+    sqlite3_finalize(st);
+
+    size_t pages = (total == 0) ? 1 : (total + per_page - 1) / per_page;
+    if (page < 1) page = 1;
+    if (page > pages) page = pages;
+
+    out->total = total;
+    out->page = page;
+    out->pages = pages;
+    out->text = NULL;
+
+    if (total == 0) {
+        out->text = xstrdup("No subagents.\n");
+        return true;
+    }
+
+    size_t offset = (page - 1) * per_page;
+
+    if (sqlite3_prepare_v2(agent->db,
+            "SELECT id, role, status, spent_tokens, budget_tokens, task FROM subagents "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?2 OFFSET ?3;",
+            -1, &st, NULL) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)per_page);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)offset);
+
+    DynString out_ds = dyn_str_new();
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *id = (const char *)sqlite3_column_text(st, 0);
+        const char *role = (const char *)sqlite3_column_text(st, 1);
+        const char *status = (const char *)sqlite3_column_text(st, 2);
+        long long spent = sqlite3_column_int64(st, 3);
+        long long budget = sqlite3_column_int64(st, 4);
+        const char *task = (const char *)sqlite3_column_text(st, 5);
+
+        char line[640];
+        subagent_format_line(line, sizeof(line), id, role, status, spent, budget, task);
+        dyn_str_append(&out_ds, line);
+    }
+    sqlite3_finalize(st);
+    out->text = out_ds.data ? xstrdup(out_ds.data) : xstrdup("");
+    dyn_str_free(&out_ds);
+    return true;
+}
+
+void  belya_subagent_agents_page_free(BelyaSubagentAgentsPage *page) {
+    if (!page) return;
+    if (page->text) free(page->text);
+    memset(page, 0, sizeof(*page));
+}
+
+/* Resume a paused child and run it to a terminal state in the SAME call. */
+bool belya_subagent_resume_and_run(BelyaAgent *agent, const char *id) {
+    if (!agent || !id || !id[0]) return false;
+    if (!belya_subagent_resume(agent, id)) return false;   /* paused -> running, transcript proven */
+    bool done = belya_subagent_run(agent, id);
+    if (!done) {
+        /* run() marks done/failed itself; if it could not even start, the row is
+           still "running" with no owner — put it back where resume found it. */
+        char *status = subagent_status_of(agent, id);
+        if (status && strcmp(status, "running") == 0) {
+            pthread_mutex_lock(&g_subagent_write_lock);
+            bool ok = subagent_exec_param(agent->db,
+                    "UPDATE subagents SET status='paused' WHERE id=?1 AND status='running';", id);
+            pthread_mutex_unlock(&g_subagent_write_lock);
+            if (!ok) fprintf(stderr, "[subagent] resume_and_run revert failed for %s\n", id);
+        }
+        free(status);
+    }
+    return done;
+}
+
+/* Monotonic clock. */
+long long belya_agent_monotonic_now(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (long long)ts.tv_sec + (long long)(ts.tv_nsec / 1000000000LL);
+}
+
+static long long subagent_now_mono(void) {
+    return belya_agent_monotonic_now();
+}
+
+/* Rate-limited GC. */
+size_t belya_subagent_maybe_gc(BelyaAgent *agent, long long now_mono, long long interval_seconds) {
+    if (!agent || !agent->db) return 0;
+    if (interval_seconds <= 0) interval_seconds = BELYA_SUBAGENT_GC_INTERVAL_SECONDS;
+    if (agent->subagent_last_gc_mono > 0 && now_mono - agent->subagent_last_gc_mono < interval_seconds)
+        return 0;
+    agent->subagent_last_gc_mono = now_mono;
+    return belya_subagent_gc(agent, BELYA_SUBAGENT_GC_DEFAULT_SECONDS);
 }

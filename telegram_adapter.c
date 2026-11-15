@@ -264,7 +264,78 @@ bool telegram_bot_send_chunks(TelegramBot *bot, const char *chat_id, const char 
     return true;
 }
 
-/* ---- Streaming: render deltas into one message and edit it in place ---- */
+/* One bounded Telegram message: head + <pre>body</pre> + tail. snprintf only —
+   the security sweeper (and reviewers) treat strcpy/strcat/sprintf as CWE-120. */
+static char *telegram_pre_message(const char *head, const char *body, size_t body_len, const char *tail) {
+    size_t need = strlen(head) + 5 + body_len + 6 + strlen(tail) + 1;
+    char *msg = malloc(need);
+    if (!msg) return NULL;
+    int n = snprintf(msg, need, "%s<pre>%.*s</pre>%s", head, (int)body_len, body, tail);
+    if (n < 0 || (size_t)n >= need) {
+        free(msg);
+        return NULL;
+    }
+    return msg;
+}
+
+/* Bytes of `escaped` that belong to one chunk starting at `pos`: the largest
+   prefix of at most `limit` bytes that ends on a newline (so an HTML entity is
+   never cut), else a UTF-8-boundary-safe hard split. */
+static size_t pre_chunk_len(const char *escaped, size_t len, size_t pos, size_t limit) {
+    size_t avail = len - pos;
+    size_t take = (avail > limit) ? limit : avail;
+    while (take > 0 && escaped[pos + take - 1] != '\n') take--;
+    if (take == 0) {
+        take = (avail > limit) ? limit : avail;
+        while (take > 0 && pos + take < len &&
+               ((unsigned char)escaped[pos + take] & 0xC0) == 0x80) take--;
+        if (take == 0) take = 1;
+    }
+    return take;
+}
+
+/* Send an HTML <pre> block whose body may exceed one Telegram message. Every
+   chunk is a complete, valid message with its own <pre> wrapper; `header` rides
+   the first one, `trailer` the last. Returns true only if every chunk was
+   accepted. */
+static bool telegram_send_pre_blocks(TelegramBot *bot, const char *chat_id,
+                                     const char *header, const char *escaped,
+                                     const char *trailer) {
+    if (!bot || !chat_id || !escaped) return false;
+    if (!header) header = "";
+    if (!trailer) trailer = "";
+    size_t len = strlen(escaped);
+    const size_t LIMIT = 3500; /* chunk limit for the escaped body */
+
+    size_t total_chunks = 0;
+    for (size_t pos = 0; pos < len; ) {
+        size_t take = pre_chunk_len(escaped, len, pos, LIMIT);
+        pos += take;
+        total_chunks++;
+    }
+    if (total_chunks == 0) return telegram_bot_send_message(bot, chat_id, header);
+
+    size_t pos = 0;
+    for (size_t idx = 1; pos < len; idx++) {
+        size_t take = pre_chunk_len(escaped, len, pos, LIMIT);
+        bool last = (pos + take >= len);
+
+        char cont[160];
+        const char *head = header;
+        if (idx > 1) {
+            snprintf(cont, sizeof(cont), "<b>… (continued %zu/%zu)</b>\n", idx, total_chunks);
+            head = cont;
+        }
+
+        char *msg = telegram_pre_message(head, escaped + pos, take, last ? trailer : "");
+        if (!msg) return false;
+        bool ok = telegram_bot_send_message(bot, chat_id, msg);
+        free(msg);
+        if (!ok) return false;
+        pos += take;
+    }
+    return true;
+}
 
 typedef struct {
     TelegramBot *bot;
@@ -635,8 +706,9 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
        can resume them; terminal children nobody will collect are removed.
        Exactly once, before the first fork of this process. */
     BelyaSubagentBootReport sub_boot = belya_subagent_boot(harness->agent);
-    if (sub_boot.swept || sub_boot.collected) {
-        printf("[subagents] boot: %zu paused, %zu collected\n", sub_boot.swept, sub_boot.collected);
+    if (sub_boot.swept || sub_boot.collected || sub_boot.resumed || sub_boot.resume_failed) {
+        printf("[subagents] boot: %zu paused, %zu collected, %zu resumed, %zu resume-failed\n",
+               sub_boot.swept, sub_boot.collected, sub_boot.resumed, sub_boot.resume_failed);
     }
 
     printf("\033[1;32m=== Belya Telegram Bot Daemon Online (v7.0.0) ===\033[0m\n");
@@ -646,6 +718,10 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
 
     while (bot->running && !g_telegram_interrupted) {
         belya_omnichannel_poll_env(harness);
+        {
+            size_t gc_now = belya_subagent_maybe_gc(harness->agent, belya_agent_monotonic_now(), BELYA_SUBAGENT_GC_INTERVAL_SECONDS);
+            if (gc_now) printf("[subagents] gc: %zu collected\n", gc_now);
+        }
         JsonValue *poll_p = json_create_object();
         json_obj_add(poll_p, "offset", json_create_number(bot->last_update_id + 1));
         json_obj_add(poll_p, "timeout", json_create_number(5));
@@ -790,20 +866,71 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     continue;
                 }
 
-                if (strcmp(text, "/agents") == 0) {
-                    char *report = belya_subagent_agents_report(harness->agent);
-                    if (!report) {
+                if (strcmp(text, "/agents") == 0 || strncmp(text, "/agents ", 8) == 0) {
+                    size_t page = 1;
+                    if (strlen(text) > 8) {
+                        const char *num_str = text + 8;
+                        while (*num_str == ' ') num_str++;
+                        if (*num_str) {
+                            char *end = NULL;
+                            long n = strtol(num_str, &end, 10);
+                            if (end == num_str || *end != '\0' || n < 1) {
+                                telegram_bot_send_message(bot, chat_id_str,
+                                    "Usage: /agents [page]");
+                                continue;
+                            }
+                            page = (size_t)n;
+                        }
+                    }
+
+                    BelyaSubagentAgentsPage pg;
+                    memset(&pg, 0, sizeof(pg));
+                    if (!belya_subagent_agents_page(harness->agent, page, 0, &pg)) {
                         telegram_bot_send_message(bot, chat_id_str,
                             "⚠️ Could not read the subagent table.");
                         continue;
                     }
-                    char escaped[4096];
-                    telegram_html_escape(report, escaped, sizeof(escaped));
-                    char agents_msg[4400];
-                    snprintf(agents_msg, sizeof(agents_msg),
-                             "👷 <b>Subagent children</b>\n<pre>%s</pre>", escaped);
-                    telegram_bot_send_message(bot, chat_id_str, agents_msg);
-                    free(report);
+
+                    /* Build header. */
+                    char header[512];
+                    if (pg.total == 0) {
+                        snprintf(header, sizeof(header), "👷 <b>Subagent children</b>\n");
+                    } else {
+                        snprintf(header, sizeof(header),
+                                 "👷 <b>Subagent children</b> · page %zu/%zu · %zu total\n",
+                                 pg.page, pg.pages, pg.total);
+                    }
+
+                    /* HTML-escape body into heap. */
+                    size_t esc_sz = strlen(pg.text) * 6 + 64;
+                    char *escaped = malloc(esc_sz);
+                    if (!escaped) {
+                        telegram_bot_send_message(bot, chat_id_str, "⚠️ Memory allocation error.");
+                        belya_subagent_agents_page_free(&pg);
+                        continue;
+                    }
+                    {
+                        size_t o = 0;
+                        for (const unsigned char *p = (const unsigned char *)pg.text; *p && o + 8 < esc_sz; p++) {
+                            if (*p == '<') { escaped[o++] = '&'; escaped[o++] = 'l'; escaped[o++] = 't'; escaped[o++] = ';'; }
+                            else if (*p == '>') { escaped[o++] = '&'; escaped[o++] = 'g'; escaped[o++] = 't'; escaped[o++] = ';'; }
+                            else if (*p == '&') { escaped[o++] = '&'; escaped[o++] = 'a'; escaped[o++] = 'm'; escaped[o++] = 'p'; escaped[o++] = ';'; }
+                            else escaped[o++] = *p;
+                        }
+                        escaped[o] = '\0';
+                    }
+
+                    /* Build trailer for next page. */
+                    char trailer[128];
+                    trailer[0] = '\0';
+                    if (pg.pages > 1) {
+                        size_t next = (pg.page < pg.pages) ? pg.page + 1 : 1;
+                        snprintf(trailer, sizeof(trailer), "\n/agents %zu for the next page", next);
+                    }
+
+                    telegram_send_pre_blocks(bot, chat_id_str, header, escaped, trailer);
+                    free(escaped);
+                    belya_subagent_agents_page_free(&pg);
                     continue;
                 }
 

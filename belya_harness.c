@@ -2280,6 +2280,57 @@ static char *tool_cancel_subagent(BelyaAgent *agent, const JsonValue *args) {
     return ds.data;
 }
 
+/* Phase 1c: resume a paused subagent and run it to completion in this call. */
+static char *tool_resume_subagent(BelyaAgent *agent, const JsonValue *args) {
+    const char *id = json_obj_get_str(args, "id");
+    if (!id || !id[0]) return xstrdup("Error: missing subagent id.");
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    if (!sa) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Error: unknown subagent '%s'.", id);
+        return ds.data;
+    }
+    const char *status = sa->status ? sa->status : "";
+    if (strcmp(status, "paused") != 0) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "Subagent %s is %s; only paused children can be resumed.", id, status);
+        belya_subagent_free(sa);
+        return ds.data;
+    }
+    /* Save task/budget before freeing sa — the envelope reports them. */
+    const char *task = sa->task ? sa->task : "";
+    long long budget = sa->budget_tokens;
+    char *saved_task = xstrdup(task);
+    belya_subagent_free(sa);
+
+    bool done = belya_subagent_resume_and_run(agent, id);
+
+    /* Reload row for the envelope. */
+    BelyaSubagent *sa2 = belya_subagent_get(agent, id);
+    char *summary = sa2 ? belya_subagent_collect(agent, id) : NULL;
+
+    DynString envelope = dyn_str_new();
+    dyn_str_append(&envelope, "=== Subagent Resume Envelope ===\n");
+    dyn_str_appendf(&envelope, "Task: %s\n", saved_task);
+    dyn_str_appendf(&envelope, "Subagent: %s\n", id);
+    dyn_str_appendf(&envelope, "Status: %s\n", sa2 && sa2->status ? sa2->status : "?");
+    dyn_str_appendf(&envelope, "Steps: %lld\n", sa2 ? sa2->steps : 0LL);
+    dyn_str_appendf(&envelope, "Tokens: %lld/%lld\n",
+                    sa2 ? sa2->spent_tokens : 0LL,
+                    sa2 ? sa2->budget_tokens : budget);
+    if (sa2 && sa2->error && sa2->error[0]) {
+        dyn_str_appendf(&envelope, "Reason: %s\n\n", sa2->error);
+    }
+    dyn_str_appendf(&envelope, "Final Output:\n%s",
+                    summary ? summary : "(no result; the child did not finish)");
+    if (!done) dyn_str_append(&envelope, "\n\n[child did not reach a done state]");
+
+    free(summary);
+    if (sa2) belya_subagent_free(sa2);
+    free(saved_task);
+    return envelope.data;
+}
+
 // ==================== Belya Agency Subagent Dispatch, Rollback Guard & Triage ====================
 
 static bool str_contains_ci(const char *haystack, const char *needle) {
@@ -4885,6 +4936,9 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     REGISTER_IF_PERMITTED("cancel_subagent", "Cancel a running subagent by id; terminal, nothing is collected afterwards",
                           subagent_id_schema("Subagent id to cancel"),
                           PERM_ALLOW, tool_cancel_subagent);
+    REGISTER_IF_PERMITTED("resume_subagent", "Resume a paused subagent and run it to completion in this call",
+                          subagent_id_schema("Subagent id to resume (must be 'paused')"),
+                          PERM_ALLOW, tool_resume_subagent);
 
     // 13. define_tool (Self-Tooling Dynamic Evolution)
     JsonValue *def_params = json_create_object();
@@ -7201,6 +7255,10 @@ void belya_harness_repl(BelyaHarness *h) {
     printf("Type \033[1;33m/help\033[0m for commands or \033[1;31mexit\033[0m to terminate.\n\n");
 
     while (1) {
+        {
+            size_t gc_now = belya_subagent_maybe_gc(h->agent, belya_agent_monotonic_now(), BELYA_SUBAGENT_GC_INTERVAL_SECONDS);
+            if (gc_now) printf("[subagents] gc: %zu collected\n", gc_now);
+        }
         const char *m_disp = h->agent->gateway->model ? h->agent->gateway->model : "unknown";
         const char *slash = strrchr(m_disp, '/');
         if (slash) m_disp = slash + 1;
