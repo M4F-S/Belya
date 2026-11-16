@@ -289,4 +289,10 @@ char *belya_company_handle_command(BelyaHarness *harness, const char *cmd_args);
 
 extern const char *g_active_custom_script_path;
 
+/* Write into a pipe or pty without letting SIGPIPE kill the process: a reader
+   that died turns the write into EPIPE, and the default SIGPIPE action would
+   terminate the whole agent. Blocks SIGPIPE for the calling thread around the
+   write and drains the pending signal. */
+void belya_safe_pipe_write(int fd, const char *data, size_t len);
+
 #endif
