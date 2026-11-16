@@ -144,8 +144,13 @@ void belya_safe_pipe_write(int fd, const char *data, size_t len) {
         sigset_t pending;
         sigemptyset(&pending);
         if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
+#if defined(__APPLE__) || !defined(__linux__)
+            int sig = 0;
+            sigwait(&block, &sig);
+#else
             struct timespec zero = {0, 0};
             sigtimedwait(&block, NULL, &zero);   /* drain it, do not deliver it */
+#endif
         }
         pthread_sigmask(SIG_SETMASK, &old, NULL);
     }

@@ -20,6 +20,8 @@ test_broken.c
 .belya/tools/
 .belya/worktrees/
 .belya/mcp/
+.belya/hooks/
+.belya/skills/
 
 # OS / Editor Artifacts
 .DS_Store
