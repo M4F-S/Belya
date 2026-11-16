@@ -2,41 +2,42 @@
 
 [![Release](https://img.shields.io/badge/Release-v7.4.0-blue.svg)](https://github.com/M4F-S/Belya/releases/tag/v7.4.0)
 [![License](https://img.shields.io/badge/License-Apache_2.0-green.svg)](LICENSE)
-[![Language](https://img.shields.io/badge/Language-C99_POSIX-orange.svg)]()
-[![Tests](https://img.shields.io/badge/Unit_Tests-54%2F54_Passed_(100%25)-brightgreen.svg)]()
-[![Operation_Crucible](https://img.shields.io/badge/Operation_Crucible-100%25_Invariants_Intact-success.svg)]()
-[![Memory_Safety](https://img.shields.io/badge/Memory_Safety-0_Leaks_ASan_UBSan_Clean-success.svg)]()
-[![Protocols](https://img.shields.io/badge/Protocols-Anthropic_|_Hermes--3_|_DeepSeek_|_OpenAI-blueviolet.svg)]()
+[![Standard](https://img.shields.io/badge/Standard-ISO%2FIEC_9899:1999_(C99)_|_POSIX.1--2008-orange.svg)]()
+[![Tests](https://img.shields.io/badge/Unit_Tests-74%2F74_Passed_(100%25)-brightgreen.svg)]()
+[![Memory_Safety](https://img.shields.io/badge/Memory_Safety-0_Leaks_|_ASan_|_UBSan_Clean-success.svg)]()
+[![Sandbox](https://img.shields.io/badge/Sandboxing-Landlock_LSM_|_Path_Jailing-red.svg)]()
+[![Protocols](https://img.shields.io/badge/Protocols-DeepSeek_|_Anthropic_|_OpenAI_|_Hermes--3_|_Falcon--3-blueviolet.svg)]()
 [![Multi--Agent](https://img.shields.io/badge/Sovereign_Company-21_Autonomous_Roles-informational.svg)]()
 [![RFC_8615](https://img.shields.io/badge/Skills_Discovery-RFC_8615_Compliant-success.svg)]()
 [![Memory](https://img.shields.io/badge/Memory_Footprint-<8.0MB_Peak_RSS-purple.svg)]()
 [![Cold_Start](https://img.shields.io/badge/Cold_Start-<1.5ms-yellow.svg)]()
 
-> **Belya** is a high-performance, bare-metal autonomous AI software engineering core implemented in pure C99. Designed to outperform heavy Node.js and Python agent harnesses (such as Claude Code and Hermes Agent), Belya combines sub-millisecond local startup with deterministic AST dependency slicing, speculative shadow worktrees, a Dual VTable security architecture, native stdio LSP integration, an interactive raw-mode terminal TUI, closed-loop skill evolution, and RFC 8615 discovery.
+> **Belya** is a high-performance, bare-metal autonomous AI software engineering core and agency orchestrator engineered from first principles in **pure C99 (POSIX.1-2008)**. Designed to replace resource-heavy Node.js and Python agent harnesses (such as Claude Code and Hermes Agent), Belya pairs sub-millisecond cold start times with deterministic AST symbol indexing, speculative shadow git worktrees, Linux Landlock LSM kernel isolation, native stdio LSP integration, a persistent SQLite WAL subagent engine with authored-token budget economics, a 21-role autonomous SDLC company mesh, and RFC 8615 discovery.
 
 ---
 
 ## Table of Contents
 - [Executive Overview](#executive-overview)
 - [Comparative Benchmark Matrix](#comparative-benchmark-matrix)
-- [Core Architecture](#core-architecture)
+- [System Architecture](#system-architecture)
   - [1. Dual VTable Structural Isolation (Router vs. Worker)](#1-dual-vtable-structural-isolation-router-vs-worker)
-  - [2. Interactive Terminal TUI & Split Diff Inspector](#2-interactive-terminal-tui--split-diff-inspector)
-  - [3. Native Stdio LSP JSON-RPC Client](#3-native-stdio-lsp-json-rpc-client)
-  - [4. Speculative Multi-Worktree Candidate Dispatcher](#4-speculative-multi-worktree-candidate-dispatcher)
-  - [5. Inter-Agent Mesh Socket IPC](#5-inter-agent-mesh-socket-ipc)
-  - [6. Closed-Loop Skill Evolution & RFC 8615 Discovery](#6-closed-loop-skill-evolution--rfc-8615-discovery)
-  - [7. Universal Rules Auto-Ingestion](#7-universal-rules-auto-ingestion)
-  - [8. Multi-Format Trajectory Distillation (OpenAI, ShareGPT, Hermes DPO)](#8-multi-format-trajectory-distillation-openai-sharegpt-hermes-dpo)
-  - [9. Jev Coprocessor & Discrete Decision Primitives](#9-jev-coprocessor--discrete-decision-primitives)
+  - [2. Persistent Subagent Engine (Economics, Durability & Pool)](#2-persistent-subagent-engine-economics-durability--pool)
+  - [3. Defense-in-Depth Sandboxing & Signal Safety](#3-defense-in-depth-sandboxing--signal-safety)
+  - [4. Native Stdio LSP JSON-RPC Client & Compiler Watchdog](#4-native-stdio-lsp-json-rpc-client--compiler-watchdog)
+  - [5. Speculative Shadow Git Worktree Candidate Dispatcher](#5-speculative-shadow-git-worktree-candidate-dispatcher)
+  - [6. Omnichannel Gateway & Stdin-Piped Remote Execution](#6-omnichannel-gateway--stdin-piped-remote-execution)
+  - [7. Interactive Terminal TUI & Side-by-Side Diff Inspector](#7-interactive-terminal-tui--side-by-side-diff-inspector)
+  - [8. Closed-Loop Skill Evolution & RFC 8615 Discovery](#8-closed-loop-skill-evolution--rfc-8615-discovery)
+  - [9. Multi-Format Trajectory Distillation (OpenAI, ShareGPT, Hermes DPO)](#9-multi-format-trajectory-distillation-openai-sharegpt-hermes-dpo)
+  - [10. Sovereign UAE Falcon Presets & Air-Gapped PDPL Operation](#10-sovereign-uae-falcon-presets--air-gapped-pdpl-operation)
 - [Sovereign Multi-Agent Enterprise Roster (21 SDLC Roles)](#sovereign-multi-agent-enterprise-roster-21-sdlc-roles)
-- [Native Tool Suite (46 Built-In Tools)](#native-tool-suite-46-built-in-tools)
-- [Installation & Quick Start](#installation--quick-start)
-  - [Prerequisites](#prerequisites)
+- [Native Tool Suite (51 Registered Tools)](#native-tool-suite-51-registered-tools)
+- [Installation & Verification](#installation--verification)
+  - [System Prerequisites](#system-prerequisites)
   - [Building from Source](#building-from-source)
-  - [Verification Test Battery](#verification-test-battery)
+  - [7-Gate Verification Battery](#7-gate-verification-battery)
 - [Operating Modes](#operating-modes)
-- [Command & Slash Controls Reference](#command--slash-controls-reference)
+- [CLI Options & Slash Controls Reference](#cli-options--slash-controls-reference)
 - [Production Deployment & Defense-in-Depth Administration](#production-deployment--defense-in-depth-administration)
 - [Synergy with Twin Sibling Almaz](#synergy-with-twin-sibling-almaz)
 - [License & Provenance](#license--provenance)
@@ -45,19 +46,19 @@
 
 ## Executive Overview
 
-Standard AI coding agents incur significant architectural penalties:
-1. **Runtime Overhead:** Heavy runtimes (Node.js, Python) consume 350 MB to 1.8 GB RSS, introducing garbage collection latency and high resource demands.
-2. **Context Window Contamination:** Intermediate compiler traces and raw tool outputs flood context windows, degrading reasoning.
-3. **Unchecked Code Mutation:** Directly editing working trees risks leaving unverified or half-broken changes in place.
-4. **Agent Amnesia:** Without structured distillation, solutions to novel problems are lost between sessions.
+Modern enterprise AI coding agents suffer from fundamental systems engineering flaws:
+1. **Massive Runtime Overhead:** Interpreted runtimes (Node.js/React Ink, Python/asyncio) consume between 350 MB and 1.8 GB RSS, introducing garbage collection pauses, multi-second cold boot latencies, and bloated deployment footprints.
+2. **Context Window Contamination:** Raw tool outputs, multi-kilobyte compiler error traces, and redundant system prompts pollute reasoning contexts, inflating costs and inducing context-window drift.
+3. **Unchecked Destructive Code Mutation:** Directly mutating working directory files risks leaving dirty, half-broken states upon step exhaustion or unexpected process termination.
+4. **Cloud Egress & Data Privacy Violations:** Continuously streaming proprietary code, internal schema, and credentials to multi-tenant offshore cloud APIs breaches data sovereignty mandates (e.g., UAE Federal Decree-Law No. 45 PDPL and Dubai Data Law No. 26).
 
-Belya addresses these limitations directly in C99:
-- **Bare-Metal Footprint:** Cold boot in `<1.5ms`, baseline memory under `8.0MB RSS`.
-- **Dual VTable Security:** Enforced by physical C function pointers; the Router Agent cannot execute destructive shell commands or mutate repository files directly.
-- **Speculative Shadow Worktrees:** Tests candidate solutions across parallel worktrees, automatically scoring and merging the cleanest working patch.
-- **Native Stdio LSP Integration:** Communicates directly with language servers (`clangd`, `pyright`, `rust-analyzer`, `gopls`) over standard I/O pipes.
-- **Closed-Loop Skill Evolution:** Multi-step troubleshooting workflows automatically distill into `skills/<slug>/SKILL.md` with RFC 8615 discovery.
-- **Direct Dataset Distillation:** Exports sessions in OpenAI, ShareGPT, and Hermes DPO formats for fine-tuning local models.
+Belya addresses these problems directly at the hardware and operating system boundary:
+- **Bare-Metal Performance:** Compiles to a compact static binary with `<1.5ms` cold boot latency and under `8.0MB RSS` baseline memory.
+- **Dual VTable Security:** Physical C function pointer tables prevent orchestration routines from executing destructive shell operations or directly modifying code.
+- **Persistent Subagent Engine:** Subagents run in SQLite WAL mode with **Option A Authored-Token Economics** (prompt re-sends are not billed to child work budgets), automatic in-memory compaction above 16k tokens, bounded background thread execution (`wait=false`), and graceful partial status reporting with forced wrap-up summaries.
+- **Kernel-Level Sandboxing:** Linux Landlock LSM confines filesystem access strictly to the workspace root, coupled with path-canonicalization jailing and SIGPIPE-safe atomic pipe operations.
+- **Speculative Shadow Worktrees:** Simultaneously evaluates competing implementation strategies in parallel git worktrees, atomically merging the highest-scoring candidate and pruning non-winning branches.
+- **Zero-Dependency Native LSP:** Pure C99 JSON-RPC 2.0 communication over standard pipes with language servers (`clangd`, `pyright`, `rust-analyzer`, `gopls`).
 
 ---
 
@@ -65,112 +66,124 @@ Belya addresses these limitations directly in C99:
 
 | Metric / Dimension | Belya (Pure C99) | Claude Code (Node/TS) | Hermes Agent (Python) | Devin / Cognition (Cloud) |
 | :--- | :---: | :---: | :---: | :---: |
-| **Language & Runtime** | **Pure C99 POSIX** | Node.js / React Ink | Python 3.11 / asyncio | Proprietary VM / Python |
-| **Cold Boot Latency** | **<1.5 ms** | ~850 ms | ~1,200 ms | ~15,000 ms (Cloud boot) |
-| **Baseline RSS Memory** | **<8.0 MB** | 350 MB – 850 MB | 450 MB – 1.8 GB | N/A (Hosted VM) |
-| **External Dependencies** | **Zero** (libc, libcurl, sqlite3) | >1,400 npm packages | >120 pip packages | Massive Cloud Infra |
-| **Router/Worker Isolation** | **Dual VTable Omission** | Prompt Instructions | Prompt Instructions | Cloud Sandbox Container |
-| **Worktree Exploration** | **Speculative Multi-Branch** | Single Worktree | Sequential Execution | Single Branch Sandbox |
-| **Language Server Protocol** | **Native Stdio JSON-RPC** | Plugin / External Extension | Tool-Call Workaround | Cloud Indexer |
-| **Skills Standard** | **`agentskills.io` (RFC 8615)** | `CLAUDE.md` Only | `SKILL.md` (Native) | Proprietary Prompts |
-| **Trajectory Distillation** | **OpenAI, ShareGPT, DPO** | None (Transient) | Atropos JSONL | Proprietary Logs |
-| **Inter-Agent Mesh IPC** | **Unix Domain Socket** | None | HTTP Broker | Proprietary RPC |
-| **Kernel Tamper Locks** | **`chattr +i` Immutable** | Not Supported | Not Supported | Managed Cloud Sandbox |
+| **Language & Standard** | **Pure C99 (POSIX.1-2008)** | TypeScript / Node.js 20+ | Python 3.11 / asyncio | Proprietary VM / Python |
+| **Cold Boot Latency** | **< 1.5 ms** | ~850 ms | ~1,200 ms | ~15,000 ms (Cloud boot) |
+| **Baseline RSS Memory** | **< 8.0 MB** | 350 MB – 850 MB | 450 MB – 1.8 GB | N/A (Hosted VM) |
+| **External Dependencies** | **Zero** (`libc`, `libcurl`, `sqlite3`) | >1,400 npm packages | >120 pip packages | Massive Cloud Infra |
+| **Kernel Sandboxing** | **Linux Landlock LSM + Jailing** | Userland cwd checks | Docker socket required | Cloud container boundary |
+| **Orchestration Isolation**| **Dual VTable C Function Pointers** | System prompt instructions | System prompt instructions | Cloud container boundary |
+| **Subagent Architecture** | **Persistent SQLite WAL + Pool** | In-process subshells | In-process sequential | MicroVM workers |
+| **Subagent Economics** | **Authored-Token Accounting** | Full prompt accumulation | Full prompt accumulation | Metered VM credits |
+| **Worktree Exploration** | **Speculative Multi-Branch** | Single working tree | Sequential execution | Single branch sandbox |
+| **Language Server Protocol**| **Native Stdio JSON-RPC 2.0** | Plugin / External Extension | Tool-call workaround | Remote indexer |
+| **Skills Discovery** | **RFC 8615 (`agentskills.io`)** | `CLAUDE.md` only | `SKILL.md` (Native) | Proprietary prompts |
+| **Trajectory Distillation**| **OpenAI, ShareGPT, Hermes DPO** | None (Transient logs) | Atropos JSONL | Proprietary logs |
+| **Inter-Agent Mesh IPC** | **POSIX Unix Domain Socket** | None | HTTP REST Broker | Proprietary RPC |
+| **Kernel Tamper Locks** | **`chattr +i` Immutable Daemon** | Not Supported | Not Supported | Managed Cloud Sandbox |
 
 ---
 
-## Core Architecture
+## System Architecture
 
 ```
-                                  ┌─────────────────────────────┐
-                                  │      Operator Terminal      │
-                                  │   (ANSI Raw-Mode TUI HUD)   │
-                                  └──────────────┬──────────────┘
-                                                 │
-                                                 ▼
-                                  ┌─────────────────────────────┐
-                                  │      Belya Router Core      │
-                                  │    (Dual VTable Isolation)  │
-                                  └──────────────┬──────────────┘
-                                                 │
-                   ┌─────────────────────────────┼─────────────────────────────┐
-                   │                             │                             │
-                   ▼                             ▼                             ▼
-     ┌───────────────────────────┐ ┌───────────────────────────┐ ┌───────────────────────────┐
-     │ 1. Terminal TUI & Diff    │ │ 2. Native Stdio LSP       │ │ 3. Speculative Worktrees    │
-     │ • Split Side-by-Side View │ │ • JSON-RPC stdio pipes    │ │ • Multi-Candidate Branches  │
-     │ • Single-Key Approval     │ │ • clangd / pyright / etc. │ │ • Automated Scoring Matrix  │
-     │ • VT100 Threaded Spinner  │ │ • Watchdog Diagnostic Hook│ │ • Clean Patch Atomic Merge  │
-     │ • Live Token & RSS HUD    │ │ • Zero-Guess Auto-Healing │ │ • Silent Loser Worktree Drop│
-     └───────────────────────────┘ └───────────────────────────┘ └───────────────────────────┘
-                                                 │
-                                                 ▼
-                                  ┌─────────────────────────────┐
-                                  │  4. Inter-Agent Mesh Socket │
-                                  │    /tmp/belya_almaz_mesh    │
-                                  │   Unix Domain Socket IPC    │
-                                  └──────────────┬──────────────┘
-                                                 │
-                                                 ▼
-                                  ┌─────────────────────────────┐
-                                  │   Almaz Cognitive Organism  │
-                                  │ (FadeMem, VIGIL, SARSI)     │
-                                  └─────────────────────────────┘
+                                  ┌────────────────────────────────────────┐
+                                  │      Operator / Omnichannel Client     │
+                                  │  (ANSI Raw TUI / Telegram Bot / Slack) │
+                                  └───────────────────┬────────────────────┘
+                                                      │
+                                                      ▼
+                                  ┌────────────────────────────────────────┐
+                                  │           Belya Router Core            │
+                                  │   (Dual VTable Structural Isolation)   │
+                                  └───────────────────┬────────────────────┘
+                                                      │
+         ┌────────────────────────┬───────────────────┼───────────────────┬────────────────────────┐
+         │                        │                   │                   │                        │
+         ▼                        ▼                   ▼                   ▼                        ▼
+┌──────────────────┐    ┌──────────────────┐ ┌─────────────────┐ ┌─────────────────┐    ┌──────────────────┐
+│  Subagent Engine │    │ Speculative Tree │ │ Native Stdio LSP│ │ Kernel Sandbox  │    │ Omnichannel Gate │
+│ • SQLite WAL DB  │    │ • 3 Parallel WT  │ │ • clangd/pyright│ │ • Landlock LSM  │    │ • Telegram Daemon│
+│ • Authored Token │    │ • Def-in-Depth   │ │ • Stdio JSON-RPC│ │ • Path Jailing  │    │ • Discord v10    │
+│ • Compaction >16k│    │ • Auto Composite │ │ • Preflight Hook│ │ • Safe Pipe I/O │    │ • Slack Sockets  │
+│ • Bounded Pool   │    │ • Atomic Merge   │ │ • Zero-Guess Fix│ │ • chattr +i Lock│    │ • Stdin Exec-Pipe│
+└──────────────────┘    └──────────────────┘ └─────────────────┘ └─────────────────┘    └──────────────────┘
+                                                      │
+                                                      ▼
+                                  ┌────────────────────────────────────────┐
+                                  │     Inter-Agent Mesh Socket IPC        │
+                                  │       /tmp/belya_almaz_mesh.sock       │
+                                  └───────────────────┬────────────────────┘
+                                                      │
+                                                      ▼
+                                  ┌────────────────────────────────────────┐
+                                  │   Almaz Cognitive Twin Organism        │
+                                  │  (FadeMem Biological Decay, VIGIL)     │
+                                  └────────────────────────────────────────┘
 ```
 
 ### 1. Dual VTable Structural Isolation (Router vs. Worker)
-Separation of orchestration and mutation via distinct C function pointer tables:
-- **Router VTable:** Contains pointers for planning, reading, AST navigation, and task dispatch. Destructive function pointers (`bash`, `write_file`, `edit_file`, `apply_patch`) are initialized to `NULL`.
-- **Worker VTable:** Enabled inside ephemeral worktrees for code mutation and test execution, isolated from orchestration controls.
+Separation of high-level task planning and code mutation is enforced through separate C function pointer tables:
+- **Router VTable:** Provides planning, read-only inspection, AST navigation, and task dispatching. Destructive mutation tools (`bash`, `write_file`, `edit_file`, `apply_patch`) are initialized to `NULL`, preventing prompt injection attacks from escaping orchestration bounds.
+- **Worker VTable:** Explicitly provisioned only within isolated, ephemeral worktrees to execute bounded changes and unit test runs.
 
-### 2. Interactive Terminal TUI & Split Diff Inspector
-- **Single-Keystroke Modal (`tui_interactive_approve`):** Instant tool approval without pressing Enter (`[Y]` Apply, `[N]` Reject, `[E]` Edit args, `[A]` Always allow, `[D]` Split diff).
-- **Split Side-by-Side Diff View (`tui_render_side_by_side_diff`):** Dual-column diff rendering with dynamic terminal width detection.
-- **VT100 Threaded Spinner:** Real-time animated spinner operating on a background POSIX thread.
-- **Live Status HUD (`tui_render_token_hud`):** Displays upstream model, prompt/completion tokens, cache hit rates, latency, and RSS.
+### 2. Persistent Subagent Engine (Economics, Durability & Pool)
+Belya's subagent architecture (Phases 1a–1d) provides robust multi-agent concurrency:
+- **Authored-Token Economics (Option A):** Subagent budgets meter authored work (`spent_tokens = completion_tokens + bounded_tool_output`). Cumulative prompt re-transmissions are recorded in `billed_tokens` for provider cost audits but never trigger premature step eviction.
+- **Child In-Memory Compaction:** When child prompt size exceeds 16,000 tokens across iterative tool loops, `belya_agent_compact_history()` prunes intermediate history while retaining the system prompt and the last 8 messages. The full audit trail remains preserved in `subagent_messages`.
+- **Graceful Partial Result Delivery:** Turn exhaustion (`turns <= 0`) or budget depletion transitions status to `partial` and executes one wrap-up summary turn (`belya_agent_step_forced_text`). Parent collectors receive rich status envelopes rather than discarded work.
+- **Bounded Background Worker Pool:** Background execution (`wait=false`) runs on a dedicated POSIX thread pool capped at `BELYA_SUBAGENT_BG_MAX = 8` concurrent workers with atomic refcounting.
+- **Durability & Orphan Sweeping:** Child states persist in SQLite WAL mode. On process restart, orphaned in-flight rows are reclaimed or paused, and `/agents` offers real-time paged status monitoring.
 
-### 3. Native Stdio LSP JSON-RPC Client
-- Implements a pure C99 JSON-RPC 2.0 client communicating over bidirectional pipes with language servers (`clangd`, `pyright`, `rust-analyzer`, `gopls`, `typescript-language-server`).
-- Extracted diagnostics feed into `belya_harness_preflight_check()`, enabling instant auto-healing of syntax and type errors before committing changes.
+### 3. Defense-in-Depth Sandboxing & Signal Safety
+- **Linux Landlock LSM:** Confines process file descriptors to the repository root directory, preventing arbitrary filesystem access even under compromised shell execution.
+- **Path Jailing (`is_path_jailed`):** Realpath canonicalization blocks directory traversal attacks (`../../`) and symlink escapes across all file modification tools.
+- **SIGPIPE-Safe Atomic Pipe Writes (`belya_safe_pipe_write`):** Masks `SIGPIPE` around child standard input writes and drains pending signals via `sigtimedwait()` (Linux) and `sigwait()` (Darwin/macOS), preventing broken child reader processes from taking down the parent daemon.
+- **Kernel Immutable Locks:** Production binaries are locked via `chattr +i` and run under systemd without `CAP_LINUX_IMMUTABLE`, preventing binary replacement during active execution.
 
-### 4. Speculative Multi-Worktree Candidate Dispatcher
-- Dispatches 1–3 candidate strategies simultaneously in parallel shadow git worktrees (`.belya/worktrees/*`):
-  - *Candidate 0:* Surgical Minimal (smallest diff footprint).
-  - *Candidate 1:* Defensive & Robust (explicit bounds checks, error handling).
-  - *Candidate 2:* Idiomatic Pattern (idiomatic structural conventions).
-- Deterministic composite scoring:
+### 4. Native Stdio LSP JSON-RPC Client & Compiler Watchdog
+- A native, zero-dependency C99 JSON-RPC 2.0 client communicates over standard pipes with language servers (`clangd`, `pyright`, `rust-analyzer`, `gopls`).
+- Diagnostic outputs automatically feed `belya_harness_preflight_check()`, enabling instant compiler auto-healing loops before committing changes.
+
+### 5. Speculative Shadow Git Worktree Candidate Dispatcher
+- Dispatches up to 3 candidate implementation strategies simultaneously in isolated shadow git worktrees (`.belya/worktrees/*`):
+  - *Candidate 0:* Surgical Minimal (smallest line diff footprint).
+  - *Candidate 1:* Defensive & Robust (explicit bounds checks and error handling).
+  - *Candidate 2:* Idiomatic Pattern (standard structural conventions).
+- Solutions are scored deterministically:
   $$\text{Score} = (\text{Tests Passed} \times 10000) - (\text{Diff Churn} \times 2)$$
-- The highest-scoring candidate is squash-merged atomically; non-winning branches are purged silently.
+- The top-ranking patch is squash-merged atomically; non-winning branches are purged.
 
-### 5. Inter-Agent Mesh Socket IPC
-- High-speed Unix domain socket IPC (`/tmp/belya_almaz_mesh.sock`).
-- Enables Belya and Almaz to pair-program collaboratively with sub-millisecond consultation latency.
+### 6. Omnichannel Gateway & Stdin-Piped Remote Execution
+- **Polymorphic Omnichannel Engine (`belya_channel.c`):** Serves 24/7 across Telegram (long-polling daemon with markdown rendering and session resumption), Discord Gateway v10, and Slack (Socket Mode & Webhooks with <100ms URL challenge responses).
+- **Stdin-Piped Remote Backend (`exec_backend`):** Streams command scripts into remote Docker containers or SSH hosts over standard input pipes, eliminating shell-escaping vulnerabilities.
 
-### 6. Closed-Loop Skill Evolution & RFC 8615 Discovery
-- **Closed-Loop Auto-Synthesis:** Multi-step troubleshooting workflows automatically distill into `skills/<slug>/SKILL.md` with YAML frontmatter.
-- **RFC 8615 Discovery:** The `--export-skills` CLI flag generates `.well-known/agent-skills/index.json` and mirrored `SKILL.md` documents without opening an incoming HTTP port.
+### 7. Interactive Terminal TUI & Side-by-Side Diff Inspector
+- **Single-Keystroke Modal (`tui_interactive_approve`):** Instant tool approval (`[Y]` Apply, `[N]` Reject, `[E]` Edit args, `[A]` Always allow, `[D]` Split diff).
+- **Split Side-by-Side Diff Inspector:** Dual-column terminal diff viewer with dynamic width detection and ANSI syntax highlighting.
+- **Live Token HUD:** Displays upstream model status, prompt/completion tokens, cache hit efficiency, latency, and resident set size (RSS).
 
-### 7. Universal Rules Auto-Ingestion
-On startup, Belya automatically searches and ingests repository rules in priority order:
-$$\text{BELYARULES.md} \rightarrow \text{Belya.md} \rightarrow \text{ALMAZRULES.md} \rightarrow \text{Almaz.md} \rightarrow \text{.agentrules} \rightarrow \text{AGENTS.md} \rightarrow \text{GEMINI.md} \rightarrow \text{CLAUDE.md}$$
+### 8. Closed-Loop Skill Evolution & RFC 8615 Discovery
+- **Closed-Loop Auto-Synthesis:** Multi-turn problem resolutions automatically distill into modular skills (`skills/<slug>/SKILL.md`) with YAML frontmatter.
+- **RFC 8615 Discovery Standard:** CLI flag `--export-skills` exports the catalog to `.well-known/agent-skills/index.json` compliant with the `agentskills.io` standard without opening network ports.
 
-### 8. Multi-Format Trajectory Distillation (OpenAI, ShareGPT, Hermes DPO)
-- **OpenAI Fine-Tune:** `/export [session_id] [file.jsonl]` or `belya_agent_export_trajectory()`.
-- **ShareGPT / Hermes Format:** `/export-sharegpt` or `--export-sharegpt <file.jsonl>`.
-- **Hermes DPO Preference Format:** `/export-dpo` or `--export-dpo <file.jsonl>`. Mines successful recovery turns (`chosen`) against initial failed tool attempts (`rejected`) to produce pairs for DPO training.
+### 9. Multi-Format Trajectory Distillation (OpenAI, ShareGPT, Hermes DPO)
+- **OpenAI Fine-Tune:** Exports conversational sessions in JSONL via `/export [id] [file.jsonl]` or `belya_agent_export_trajectory()`.
+- **ShareGPT / Hermes Format:** CLI flag `--export-sharegpt <file.jsonl>` or `/export-sharegpt` for conversational fine-tuning.
+- **Hermes DPO Preference Format:** CLI flag `--export-dpo <file.jsonl>` or `/export-dpo`. Mines successful recovery turns (`chosen`) against failed tool attempts (`rejected`) to produce pairs for Direct Preference Optimization.
 
-### 9. Jev Coprocessor & Discrete Decision Primitives
-Fast deterministic decision heuristics coupled with coprocessor classification:
-- `jev_decide_choice()`: Multi-label discrete categorization.
-- `jev_decide_noul()`: Calibrated binary probability evaluation.
-- `jev_decide_score()`: Ordinal scale probability distribution.
-- Includes local offline fallbacks, maintaining 100% operation without cloud dependencies.
+### 10. Sovereign UAE Falcon Presets & Air-Gapped PDPL Operation
+- Optimized for sovereign on-premise execution using UAE Technology Innovation Institute (TII) open weights via `--preset`:
+  - `falcon` / `falcon3`: Falcon-3 7B/10B Instruct running on local Ollama (`http://localhost:11434/v1`).
+  - `falcon-vllm`: High-throughput local vLLM serving (`http://localhost:8000/v1`) with continuous batching.
+  - `falcon2`: Falcon-2 11B multimodal foundation model.
+  - `airgap`: Strictly local air-gapped execution complying with UAE Federal Decree-Law No. 45 (PDPL).
+- Includes DeepSeek `<think>` CoT scavenger extraction to isolate functional tool payloads.
 
 ---
 
 ## Sovereign Multi-Agent Enterprise Roster (21 SDLC Roles)
 
-Belya includes 21 built-in SDLC roles orchestrated via `belya_company.c`:
+Belya incorporates 21 autonomous SDLC roles orchestrated via `belya_company.c`:
 
 | Role Key | Specialization | Default Turns |
 | :--- | :--- | :---: |
@@ -195,29 +208,38 @@ Belya includes 21 built-in SDLC roles orchestrated via `belya_company.c`:
 
 ---
 
-## Native Tool Suite (46 Built-In Tools)
+## Native Tool Suite (51 Registered Tools)
 
-| Category | Native Tools |
-| :--- | :--- |
-| **Filesystem & Code Editing** | `read_file`, `write_file`, `edit_file`, `apply_patch`, `patch_file`, `list_dir`, `search_files`, `ripgrep`, `file_outline` |
-| **Execution & Sandbox** | `bash`, `pty_exec`, `run_test_cycle`, `enter_worktree`, `leave_worktree`, `plan_mode`, `define_tool` |
-| **Language Server & AST** | `lsp_definition`, `lsp_references`, `lsp_query`, `ast_slice`, `query_ast_graph`, `generate_repo_map` |
-| **SuperAgent Orchestration** | `dispatch_worker_task`, `dispatch_agent`, `mesh_collaborate`, `ask_user`, `audit_security_variants` |
-| **Memory & Skills** | `save_memory`, `recall_memory`, `search_memory`, `save_skill`, `search_skills`, `git_checkpoint`, `git_rollback` |
-| **Networking & MCP** | `fetch_url`, `rest_call`, `mcp_call`, `synthesize_mcp_server`, `gateway_probe` |
+All 51 tools are implemented directly in pure C99 and registered in `belya_harness.c`:
+
+| Category | Count | Tools |
+| :--- | :---: | :--- |
+| **Filesystem & Editing** | 7 | `read_file`, `write_file`, `edit_file`, `edit_notebook`, `apply_patch`, `list_dir`, `search_files` |
+| **Execution & Sandboxing** | 4 | `bash`, `manage_task`, `exec_backend`, `define_tool` |
+| **Subagents & Agency Mesh**| 8 | `spawn_subagent`, `check_subagent`, `collect_subagent`, `cancel_subagent`, `resume_subagent`, `dispatch_agent`, `dispatch_worker_task`, `mesh_collaborate` |
+| **Code Graph, AST & LSP** | 7 | `lsp_definition`, `lsp_references`, `lsp_query`, `goto_definition`, `find_callers`, `ast_slice`, `query_ast_graph` |
+| **Memory & Skills** | 5 | `save_memory`, `recall_memory`, `save_skill`, `recall_skill`, `recall_conversation` |
+| **Tasks, Planning & Cron** | 8 | `task_create`, `task_get`, `task_list`, `task_update`, `cron_create`, `cron_list`, `cron_tick`, `enter_plan_mode`, `exit_plan_mode` |
+| **Web & MCP Integration** | 6 | `web_search`, `web_fetch`, `fetch_url`, `mcp_call`, `synthesize_mcp_server`, `run_test_cycle` |
+| **Operator & Security** | 6 | `ask_user`, `audit_security_variants`, `git_status`, `git_diff` |
 
 ---
 
-## Installation & Quick Start
+## Installation & Verification
 
-### Prerequisites
+### System Prerequisites
 - GCC >= 9.0 or Clang >= 11.0 (C99 standard support)
-- POSIX libraries (`libcurl`, `sqlite3`, `pthread`)
+- POSIX system libraries (`libcurl`, `sqlite3`, `pthread`, `libm`)
 - Git >= 2.25
 
-On Debian / Ubuntu:
+**Debian / Ubuntu Installation:**
 ```bash
 sudo apt-get update && sudo apt-get install -y build-essential libcurl4-openssl-dev libsqlite3-dev git
+```
+
+**macOS (Darwin) Installation:**
+```bash
+brew install curl sqlite
 ```
 
 ### Building from Source
@@ -226,18 +248,28 @@ git clone https://github.com/M4F-S/Belya.git
 cd Belya
 make clean && make -j4
 ```
-The compiled binary is placed at `build/belya`.
+The compiled binary will be located at `build/belya`.
 
-### Verification Test Battery
+### 7-Gate Verification Battery
+Belya enforces a rigorous 7-gate verification pipeline:
 ```bash
-# Primary unit verification battery (54 tests + 4 MCP HTTP tests)
+# Gate 1 & 2: Primary unit verification battery (74/74 passed - 100% + MCP selftests)
 make test
 
-# Memory safety audit under AddressSanitizer and UndefinedBehaviorSanitizer
+# Gate 3: Verification of all targets & simulated environments
+make verify
+
+# Gate 4: Memory safety audit under AddressSanitizer and UndefinedBehaviorSanitizer
 make test_asan
 
-# Operation Crucible adversarial breaking & penetration battery
-make test-crucible-asan
+# Gate 5: Stripped binary footprint check (< 350 KB micro-core)
+./scripts/verify_phase.sh
+
+# Gate 6: Task benchmark suite (13 autonomous coding missions)
+make bench
+
+# Gate 7: Architecture drift check
+make drift
 ```
 
 ---
@@ -256,10 +288,15 @@ make test-crucible-asan
 
 ### Mode 3: Headless Autonomous SWE Mission
 ```bash
-./build/belya --prompt "Fix buffer overflow in parser.c, verify tests under AddressSanitizer, and commit."
+./build/belya --prompt "Fix buffer bounds check in parser.c, verify tests under AddressSanitizer, and commit."
 ```
 
-### Mode 4: Trajectory & Skills Exporters
+### Mode 4: Enterprise Company Simulation (21 Roles)
+```bash
+./build/belya --company "Audit authentication flow, design WCAG compliant frontend, and write test battery."
+```
+
+### Mode 5: Dataset & Skills Exporters
 ```bash
 # Export RFC 8615 skills catalogue
 ./build/belya --export-skills
@@ -273,31 +310,67 @@ make test-crucible-asan
 
 ---
 
-## Command & Slash Controls Reference
+## CLI Options & Slash Controls Reference
 
+### Command-Line Arguments
+| Option | Description |
+| :--- | :--- |
+| `-h`, `--help` | Display command-line usage and options |
+| `-P`, `--preset <name>` | Load model preset (`falcon`, `falcon-vllm`, `falcon2`, `qwen`, `deepseek`, `airgap`) |
+| `--presets` | List all available model presets and target endpoints |
+| `-t`, `--telegram`, `-o`, `--omnichannel` | Run in 24/7 daemon mode (Telegram long-polling & Omnichannel) |
+| `-p`, `--prompt`, `--headless <text>` | Run in non-interactive headless mission mode |
+| `-r`, `--resume <session_id>` | Resume an existing conversation session from SQLite |
+| `-c`, `--company [task]` | Run in Sovereign Enterprise Company multi-role mode |
+| `-a`, `--agency [task]` | Run in Belya Agency multi-agent pipeline mode |
+| `-d`, `--docker <container>` | Direct execution into a target Docker container via stdin pipe |
+| `-S`, `--stage`, `--telemetry` | Enable cognitive stage telemetry and event logging |
+| `--probe` | Run gateway health and authorization preflight checks, then exit |
+| `--no-probe` | Skip gateway preflight checks during startup |
+| `--stats-json <path>` | Write execution metrics and statistics to a JSON file |
+| `--export-skills` | Generate RFC 8615 `.well-known/agent-skills/` catalogue |
+| `--export-sharegpt <path>` | Export session history in ShareGPT / Hermes JSONL format |
+| `--export-dpo <path>` | Export session history in Hermes DPO preference format |
+
+### Interactive & Telegram Slash Commands
 | Command | Action |
 | :--- | :--- |
-| `/help` | Displays command catalog and active capabilities |
-| `/status` | Shows system health, RSS memory, token consumption, and gateway latency |
-| `/diff` | Displays colored ANSI diff of uncommitted workspace changes |
-| `/diff --side` | Displays interactive side-by-side terminal split diff |
-| `/hud` | Toggles live token, latency, and RSS HUD status bar |
-| `/mesh [msg]` | Sends an IPC consultation request to Almaz (`/tmp/belya_almaz_mesh.sock`) |
-| `/export [id]` | Exports trajectory in OpenAI JSONL format |
-| `/export-sharegpt` | Exports trajectory in ShareGPT / Hermes format |
-| `/export-dpo` | Exports trajectory in Hermes DPO preference format |
-| `/checkpoint [id]` | Creates a Git & conversation context snapshot |
-| `/rollback [id]` | Reverts workspace files and dialogue to a previous checkpoint |
-| `/cache` | Displays prompt cache statistics and hit rates |
-| `/reflect` | Distills recent trajectory into a reusable SQLite FTS5 skill |
-| `/doctor` | Runs deep environment and gateway diagnostics |
-| `/quit` / `/exit` | Restores terminal mode and exits cleanly |
+| `/help`, `/start` | Display command catalog and active capabilities |
+| `/status` | View system health, RSS memory, token consumption, and gateway latency |
+| `/agents [page]` | View persistent subagent children, token budgets, and execution states |
+| `/diff [path] [--side]` | View ANSI colorized git diff or split side-by-side terminal diff |
+| `/tools` | List all registered tools and active permission tiers |
+| `/rules` | View ingested repository rules (`.agentrules`, `BELYARULES.md`) |
+| `/timeline [N]` | View recent cognitive timeline events |
+| `/sessions` | List all checkpointed conversation sessions in SQLite |
+| `/save [id]` | Checkpoint conversation state to SQLite database |
+| `/resume <id>` | Restore conversation session by identifier |
+| `/skills [query]` | List or search saved procedural skills |
+| `/checkpoint [id]` | Create a Git and context snapshot |
+| `/rollback [id]` | Instant rollback of files and dialogue to a previous checkpoint |
+| `/export [id]` | Export trajectory in OpenAI JSONL format |
+| `/export-sharegpt` | Export trajectory in ShareGPT / Hermes format |
+| `/export-dpo` | Export trajectory in Hermes DPO preference format |
+| `/cache` | View prompt cache hit economics and token savings |
+| `/reflect` | Distill recent trajectory into reusable SQLite FTS5 skill |
+| `/compact [N]` | Prune older messages, keeping N recent (default: 10) |
+| `/memory [query]` | Search SQLite persistent memory directly via FTS5 BM25 |
+| `/model <name>` | Dynamically switch the upstream LLM model |
+| `/openrouter [model]` | Switch provider to OpenRouter |
+| `/ollama [model]` | Switch provider to local Ollama |
+| `/key <api_key>` | Dynamically update active provider API key |
+| `/doctor` | Run deep environment, compiler, and git diagnostics |
+| `/probe` | Perform pre-flight health probe on upstream model endpoints |
+| `/cost` | View session token accounting and estimated provider cost |
+| `/turbo [on\|off]` | Toggle auto-approval Turbo mode for tool execution |
+| `/clear`, `/reset` | Clear active conversation history (preserves system prompt) |
+| `/exit`, `/quit` | Restore terminal raw-mode settings and exit cleanly |
 
 ---
 
 ## Production Deployment & Defense-in-Depth Administration
 
-Belya runs in production on remote VPS hosts as an immutable systemd service.
+Belya operates in production on remote VPS hosts as an immutable systemd service.
 
 ### Systemd Service Configuration (`/etc/systemd/system/belya.service`)
 ```ini
@@ -310,6 +383,7 @@ Type=simple
 User=belya
 Group=belya
 WorkingDirectory=/opt/belya
+EnvironmentFile=/opt/belya/.env
 ExecStart=/opt/belya/belya --telegram
 Restart=always
 RestartSec=5s
@@ -322,28 +396,29 @@ WantedBy=multi-user.target
 
 ### Atomic Deployment & Kernel Tamper Locks
 ```bash
-# Deploy latest verified build (handled by Makefile)
-make deploy
+# Clean build, test battery pass, and atomic installation
+make release
 
-# Verify kernel immutable attributes
+# Verify kernel immutable attributes on active binaries
 lsattr /opt/charness/belya /opt/charness/belya.lkg
+# Expected: ----i---------e------- /opt/charness/belya
 ```
 
 ---
 
 ## Synergy with Twin Sibling Almaz
 
-Belya and [Almaz](https://github.com/M4F-S/Almaz) operate as a synchronized dual-agent pair:
-- **Belya (Deterministic Core):** Engineered for deterministic software engineering, compilation guarantees, unit test generation, and enterprise multi-agent company orchestration.
-- **Almaz (Cognitive Organism):** Engineered for autopoietic survival, emotional appraisal (**VIGIL**), biological memory decay (**FadeMem**), dual-stream memory routing (**CORAL**), and automated crash recovery under an external watchdog (`almaz-watchdog`) with kernel immutable tamper locks (`chattr +i`).
-- **Inter-Agent Mesh:** Both communicate directly over `/tmp/belya_almaz_mesh.sock` to pair-program across complex tasks.
+Belya and [Almaz](https://github.com/M4F-S/Almaz) operate as a synchronized dual-agent pair sharing the high-performance C99 micro-kernel:
+- **Belya (Deterministic Core):** Engineered for deterministic software engineering, compilation guarantees, speculative worktrees, and enterprise multi-agent company orchestration.
+- **Almaz (Cognitive Organism):** Engineered for autopoietic survival, emotional appraisal (**VIGIL**), biological memory decay (**FadeMem**), dual-stream memory routing (**CORAL**), and automated crash recovery under an external watchdog (`almaz-watchdog`).
+- **Inter-Agent Mesh Socket:** Both daemons communicate directly over `/tmp/belya_almaz_mesh.sock` to pair-program across complex tasks with sub-millisecond consultation latency.
 
 ---
 
 ## License & Provenance
 
-Licensed under the **Apache License, Version 2.0**. See the [LICENSE](LICENSE) file for details.
+Licensed under the **Apache License, Version 2.0**. See the [LICENSE](LICENSE) file for complete terms.
 
-**Maintained by:** [M4F-S](https://github.com/M4F-S)  
+**Project Lead & Maintainer:** [M4F-S](https://github.com/M4F-S)  
 **Production Host:** `srv1412364` (`187.124.2.26`)  
-**Architecture:** Pure C99 POSIX | SOTA Dominance Release v7.4.0
+**Architecture:** Pure C99 POSIX.1-2008 | SOTA Dominance Release v7.4.0
