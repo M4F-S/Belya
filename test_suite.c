@@ -4580,6 +4580,9 @@ void test_phase1a_parent_tools(void) {
        its own, with no run_parallel/resume call from the parent — before this,
        wait=false forked a row nothing ever executed. */
     assert(p1a_wait_status(agent, child_id, "done", 5000));
+    /* "done" lands before the worker thread retires; the contract is that nothing
+       is live once the background pool has drained. */
+    assert(belya_subagent_background_drain(5000) == true);
     assert(belya_subagent_is_live(child_id) == false);
     char *done_report = collect(agent, id_args);
     assert(done_report != NULL);
@@ -5230,6 +5233,10 @@ void test_phase1c1_background_execution(void) {
     assert(belya_subagent_background_count() == 0);
     BelyaSubagent *cancelled = belya_subagent_get(agent, slow);
     assert(cancelled != NULL && cancelled->status && strcmp(cancelled->status, "cancelled") == 0);
+    /* Cancel must also STOP the child, not just relabel it: the row may not be
+       rewritten to done/failed, and the budget must not be burned afterwards. */
+    assert(cancelled->spent_tokens < cancelled->budget_tokens);
+    assert(cancelled->steps <= 2);
     belya_subagent_free(cancelled);
 
     /* A terminal child cannot be started or adopted. */
@@ -5242,6 +5249,7 @@ void test_phase1c1_background_execution(void) {
     assert(bg != NULL);
     assert(belya_subagent_start_background(agent, bg) == true);
     assert(p1a_wait_status(agent, bg, "done", 5000));
+    assert(belya_subagent_background_drain(5000) == true);   /* thread fully retired */
     assert(belya_subagent_background_count() == 0);
     assert(belya_subagent_is_live(bg) == false);
     BelyaSubagent *bg_row = belya_subagent_get(agent, bg);

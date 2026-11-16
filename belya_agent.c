@@ -3474,27 +3474,48 @@ static char *subagent_message_text(sqlite3 *db, const char *id, long long idx) {
     return out;
 }
 
+/* A cancel must win: a row the parent marked 'cancelled' is never rewritten by
+   the runtime. Returns false when nothing was updated (cancelled or unknown),
+   which is how the run loop learns to stop instead of resurrecting the child. */
 static bool subagent_update_row(sqlite3 *db, const char *id, const char *status,
                                 const char *summary, const char *error,
                                 long long spent, long long steps) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "UPDATE subagents SET status = ?2, summary = ?3, error = ?4, spent_tokens = ?5, "
-            "steps = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?1;",
+            "steps = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND status <> 'cancelled';",
             -1, &st, NULL) != SQLITE_OK) {
         return false;
     }
-    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
-    if (summary) sqlite3_bind_text(st, 3, summary, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_TRANSIENT);
+    if (summary) sqlite3_bind_text(st, 3, summary, -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(st, 3);
-    if (error) sqlite3_bind_text(st, 4, error, -1, SQLITE_STATIC);
+    if (error) sqlite3_bind_text(st, 4, error, -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(st, 4);
     sqlite3_bind_int64(st, 5, spent);
     sqlite3_bind_int64(st, 6, steps);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    bool applied = ok && sqlite3_changes(db) == 1;
     sqlite3_finalize(st);
-    return ok;
+    return applied;
+}
+
+/* The row's current status, read fresh from the database. NULL when unknown. */
+static char *subagent_row_status(sqlite3 *db, const char *id) {
+    if (!db || !id || !id[0]) return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT status FROM subagents WHERE id = ?1;", -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    char *out = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(st, 0);
+        if (txt) out = xstrdup((const char *)txt);
+    }
+    sqlite3_finalize(st);
+    return out;
 }
 
 /* Rebuild the child's conversation from SQLite (idx 1 is already the agent's
@@ -3744,6 +3765,18 @@ static void subagent_observations_free(SubagentObservation *obs, size_t n) {
 static int subagent_runtime_step(SubagentRuntime *rt) {
     BelyaSubagent *row = rt->row;
     char reason[192];
+
+    /* A cancel stops the child at this boundary: no new turn starts, and the
+       budget is not burned on work the parent already abandoned. */
+    {
+        char *live = subagent_row_status(rt->db, row->id);
+        if (live && strcmp(live, "cancelled") == 0) {
+            free(live);
+            subagent_apply_status(rt, "cancelled", NULL, "cancelled by the parent");
+            return 0;
+        }
+        free(live);
+    }
 
     /* Budget gate before the turn: a child never starts one it cannot afford. */
     if (row->budget_tokens > 0 && row->spent_tokens >= row->budget_tokens) {
