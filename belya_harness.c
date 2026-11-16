@@ -2284,6 +2284,12 @@ static char *tool_collect_subagent(BelyaAgent *agent, const JsonValue *args) {
                         (sa->error && sa->error[0]) ? sa->error : "unknown reason");
     } else if (strcmp(status, "cancelled") == 0) {
         dyn_str_appendf(&ds, "Subagent %s was cancelled; nothing to collect.", id);
+    } else if (strcmp(status, "partial") == 0) {
+        dyn_str_appendf(&ds, "Subagent %s partial (%s)%s%s",
+                        id,
+                        (sa->error && sa->error[0]) ? sa->error : "unknown reason",
+                        (sa->summary && sa->summary[0]) ? ": " : "",
+                        (sa->summary && sa->summary[0]) ? sa->summary : "");
     } else {
         dyn_str_appendf(&ds,
             "Subagent %s is still running (steps: %lld, tokens: %lld/%lld); nothing to collect yet.",

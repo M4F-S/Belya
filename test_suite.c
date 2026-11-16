@@ -4039,15 +4039,33 @@ void test_sota_dominance_pillars(void) {
 static pthread_mutex_t g_p1a_fake_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_p1a_fake_mode = 0;   /* 0 = answer now, 1 = tools forever, 2 = tool then answer */
 static int g_p1a_fake_calls = 0;
+static int g_p1a_max_msgs = 0;
 
 static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValue *messages, const JsonValue *tools) {
-    (void)self; (void)messages; (void)tools;
+    (void)self;
     ModelGatewayResponse r;
     memset(&r, 0, sizeof(r));
     pthread_mutex_lock(&g_p1a_fake_mu);
     int n = ++g_p1a_fake_calls;
     int mode = g_p1a_fake_mode;
-    pthread_mutex_unlock(&g_p1a_fake_mu);
+
+    /* When the request carries no tools, this is a wrap-up summary turn:
+       answer with content, no tool call. This applies in every mode. */
+    bool has_tools = (tools != NULL && tools->type == JSON_ARRAY && tools->u.array.count > 0);
+    if (!has_tools) {
+        r.content = xstrdup("child-partial-summary");
+        r.prompt_tokens = 0;
+        r.completion_tokens = 0;
+        r.has_tool_call = false;
+        pthread_mutex_unlock(&g_p1a_fake_mu);
+        return r;
+    }
+
+    /* Mode 4: high prompt tokens, always a tool call. Record message count. */
+    if (mode == 4) {
+        int msg_count = (messages && messages->type == JSON_ARRAY) ? (int)messages->u.array.count : 0;
+        if (msg_count > g_p1a_max_msgs) g_p1a_max_msgs = msg_count;
+    }
 
     /* Mode 3 keeps a child alive across turns (200 ms per turn, always a tool
        call) so background-liveness and the worker cap can be observed. */
@@ -4056,9 +4074,14 @@ static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValu
         nanosleep(&ts, NULL);
     }
 
-    r.prompt_tokens = 60;
-    r.completion_tokens = 10;
-    bool want_tool = (mode == 1) || (mode == 2 && n == 1) || (mode == 3);
+    if (mode == 4) {
+        r.prompt_tokens = 20000;
+        r.completion_tokens = 20;
+    } else {
+        r.prompt_tokens = 60;
+        r.completion_tokens = 10;
+    }
+    bool want_tool = (mode == 1) || (mode == 2 && n == 1) || (mode == 3) || (mode == 4);
     if (!want_tool) {
         char buf[64];
         snprintf(buf, sizeof(buf), "child-answer-%03d", n);
@@ -4073,6 +4096,7 @@ static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValu
         r.tool_calls[0].name = xstrdup("recall_memory");
         r.tool_calls[0].arguments_json = xstrdup("{\"query\":\"budget probe\"}");
     }
+    pthread_mutex_unlock(&g_p1a_fake_mu);
     return r;
 }
 
@@ -4080,6 +4104,7 @@ static void p1a_reset_fake(int mode) {
     pthread_mutex_lock(&g_p1a_fake_mu);
     g_p1a_fake_mode = mode;
     g_p1a_fake_calls = 0;
+    g_p1a_max_msgs = 0;
     pthread_mutex_unlock(&g_p1a_fake_mu);
 }
 
@@ -4414,20 +4439,19 @@ void test_phase1a_budget_and_cancel(void) {
     assert(belya_subagent_schema_init(agent) == true);
 
     /* A child that keeps calling tools must stop at its token budget. */
-    p1a_reset_fake(1);   /* 70 tokens per step against a 100 token budget */
+    p1a_reset_fake(1);   /* mode 1: always tool, prompt=60, completion=10 */
     char *id = belya_subagent_fork(agent, "worker", "loop until the budget stops you", 100);
     assert(id != NULL);
     assert(belya_subagent_run(agent, id) == false);
 
     BelyaSubagent *sa = belya_subagent_get(agent, id);
     assert(sa != NULL);
-    assert(sa->status && strcmp(sa->status, "failed") == 0);
+    assert(sa->status && strcmp(sa->status, "partial") == 0);
     assert(sa->error != NULL);
     assert(strstr(sa->error, "budget") != NULL);
     assert(sa->spent_tokens > 100);      /* it crossed the budget */
-    assert(sa->spent_tokens <= 140);     /* and stopped right after, no runaway */
-    assert(sa->steps == 2);
-    assert(sa->summary == NULL);
+    assert(sa->steps > 2);               /* new accounting: many more turns */
+    assert(sa->summary != NULL);         /* wrap-up summary produced */
 
     /* Every step is persisted, tool results included. */
     p1a_assert_message_chain(agent, id);
@@ -4437,9 +4461,10 @@ void test_phase1a_budget_and_cancel(void) {
     snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM subagent_messages WHERE subagent_id='%s';", id);
     assert(p1a_query(agent, sql) >= 5);
 
-    /* The parent hears the failure, not silence. */
+    /* The parent hears the partial result, not silence. */
     char *collected = belya_subagent_collect(agent, id);
     assert(collected != NULL);
+    assert(strstr(collected, "partial") != NULL);
     assert(strstr(collected, "budget") != NULL);
     free(collected);
     belya_subagent_free(sa);
@@ -4454,7 +4479,8 @@ void test_phase1a_budget_and_cancel(void) {
     assert(msa->status && strcmp(msa->status, "done") == 0);
     assert(msa->error == NULL);
     assert(msa->steps == 2);
-    assert(msa->spent_tokens == 140);
+    assert(msa->spent_tokens > 0);
+    assert(msa->spent_tokens < 140);     /* new accounting: completion only */
     assert(msa->summary != NULL);
     assert(strstr(msa->summary, "child-answer") != NULL);
     belya_subagent_free(msa);
@@ -4640,6 +4666,155 @@ void test_phase1a_parent_tools(void) {
     model_gateway_free(gw);
     p1a_wipe_db_files();
     printf("  -> Phase 1a parent tools PASSED (59/63)\n");
+}
+
+/* ==========================================================================
+   Phase 1a — subagent budget economics (Option A).
+   New budget accounting: spent = completion_tokens + tool-output tokens;
+   billed_tokens tracks cumulative prompt+completion; exhaustion produces
+   partial with a wrap-up summary instead of failed with silence.
+   ========================================================================== */
+
+/* Forward declaration for p1a_set_status defined in Phase 1b section. */
+static void p1a_set_status(BelyaAgent *agent, const char *id, const char *status);
+
+void test_subagent_budget_economics(void) {
+    printf("[Test] Phase 1a: Subagent Budget Economics (Option A)...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    /* Mode 4: prompt_tokens=20000, completion_tokens=20, always a tool call.
+       Budget 50000 should hit the step cap (50), not the budget. */
+    p1a_reset_fake(4);
+    char *id = belya_subagent_fork(agent, "worker", "budget economics probe", 50000);
+    assert(id != NULL);
+    assert(belya_subagent_run(agent, id) == false);
+
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    assert(sa != NULL);
+    assert(sa->status && strcmp(sa->status, "partial") == 0);
+    assert(sa->steps == 50);  /* BELYA_SUBAGENT_MAX_TURNS */
+    assert(sa->steps >= 8);   /* old code would have died at ~4 */
+    assert(sa->error != NULL);
+    assert(strstr(sa->error, "step cap") != NULL);
+    assert(sa->summary != NULL && sa->summary[0] != '\0');
+    assert(sa->billed_tokens > sa->spent_tokens);  /* billed far exceeds authored */
+    assert(sa->spent_tokens >= 20LL * sa->steps);
+    assert(sa->spent_tokens <= 60LL * sa->steps);
+
+    /* collect returns "partial (reason): summary" */
+    char *collected = belya_subagent_collect(agent, id);
+    assert(collected != NULL);
+    assert(strncmp(collected, "partial (", 9) == 0);
+    assert(strstr(collected, sa->summary) != NULL);
+    free(collected);
+
+    /* Compaction ran: g_p1a_max_msgs records the max messages seen across
+       all calls. After compaction it should be at most 30. */
+    assert(g_p1a_max_msgs <= 30);
+
+    belya_subagent_free(sa);
+
+    /* Agents page shows partial status and billed marker. */
+    {
+        char *report = belya_subagent_agents_report(agent);
+        assert(report != NULL);
+        assert(strstr(report, "partial") != NULL);
+        assert(strstr(report, "billed") != NULL);
+        free(report);
+    }
+
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a budget economics PASSED\n");
+}
+
+void test_subagent_budget_crossing(void) {
+    printf("[Test] Phase 1a: Subagent Budget Crossing...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    /* Mode 1 (always tool, prompt=60, completion=10), budget=100.
+       With new accounting (completion only + tool tokens) this takes
+       many more turns than the old code. */
+    p1a_reset_fake(1);
+    char *id = belya_subagent_fork(agent, "worker", "cross the budget", 100);
+    assert(id != NULL);
+    assert(belya_subagent_run(agent, id) == false);
+
+    BelyaSubagent *sa = belya_subagent_get(agent, id);
+    assert(sa != NULL);
+    assert(sa->status && strcmp(sa->status, "partial") == 0);
+    assert(sa->error != NULL);
+    assert(strstr(sa->error, "budget") != NULL);
+    assert(sa->summary != NULL && sa->summary[0] != '\0');
+    assert(sa->spent_tokens <= 160);
+    assert(sa->steps >= 3);
+
+    /* The message chain must still be contiguous. */
+    p1a_assert_message_chain(agent, id);
+
+    belya_subagent_free(sa);
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a budget crossing PASSED\n");
+}
+
+void test_subagent_gc_partial(void) {
+    printf("[Test] Phase 1a: GC Collects Partial Children...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    char *id = belya_subagent_fork(agent, "worker", "gc me", 1000);
+    assert(id != NULL);
+    p1a_set_status(agent, id, "partial");
+    /* Back-date the child so GC picks it up. */
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "UPDATE subagents SET updated_at='2000-01-01 00:00:00' WHERE id='%s';", id);
+    assert(p1a_exec(agent, sql));
+
+    assert(belya_subagent_gc(agent, 0) == 1);   /* older_than_seconds=0 collects everything */
+
+    BelyaSubagent *gone = belya_subagent_get(agent, id);
+    assert(gone == NULL);
+
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a GC partial PASSED\n");
+}
+
+void test_subagent_agents_page_partial(void) {
+    printf("[Test] Phase 1a: Agents Page Shows Partial and Billed Marker...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    /* Fork a child, set it partial with some billed_tokens. */
+    char *id = belya_subagent_fork(agent, "worker", "page probe", 5000);
+    assert(id != NULL);
+    p1a_set_status(agent, id, "partial");
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "UPDATE subagents SET spent_tokens=500, billed_tokens=9999 WHERE id='%s';", id);
+    assert(p1a_exec(agent, sql));
+
+    BelyaSubagentAgentsPage p;
+    memset(&p, 0, sizeof(p));
+    assert(belya_subagent_agents_page(agent, 1, 0, &p) == true);
+    assert(p.total == 1);
+    assert(p.text != NULL);
+    assert(strstr(p.text, "partial") != NULL);
+    assert(strstr(p.text, "billed") != NULL);
+    assert(strstr(p.text, "9999") != NULL);
+    belya_subagent_agents_page_free(&p);
+
+    free(id);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1a agents page partial PASSED\n");
 }
 
 /* ==========================================================================
@@ -5408,6 +5583,10 @@ int main(void) {
     test_phase1a_budget_and_cancel();
     test_phase1a_fifty_forks_no_leak();
     test_phase1a_parent_tools();
+    test_subagent_budget_economics();
+    test_subagent_budget_crossing();
+    test_subagent_gc_partial();
+    test_subagent_agents_page_partial();
     test_phase1b_resume_after_restart();
     test_phase1b_orphan_sweep();
     test_phase1b_artifacts_and_gc();
@@ -5419,7 +5598,7 @@ int main(void) {
     test_phase1c1_background_execution();
     test_phase1c1_background_cap();
     test_sigpipe_dead_reader_resilience();
-    printf("================ All Tests Passed Successfully (70/70 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (74/74 - 100%%) ================\n\n");
     return 0;
 }
 

@@ -150,13 +150,19 @@ void belya_agent_free(BelyaAgent *agent);
    Phase 1a — Persistent, parallel, inspectable subagents
    Contract: one row per child in `subagents`, every child message in
    `subagent_messages` with a contiguous per-child idx (1 = child system
-   prompt, 2 = task). A child runs bounded turns on the parent's whitelist
-   harness and stops at budget_tokens.
+   prompt, 2 = task). A child runs bounded turns and stops at budget_tokens.
 
-   Budget rule: checked before each turn; the turn that crosses the budget is
-   recorded, then the child is marked `failed` with an error naming the budget.
-   `steps` counts turns actually executed, `spent_tokens` the tokens the
-   gateway reported for them.
+   Budget rule: spent_tokens counts only authored work (completion tokens +
+   tool-output tokens). Prompt re-sends are not charged. billed_tokens tracks
+   cumulative prompt_tokens + completion_tokens (what the provider bills) and
+   is reported but never used for gating.
+
+   Children compact their in-memory history when prompt_tokens exceeds
+   BELYA_SUBAGENT_COMPACT_AT_TOKENS (16000) and the message count is > 10,
+   keeping the last 8 messages. The DB transcript is never touched.
+
+   On exhaustion (budget or step cap) a child produces a `partial` result with
+   a wrap-up summary, never silence.
 
    Parent tools (belya_harness.c): spawn_subagent gains `wait` (default true
    keeps the blocking envelope) and, with wait=false, returns {"id","status"};
@@ -170,7 +176,7 @@ typedef struct {
     char *id;
     char *parent_session;
     char *role;
-    char *status;        /* running | paused | done | failed | cancelled */
+    char *status;        /* running | paused | done | failed | cancelled | partial */
     char *task;
     char *summary;       /* final answer, NULL while running */
     char *error;         /* failure reason, NULL when healthy */
@@ -179,6 +185,7 @@ typedef struct {
     long long budget_tokens;
     long long spent_tokens;
     long long steps;
+    long long billed_tokens;
 } BelyaSubagent;
 
 /* Idempotent additive migration: creates subagents + subagent_messages. */
