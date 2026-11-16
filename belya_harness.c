@@ -118,12 +118,36 @@ static void apply_plan_mode_kernel_sandbox(void) {
 #endif
 }
 
-static void safe_pipe_write(int fd, const char *data, size_t len) {
+/* Write into a pipe without letting SIGPIPE kill the process.
+   A child that exits without draining its stdin turns the next write into
+   EPIPE — and the default SIGPIPE action terminates the entire agent. That is
+   not hypothetical: a custom tool script that just echoes and exits used to
+   abort the whole test binary (~50% of single-core runs). Block SIGPIPE for
+   this thread around the write, then consume the pending signal so it cannot
+   fire when the mask is restored. */
+void belya_safe_pipe_write(int fd, const char *data, size_t len) {
+    if (fd < 0 || !data || len == 0) return;
+
+    sigset_t block, old;
+    sigemptyset(&block);
+    sigaddset(&block, SIGPIPE);
+    bool masked = (pthread_sigmask(SIG_BLOCK, &block, &old) == 0);
+
     while (len > 0) {
         ssize_t w = write(fd, data, len);
-        if (w <= 0) break;
+        if (w <= 0) break;          /* EPIPE after a dead reader lands here */
         data += w;
         len -= (size_t)w;
+    }
+
+    if (masked) {
+        sigset_t pending;
+        sigemptyset(&pending);
+        if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
+            struct timespec zero = {0, 0};
+            sigtimedwait(&block, NULL, &zero);   /* drain it, do not deliver it */
+        }
+        pthread_sigmask(SIG_SETMASK, &old, NULL);
     }
 }
 
@@ -3372,7 +3396,14 @@ char *belya_dispatch_worker_speculative(BelyaHarness *router_harness, const char
         SpeculativeCandidate *c = &cands[i];
         c->index = i;
         snprintf(c->task_id, sizeof(c->task_id), "wtask_%ld_%d_c%d", base_time, (int)(rand() % 1000), i);
-        snprintf(c->wt_path, sizeof(c->wt_path), "/tmp/belya_worker_%s", c->task_id);
+        /* Copy the id first: building wt_path from a member of the same object
+           makes gcc's -Wrestrict reject the snprintf (it cannot prove the two
+           members of `cands` do not overlap). Same output, no aliasing. */
+        {
+            char task_id_copy[sizeof(c->task_id)];
+            snprintf(task_id_copy, sizeof(task_id_copy), "%s", c->task_id);
+            snprintf(c->wt_path, sizeof(c->wt_path), "/tmp/belya_worker_%s", task_id_copy);
+        }
 
         int rc_prune = system("git worktree prune >/dev/null 2>&1");
         (void)rc_prune;
@@ -4407,8 +4438,8 @@ static char *tool_custom_script_runner(BelyaAgent *agent, const JsonValue *args)
     close(in_pipe[0]);
     close(out_pipe[1]);
 
-    safe_pipe_write(in_pipe[1], args_str, strlen(args_str));
-    safe_pipe_write(in_pipe[1], "\n", 1);
+    belya_safe_pipe_write(in_pipe[1], args_str, strlen(args_str));
+    belya_safe_pipe_write(in_pipe[1], "\n", 1);
     close(in_pipe[1]);
     free(args_str);
 
@@ -6270,11 +6301,10 @@ char *belya_harness_task_send_input(BelyaHarness *h, int id, const char *input) 
     }
 
     size_t in_len = strlen(input);
-    ssize_t w = write(target->master_fd, input, in_len);
+    belya_safe_pipe_write(target->master_fd, input, in_len);
     if (in_len > 0 && input[in_len - 1] != '\n') {
-        w += write(target->master_fd, "\n", 1);
+        belya_safe_pipe_write(target->master_fd, "\n", 1);
     }
-    (void)w;
 
     usleep(50000);
     belya_task_drain_output(target);
@@ -7096,14 +7126,8 @@ char *belya_remote_exec_piped(BelyaExecBackend backend, const char *target, cons
     close(out_pipe[1]);
 
     size_t cmd_len = strlen(cmd);
-    size_t written = 0;
-    while (written < cmd_len) {
-        ssize_t n = write(in_pipe[1], cmd + written, cmd_len - written);
-        if (n <= 0) break;
-        written += (size_t)n;
-    }
-    ssize_t wn = write(in_pipe[1], "\n", 1);
-    (void)wn;
+    belya_safe_pipe_write(in_pipe[1], cmd, cmd_len);
+    belya_safe_pipe_write(in_pipe[1], "\n", 1);
     close(in_pipe[1]); // Close stdin to signal EOF to child shell
 
     int flags = fcntl(out_pipe[0], F_GETFL, 0);

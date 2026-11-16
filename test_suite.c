@@ -5315,6 +5315,38 @@ void test_phase1c1_background_cap(void) {
     printf("  -> Phase 1c.1 background cap PASSED (69/69)\n");
 }
 
+/* A write into a pipe whose reader is already gone raises SIGPIPE, and the
+   default action terminates the process. That is how a tool script which exits
+   early used to kill the whole agent (~50% of single-core runs). The guard is
+   deterministic to test: close the read end FIRST, then write. */
+void test_sigpipe_dead_reader_resilience(void) {
+    printf("[Test] SIGPIPE Resilience (dead reader before write)...\n");
+
+    int p[2];
+    assert(pipe(p) == 0);
+    assert(close(p[0]) == 0);                    /* reader gone before any write */
+
+    /* Pre-fix this aborted the process with SIGPIPE (exit 141) and the assertion
+       below was never reached. */
+    belya_safe_pipe_write(p[1], "payload", 7);
+    belya_safe_pipe_write(p[1], "\n", 1);
+    assert(close(p[1]) == 0);
+
+    /* Still sane on a live pipe: everything is written, nothing swallowed. */
+    int q[2];
+    assert(pipe(q) == 0);
+    belya_safe_pipe_write(q[1], "hello", 5);
+    assert(close(q[1]) == 0);
+    char buf[16];
+    ssize_t n = read(q[0], buf, sizeof(buf) - 1);
+    assert(n == 5);
+    buf[n] = '\0';
+    assert(strcmp(buf, "hello") == 0);
+    assert(close(q[0]) == 0);
+
+    printf("  -> SIGPIPE resilience PASSED (70/70)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -5386,7 +5418,8 @@ int main(void) {
     test_phase1c_auto_resume_policy();
     test_phase1c1_background_execution();
     test_phase1c1_background_cap();
-    printf("================ All Tests Passed Successfully (69/69 - 100%%) ================\n\n");
+    test_sigpipe_dead_reader_resilience();
+    printf("================ All Tests Passed Successfully (70/70 - 100%%) ================\n\n");
     return 0;
 }
 
