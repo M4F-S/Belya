@@ -420,5 +420,5 @@ Belya and [Almaz](https://github.com/M4F-S/Almaz) operate as a synchronized dual
 Licensed under the **Apache License, Version 2.0**. See the [LICENSE](LICENSE) file for complete terms.
 
 **Project Lead & Maintainer:** [M4F-S](https://github.com/M4F-S)  
-**Production Host:** `srv1412364` (`187.124.2.26`)  
+**Host Environment:** Linux (x86-64 / ARM64) & macOS (Darwin POSIX)  
 **Architecture:** Pure C99 POSIX.1-2008 | SOTA Dominance Release v7.4.0
