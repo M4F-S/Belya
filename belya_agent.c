@@ -3474,27 +3474,48 @@ static char *subagent_message_text(sqlite3 *db, const char *id, long long idx) {
     return out;
 }
 
+/* A cancel must win: a row the parent marked 'cancelled' is never rewritten by
+   the runtime. Returns false when nothing was updated (cancelled or unknown),
+   which is how the run loop learns to stop instead of resurrecting the child. */
 static bool subagent_update_row(sqlite3 *db, const char *id, const char *status,
                                 const char *summary, const char *error,
                                 long long spent, long long steps) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "UPDATE subagents SET status = ?2, summary = ?3, error = ?4, spent_tokens = ?5, "
-            "steps = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?1;",
+            "steps = ?6, updated_at = CURRENT_TIMESTAMP WHERE id = ?1 AND status <> 'cancelled';",
             -1, &st, NULL) != SQLITE_OK) {
         return false;
     }
-    sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
-    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
-    if (summary) sqlite3_bind_text(st, 3, summary, -1, SQLITE_STATIC);
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_TRANSIENT);
+    if (summary) sqlite3_bind_text(st, 3, summary, -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(st, 3);
-    if (error) sqlite3_bind_text(st, 4, error, -1, SQLITE_STATIC);
+    if (error) sqlite3_bind_text(st, 4, error, -1, SQLITE_TRANSIENT);
     else sqlite3_bind_null(st, 4);
     sqlite3_bind_int64(st, 5, spent);
     sqlite3_bind_int64(st, 6, steps);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    bool applied = ok && sqlite3_changes(db) == 1;
     sqlite3_finalize(st);
-    return ok;
+    return applied;
+}
+
+/* The row's current status, read fresh from the database. NULL when unknown. */
+static char *subagent_row_status(sqlite3 *db, const char *id) {
+    if (!db || !id || !id[0]) return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT status FROM subagents WHERE id = ?1;", -1, &st, NULL) != SQLITE_OK) {
+        return NULL;
+    }
+    sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+    char *out = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char *txt = sqlite3_column_text(st, 0);
+        if (txt) out = xstrdup((const char *)txt);
+    }
+    sqlite3_finalize(st);
+    return out;
 }
 
 /* Rebuild the child's conversation from SQLite (idx 1 is already the agent's
@@ -3745,6 +3766,18 @@ static int subagent_runtime_step(SubagentRuntime *rt) {
     BelyaSubagent *row = rt->row;
     char reason[192];
 
+    /* A cancel stops the child at this boundary: no new turn starts, and the
+       budget is not burned on work the parent already abandoned. */
+    {
+        char *live = subagent_row_status(rt->db, row->id);
+        if (live && strcmp(live, "cancelled") == 0) {
+            free(live);
+            subagent_apply_status(rt, "cancelled", NULL, "cancelled by the parent");
+            return 0;
+        }
+        free(live);
+    }
+
     /* Budget gate before the turn: a child never starts one it cannot afford. */
     if (row->budget_tokens > 0 && row->spent_tokens >= row->budget_tokens) {
         snprintf(reason, sizeof(reason), "token budget exhausted (%lld of %lld tokens)",
@@ -3842,13 +3875,79 @@ int belya_subagent_step(BelyaAgent *parent, const char *id) {
     return rc;
 }
 
+/* ---- Phase 1c.1: liveness registry -------------------------------------
+   "Who owns a runtime for this child right now?" A refcount per id, so the
+   starter and the runner can both hold it without a false "already live" in the
+   window between pthread_create() and the thread body. */
+#define BELYA_LIVE_SLOTS 16
+
+static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+static char g_live_ids[BELYA_LIVE_SLOTS][96];
+static int g_live_refs[BELYA_LIVE_SLOTS];
+static size_t g_bg_running;
+
+static void live_acquire(const char *id) {
+    if (!id || !id[0]) return;
+    pthread_mutex_lock(&g_live_lock);
+    for (size_t i = 0; i < BELYA_LIVE_SLOTS; i++) {
+        if (g_live_refs[i] > 0 && strcmp(g_live_ids[i], id) == 0) {
+            g_live_refs[i]++;
+            pthread_mutex_unlock(&g_live_lock);
+            return;
+        }
+    }
+    for (size_t i = 0; i < BELYA_LIVE_SLOTS; i++) {
+        if (g_live_refs[i] == 0) {
+            snprintf(g_live_ids[i], sizeof(g_live_ids[i]), "%s", id);
+            g_live_refs[i] = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_live_lock);
+}
+
+static void live_release(const char *id) {
+    if (!id || !id[0]) return;
+    pthread_mutex_lock(&g_live_lock);
+    for (size_t i = 0; i < BELYA_LIVE_SLOTS; i++) {
+        if (g_live_refs[i] > 0 && strcmp(g_live_ids[i], id) == 0) {
+            if (--g_live_refs[i] == 0) g_live_ids[i][0] = '\0';
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_live_lock);
+}
+
+bool belya_subagent_is_live(const char *id) {
+    if (!id || !id[0]) return false;
+    bool live = false;
+    pthread_mutex_lock(&g_live_lock);
+    for (size_t i = 0; i < BELYA_LIVE_SLOTS; i++) {
+        if (g_live_refs[i] > 0 && strcmp(g_live_ids[i], id) == 0) { live = true; break; }
+    }
+    pthread_mutex_unlock(&g_live_lock);
+    return live;
+}
+
+size_t belya_subagent_background_count(void) {
+    pthread_mutex_lock(&g_live_lock);
+    size_t n = g_bg_running;
+    pthread_mutex_unlock(&g_live_lock);
+    return n;
+}
+
 bool belya_subagent_run(BelyaAgent *parent, const char *id) {
+    live_acquire(id);
     SubagentRuntime *rt = subagent_runtime_open(parent, id);
-    if (!rt) return false;
+    if (!rt) {
+        live_release(id);
+        return false;
+    }
     int rc = 1;
     while (rc == 1) rc = subagent_runtime_step(rt);
     bool done = (rc == 0) && rt->row->status && strcmp(rt->row->status, "done") == 0;
     subagent_runtime_close(rt);
+    live_release(id);
     return done;
 }
 
@@ -4194,6 +4293,102 @@ static char *subagent_status_of(BelyaAgent *agent, const char *id) {
     }
     sqlite3_finalize(st);
     return status;
+}
+
+/* ---- Phase 1c.1: background execution for wait=false ------------------- */
+
+typedef struct {
+    BelyaAgent *parent;
+    char id[96];
+} SubagentBgJob;
+
+static void *subagent_bg_main(void *ud) {
+    SubagentBgJob *job = (SubagentBgJob *)ud;
+    /* belya_subagent_run() holds its own liveness ref for the duration. */
+    belya_subagent_run(job->parent, job->id);
+    pthread_mutex_lock(&g_live_lock);
+    if (g_bg_running > 0) g_bg_running--;
+    pthread_mutex_unlock(&g_live_lock);
+    live_release(job->id);       /* the ref taken by start_background() */
+    free(job);
+    return NULL;
+}
+
+bool belya_subagent_start_background(BelyaAgent *agent, const char *id) {
+    if (!agent || !agent->db || !id || !id[0]) return false;
+
+    /* Only a "running" child can be executed, and only by one owner. */
+    char *status = subagent_status_of(agent, id);
+    if (!status || strcmp(status, "running") != 0) {
+        free(status);
+        return false;
+    }
+    free(status);
+    if (belya_subagent_is_live(id)) return false;
+
+    pthread_mutex_lock(&g_live_lock);
+    if (g_bg_running >= BELYA_SUBAGENT_BG_MAX) {
+        pthread_mutex_unlock(&g_live_lock);
+        return false;
+    }
+    g_bg_running++;
+    pthread_mutex_unlock(&g_live_lock);
+
+    /* Take the ref before the thread exists: no window where the child looks
+       stranded while its thread is already on the way. */
+    live_acquire(id);
+
+    SubagentBgJob *job = calloc(1, sizeof(*job));
+    if (!job) {
+        live_release(id);
+        pthread_mutex_lock(&g_live_lock); g_bg_running--; pthread_mutex_unlock(&g_live_lock);
+        return false;
+    }
+    job->parent = agent;
+    snprintf(job->id, sizeof(job->id), "%s", id);
+
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    int rc = pthread_create(&th, &attr, subagent_bg_main, job);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        free(job);
+        live_release(id);
+        pthread_mutex_lock(&g_live_lock); g_bg_running--; pthread_mutex_unlock(&g_live_lock);
+        return false;
+    }
+    return true;
+}
+
+/* Wait for in-flight background children. Tests and shutdown must call this
+   before freeing the parent agent, otherwise a thread outlives its SQLite/gateway. */
+bool belya_subagent_background_drain(int timeout_ms) {
+    if (timeout_ms < 0) timeout_ms = 0;
+    int waited = 0;
+    for (;;) {
+        if (belya_subagent_background_count() == 0) return true;
+        if (waited >= timeout_ms) return false;
+        struct timespec ts = {0, 10 * 1000 * 1000};   /* 10 ms */
+        nanosleep(&ts, NULL);
+        waited += 10;
+    }
+}
+
+/* Adopt a "running" row that nobody owns and run it. Never two owners: an id
+   that is already live is refused, because two runtimes on one transcript
+   duplicate turns. */
+bool belya_subagent_run_stranded(BelyaAgent *agent, const char *id) {
+    if (!agent || !agent->db || !id || !id[0]) return false;
+    char *status = subagent_status_of(agent, id);
+    if (!status || strcmp(status, "running") != 0) {
+        free(status);
+        return false;
+    }
+    free(status);
+    if (belya_subagent_is_live(id)) return false;
+    return belya_subagent_run(agent, id);
 }
 
 /* Phase 1c: paged view, one page of the subagent table. */

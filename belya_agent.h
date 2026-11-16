@@ -276,6 +276,33 @@ void belya_subagent_agents_page_free(BelyaSubagentAgentsPage *page);
    cannot be opened the row is reverted to "paused". true = child reached done. */
 bool belya_subagent_resume_and_run(BelyaAgent *agent, const char *id);
 
+/* ---------------------------------------------------------------------------
+   Phase 1c.1 — wait=false now really runs.
+
+   Before this, spawn_subagent(wait=false) forked a "running" row and handed the
+   caller a handle that NOTHING executed: no scheduler, and no tool could run a
+   running child (resume_subagent only accepted "paused"). The work was stranded
+   until the next daemon restart paused it.
+
+   Contract:
+   - start_background() executes the child on its own thread, at most
+     BELYA_SUBAGENT_BG_MAX at once; it refuses (false) a terminal child, a child
+     already owned by this process, or when every worker slot is taken.
+   - is_live() answers "this process currently owns a runtime for that id".
+   - run_stranded() adopts a "running" row that nobody owns and runs it to a
+     terminal state (false for paused/terminal/owned ids).
+   - background_drain() waits for in-flight background children to finish; tests
+     and shutdown must call it before freeing the parent agent.
+   --------------------------------------------------------------------------- */
+#define BELYA_SUBAGENT_BG_MAX 4
+#define BELYA_SUBAGENT_BG_MAX_SECONDS 600
+
+bool belya_subagent_start_background(BelyaAgent *agent, const char *id);
+bool belya_subagent_is_live(const char *id);
+size_t belya_subagent_background_count(void);
+bool belya_subagent_background_drain(int timeout_ms);
+bool belya_subagent_run_stranded(BelyaAgent *agent, const char *id);
+
 /* Rate-limited GC for long-running processes. `now_mono` is monotonic seconds
    (caller supplies it so it is testable). Returns the number collected, 0 when
    the interval has not elapsed or nothing was collected. */

@@ -4049,9 +4049,16 @@ static ModelGatewayResponse p1a_fake_complete(ModelGateway *self, const JsonValu
     int mode = g_p1a_fake_mode;
     pthread_mutex_unlock(&g_p1a_fake_mu);
 
+    /* Mode 3 keeps a child alive across turns (200 ms per turn, always a tool
+       call) so background-liveness and the worker cap can be observed. */
+    if (mode == 3) {
+        struct timespec ts = {0, 200 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+
     r.prompt_tokens = 60;
     r.completion_tokens = 10;
-    bool want_tool = (mode == 1) || (mode == 2 && n == 1);
+    bool want_tool = (mode == 1) || (mode == 2 && n == 1) || (mode == 3);
     if (!want_tool) {
         char buf[64];
         snprintf(buf, sizeof(buf), "child-answer-%03d", n);
@@ -4100,6 +4107,20 @@ static void p1a_teardown(BelyaAgent *agent, ModelGateway *gw) {
     model_gateway_free(gw);
     p1a_wipe_db_files();
 }
+
+/* Phase 1c.1: poll a child's row until it reaches `want` (10 ms steps). */
+static bool p1a_wait_status(BelyaAgent *agent, const char *id, const char *want, int timeout_ms) {
+    for (int waited = 0; waited <= timeout_ms; waited += 10) {
+        BelyaSubagent *sa = belya_subagent_get(agent, id);
+        bool match = (sa && sa->status && strcmp(sa->status, want) == 0);
+        if (sa) belya_subagent_free(sa);
+        if (match) return true;
+        struct timespec ts = {0, 10 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    return false;
+}
+
 
 static int p1a_cb_count(void *ud, int argc, char **argv, char **col) {
     (void)argc; (void)col;
@@ -4540,46 +4561,44 @@ void test_phase1a_parent_tools(void) {
     const char *handle_status = json_obj_get_str(handle, "status");
     assert(handle_status != NULL);
     assert(strcmp(handle_status, "running") == 0);
+    /* Phase 1c.1: the handle must say it is really running in the background. */
+    assert(json_obj_get_bool(handle, "background", false) == true);
     char child_id[128];
     snprintf(child_id, sizeof(child_id), "%s", handle_id);
     json_free(handle);
     free(handle_json);
     json_free(spawn_args);
 
-    /* check_subagent reports the live row. */
+    /* check_subagent addresses the same child. */
     JsonValue *id_args = json_create_object();
     json_obj_add(id_args, "id", json_create_string(child_id));
     char *status_report = check(agent, id_args);
     assert(status_report != NULL);
-    assert(strstr(status_report, "running") != NULL);
+    assert(strstr(status_report, child_id) != NULL);
 
-    /* A running child has nothing to hand over yet. */
-    char *early = collect(agent, id_args);
-    assert(early != NULL);
-    assert(strstr(early, "running") != NULL);
-
-    /* The handle addresses the same child the engine runs. */
-    assert(belya_subagent_run(agent, child_id) == true);
+    /* Phase 1c.1: the handle is REAL work. The child reaches a terminal state on
+       its own, with no run_parallel/resume call from the parent — before this,
+       wait=false forked a row nothing ever executed. */
+    assert(p1a_wait_status(agent, child_id, "done", 5000));
+    /* "done" lands before the worker thread retires; the contract is that nothing
+       is live once the background pool has drained. */
+    assert(belya_subagent_background_drain(5000) == true);
+    assert(belya_subagent_is_live(child_id) == false);
     char *done_report = collect(agent, id_args);
     assert(done_report != NULL);
     assert(strstr(done_report, "child-answer") != NULL);
 
-    /* Cancel tool: terminal, and reported as such. */
-    JsonValue *spawn2 = json_create_object();
-    json_obj_add(spawn2, "task", json_create_string("cancel via tool"));
-    json_obj_add(spawn2, "wait", json_create_bool(false));
-    json_obj_add(spawn2, "budget_tokens", json_create_number(1000));
-    char *handle2_json = spawn(agent, spawn2);
-    assert(handle2_json != NULL);
-    JsonValue *handle2 = json_parse(handle2_json);
-    assert(handle2 != NULL);
-    const char *handle2_id = json_obj_get_str(handle2, "id");
-    assert(handle2_id != NULL);
+    /* Nothing is left running. */
+    assert(belya_subagent_background_count() == 0);
+
+    /* Cancel tool: terminal, and reported as such. The child is forked directly
+       (not via wait=false, which now executes it) so nothing owns it yet: a
+       deterministic cancel target. */
+    char *forked = belya_subagent_fork(agent, "worker", "cancel via tool", 1000);
+    assert(forked != NULL);
     char second_id[128];
-    snprintf(second_id, sizeof(second_id), "%s", handle2_id);
-    json_free(handle2);
-    free(handle2_json);
-    json_free(spawn2);
+    snprintf(second_id, sizeof(second_id), "%s", forked);
+    free(forked);
 
     JsonValue *id2_args = json_create_object();
     json_obj_add(id2_args, "id", json_create_string(second_id));
@@ -4613,7 +4632,6 @@ void test_phase1a_parent_tools(void) {
     free(cancel_report);
     json_free(id2_args);
     free(done_report);
-    free(early);
     free(status_report);
     json_free(id_args);
 
@@ -5183,6 +5201,120 @@ void test_phase1c_auto_resume_policy(void) {
     printf("  -> Phase 1c auto-resume policy PASSED (67/67)\n");
 }
 
+/* Phase 1c.1: wait=false must execute, own exactly one runtime, and never
+   strand work. */
+void test_phase1c1_background_execution(void) {
+    printf("[Test] Phase 1c.1: Background Execution...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    /* A forked row is "running" but unowned until somebody starts it. */
+    p1a_reset_fake(0);
+    char *stranded = belya_subagent_fork(agent, "worker", "stranded before start", 1000);
+    assert(stranded != NULL);
+    assert(belya_subagent_is_live(stranded) == false);
+
+    /* Mode 3 keeps it alive across turns so ownership is observable. */
+    p1a_reset_fake(3);
+    char *slow = belya_subagent_fork(agent, "worker", "slow background child", 500);
+    assert(slow != NULL);
+    assert(belya_subagent_start_background(agent, slow) == true);
+    assert(belya_subagent_is_live(slow) == true);          /* owned from the start */
+    assert(belya_subagent_background_count() == 1);
+    /* One transcript, one owner: a second start is refused. */
+    assert(belya_subagent_start_background(agent, slow) == false);
+    /* A running child with a live owner is not "stranded" either. */
+    assert(belya_subagent_run_stranded(agent, slow) == false);
+
+    assert(belya_subagent_cancel(agent, slow) == true);
+    assert(belya_subagent_background_drain(6000) == true);
+    assert(belya_subagent_is_live(slow) == false);
+    assert(belya_subagent_background_count() == 0);
+    BelyaSubagent *cancelled = belya_subagent_get(agent, slow);
+    assert(cancelled != NULL && cancelled->status && strcmp(cancelled->status, "cancelled") == 0);
+    /* Cancel must also STOP the child, not just relabel it: the row may not be
+       rewritten to done/failed, and the budget must not be burned afterwards. */
+    assert(cancelled->spent_tokens < cancelled->budget_tokens);
+    assert(cancelled->steps <= 2);
+    belya_subagent_free(cancelled);
+
+    /* A terminal child cannot be started or adopted. */
+    assert(belya_subagent_start_background(agent, slow) == false);
+    assert(belya_subagent_run_stranded(agent, slow) == false);
+
+    /* The real thing: background start -> runs alone -> done, no parent call. */
+    p1a_reset_fake(0);
+    char *bg = belya_subagent_fork(agent, "worker", "background completes alone", 5000);
+    assert(bg != NULL);
+    assert(belya_subagent_start_background(agent, bg) == true);
+    assert(p1a_wait_status(agent, bg, "done", 5000));
+    assert(belya_subagent_background_drain(5000) == true);   /* thread fully retired */
+    assert(belya_subagent_background_count() == 0);
+    assert(belya_subagent_is_live(bg) == false);
+    BelyaSubagent *bg_row = belya_subagent_get(agent, bg);
+    assert(bg_row != NULL && bg_row->status && strcmp(bg_row->status, "done") == 0);
+    assert(bg_row->summary != NULL && strstr(bg_row->summary, "child-answer") != NULL);
+    belya_subagent_free(bg_row);
+
+    /* Adoption: the stranded row (nobody ever started it) is run by the rescue
+       path, and a paused child is not adoptable that way. */
+    assert(belya_subagent_run_stranded(agent, stranded) == true);
+    BelyaSubagent *adopted = belya_subagent_get(agent, stranded);
+    assert(adopted != NULL && adopted->status && strcmp(adopted->status, "done") == 0);
+    belya_subagent_free(adopted);
+    assert(belya_subagent_run_stranded(agent, stranded) == false);   /* now terminal */
+
+    char *paused = belya_subagent_fork(agent, "worker", "paused is not stranded", 1000);
+    assert(paused != NULL);
+    p1a_set_status(agent, paused, "paused");
+    assert(belya_subagent_run_stranded(agent, paused) == false);
+    assert(belya_subagent_start_background(agent, paused) == false);
+    free(paused);
+
+    assert(belya_subagent_run_stranded(agent, "missing-child") == false);
+
+    free(stranded);
+    free(slow);
+    free(bg);
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1c.1 background execution PASSED (68/69)\n");
+}
+
+/* At most BELYA_SUBAGENT_BG_MAX children may execute at once; the overflow is
+   refused rather than silently queued or dropped. */
+void test_phase1c1_background_cap(void) {
+    printf("[Test] Phase 1c.1: Background Worker Cap...\n");
+    ModelGateway *gw = NULL;
+    BelyaAgent *agent = p1a_agent(&gw);
+    assert(belya_subagent_schema_init(agent) == true);
+
+    p1a_reset_fake(3);   /* every child stays alive across turns */
+    char *ids[BELYA_SUBAGENT_BG_MAX + 1];
+    size_t started = 0, refused = 0;
+    for (size_t i = 0; i <= BELYA_SUBAGENT_BG_MAX; i++) {
+        ids[i] = belya_subagent_fork(agent, "worker", "cap probe child", 500);
+        assert(ids[i] != NULL);
+        if (belya_subagent_start_background(agent, ids[i])) started++;
+        else refused++;
+    }
+    assert(started == BELYA_SUBAGENT_BG_MAX);
+    assert(refused == 1);
+    assert(belya_subagent_background_count() == BELYA_SUBAGENT_BG_MAX);
+
+    /* Drain before freeing the agent: a detached thread must never outlive its
+       parent's SQLite handle. */
+    for (size_t i = 0; i <= BELYA_SUBAGENT_BG_MAX; i++) {
+        belya_subagent_cancel(agent, ids[i]);
+        free(ids[i]);
+    }
+    assert(belya_subagent_background_drain(10000) == true);
+    assert(belya_subagent_background_count() == 0);
+
+    p1a_teardown(agent, gw);
+    printf("  -> Phase 1c.1 background cap PASSED (69/69)\n");
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -5252,7 +5384,9 @@ int main(void) {
     test_phase1c_gc_timer();
     test_phase1c_resume_and_run();
     test_phase1c_auto_resume_policy();
-    printf("================ All Tests Passed Successfully (67/67 - 100%%) ================\n\n");
+    test_phase1c1_background_execution();
+    test_phase1c1_background_cap();
+    printf("================ All Tests Passed Successfully (69/69 - 100%%) ================\n\n");
     return 0;
 }
 
