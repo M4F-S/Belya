@@ -1304,6 +1304,7 @@ size_t belya_agent_load_disk_skills(BelyaAgent *agent, const char *skills_dir) {
 
     while ((entry = readdir(d)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        if (strcasecmp(entry->d_name, "README.md") == 0) continue;
 
         char skill_md_path[512];
         struct stat st;
@@ -1637,6 +1638,7 @@ size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir) {
 
     while ((entry = readdir(d)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        if (strcasecmp(entry->d_name, "README.md") == 0) continue;
         const char *dot = strrchr(entry->d_name, '.');
         if (!dot || strcmp(dot, ".md") != 0) continue;
 
@@ -1701,21 +1703,49 @@ size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir) {
     return loaded;
 }
 
+/* Serialises concurrent SQLite operations across threads.
+   Using a recursive mutex allows nested operations without deadlocks. */
+static pthread_mutex_t g_subagent_write_lock;
+static pthread_once_t g_subagent_lock_once = PTHREAD_ONCE_INIT;
+
+static void subagent_lock_init_once(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_subagent_write_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+
+static void subagent_lock(void) {
+    pthread_once(&g_subagent_lock_once, subagent_lock_init_once);
+    pthread_mutex_lock(&g_subagent_write_lock);
+}
+
+static void subagent_unlock(void) {
+    pthread_mutex_unlock(&g_subagent_write_lock);
+}
+
 BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name) {
     if (!agent || !agent->db || !name) return NULL;
+    subagent_lock();
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT name, role, tools, model, max_turns, instructions FROM agent_manifests WHERE name = ? LIMIT 1;";
-    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        subagent_unlock();
+        return NULL;
+    }
     sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
 
     if (sqlite3_step(stmt) != SQLITE_ROW) {
         sqlite3_finalize(stmt);
+        subagent_unlock();
         return NULL;
     }
 
     BelyaAgentManifest *m = calloc(1, sizeof(BelyaAgentManifest));
     if (!m) {
         sqlite3_finalize(stmt);
+        subagent_unlock();
         return NULL;
     }
 
@@ -1736,19 +1766,25 @@ BelyaAgentManifest *belya_agent_get_manifest(BelyaAgent *agent, const char *name
     if (!m->name || !m->role || !m->tools || !m->model || !m->instructions) {
         belya_agent_manifest_free(m);
         sqlite3_finalize(stmt);
+        subagent_unlock();
         return NULL;
     }
 
     sqlite3_finalize(stmt);
+    subagent_unlock();
     return m;
 }
 
 BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *query) {
     if (!agent || !agent->db || !query || strlen(query) == 0) return NULL;
+    subagent_lock();
 
     // 1. Direct name lookup
     BelyaAgentManifest *direct = belya_agent_get_manifest(agent, query);
-    if (direct) return direct;
+    if (direct) {
+        subagent_unlock();
+        return direct;
+    }
 
     // 2. FTS5 ranked dynamic routing
     if (agent->has_fts5) {
@@ -1767,6 +1803,7 @@ BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *qu
                         BelyaAgentManifest *m = belya_agent_get_manifest(agent, matched_name);
                         sqlite3_finalize(stmt);
                         dyn_str_free(&clean_q);
+                        subagent_unlock();
                         return m;
                     }
                 }
@@ -1787,12 +1824,14 @@ BelyaAgentManifest *belya_agent_route_manifest(BelyaAgent *agent, const char *qu
             if (matched_name) {
                 BelyaAgentManifest *m = belya_agent_get_manifest(agent, matched_name);
                 sqlite3_finalize(stmt);
+                subagent_unlock();
                 return m;
             }
         }
         sqlite3_finalize(stmt);
     }
 
+    subagent_unlock();
     return NULL;
 }
 
@@ -1808,9 +1847,13 @@ void belya_agent_manifest_free(BelyaAgentManifest *m) {
 
 char *belya_agent_list_manifests(BelyaAgent *agent) {
     if (!agent || !agent->db) return NULL;
+    subagent_lock();
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT name, role, tools, max_turns FROM agent_manifests ORDER BY name ASC;";
-    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+    if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        subagent_unlock();
+        return NULL;
+    }
 
     DynString ds = dyn_str_new();
     dyn_str_append(&ds, "Registered Belya Agency Subagents:\n");
@@ -1824,6 +1867,7 @@ char *belya_agent_list_manifests(BelyaAgent *agent) {
         dyn_str_appendf(&ds, "  • [%s] %s (Turns: %d, Tools: %s)\n", name ? name : "", role ? role : "", turns, tools ? tools : "");
     }
     sqlite3_finalize(stmt);
+    subagent_unlock();
 
     if (count == 0) {
         dyn_str_append(&ds, "  (No agent manifests registered)\n");
@@ -3136,7 +3180,7 @@ static bool subagent_persist_message(sqlite3 *db, const char *id, long long idx,
     return ok;
 }
 
-bool belya_subagent_schema_init(BelyaAgent *agent) {
+static bool subagent_schema_init_locked(BelyaAgent *agent) {
     if (!agent || !agent->db) return false;
     bool ok = subagent_exec(agent,
         "CREATE TABLE IF NOT EXISTS subagents ("
@@ -3194,6 +3238,13 @@ bool belya_subagent_schema_init(BelyaAgent *agent) {
     return ok;
 }
 
+bool belya_subagent_schema_init(BelyaAgent *agent) {
+    subagent_lock();
+    bool ok = subagent_schema_init_locked(agent);
+    subagent_unlock();
+    return ok;
+}
+
 static void subagent_make_id(char *out, size_t cap) {
     static unsigned int counter = 0;
     struct timespec ts;
@@ -3226,11 +3277,13 @@ static void subagent_parent_digest(BelyaAgent *parent, char *out, size_t cap) {
 }
 
 /* Serialises the fork transaction on the shared connection (see fork). */
-static pthread_mutex_t g_subagent_write_lock = PTHREAD_MUTEX_INITIALIZER;
-
 char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task, long long budget_tokens) {
     if (!parent || !parent->db || !task || !task[0]) return NULL;
-    if (!belya_subagent_schema_init(parent)) return NULL;
+    subagent_lock();
+    if (!belya_subagent_schema_init(parent)) {
+        subagent_unlock();
+        return NULL;
+    }
 
     const char *role_name = (role && role[0]) ? role : "worker";
     long long budget = (budget_tokens > 0) ? budget_tokens : BELYA_SUBAGENT_DEFAULT_BUDGET;
@@ -3268,7 +3321,6 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
        one fsync instead of three. The mutex exists because fork writes on the
        parent's connection; two threads cannot hold a transaction on it at once.
        When T1.5 gives each worker its own connection this becomes the DB's job. */
-    pthread_mutex_lock(&g_subagent_write_lock);
     bool ok = sqlite3_exec(parent->db, "BEGIN IMMEDIATE;", NULL, NULL, NULL) == SQLITE_OK;
     if (ok) {
         ok = sqlite3_prepare_v2(parent->db,
@@ -3300,7 +3352,7 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
         ok = sqlite3_exec(parent->db, "COMMIT;", NULL, NULL, NULL) == SQLITE_OK;
     }
     if (!ok) sqlite3_exec(parent->db, "ROLLBACK;", NULL, NULL, NULL);
-    pthread_mutex_unlock(&g_subagent_write_lock);
+    subagent_unlock();
 
     if (!ok) return NULL;
     return xstrdup(id);
@@ -3309,10 +3361,12 @@ char *belya_subagent_fork(BelyaAgent *parent, const char *role, const char *task
 BelyaSubagent *belya_subagent_get(BelyaAgent *agent, const char *id) {
     if (!agent || !agent->db || !id || !id[0]) return NULL;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT id, parent_session, role, status, task, summary, error, workspace, model, "
             "budget_tokens, spent_tokens, steps, billed_tokens FROM subagents WHERE id = ?1;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return NULL;
     }
     sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
@@ -3336,6 +3390,7 @@ BelyaSubagent *belya_subagent_get(BelyaAgent *agent, const char *id) {
         }
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     return sa;
 }
 
@@ -3356,16 +3411,20 @@ void belya_subagent_free(BelyaSubagent *sa) {
 bool belya_subagent_cancel(BelyaAgent *agent, const char *id) {
     if (!agent || !agent->db || !id || !id[0]) return false;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "UPDATE subagents SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP "
             "WHERE id = ?1 AND status IN ('running', 'paused');",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return false;
     }
     sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    size_t changes = (size_t)sqlite3_changes(agent->db);
     sqlite3_finalize(st);
-    return ok && sqlite3_changes(agent->db) == 1;
+    pthread_mutex_unlock(&g_subagent_write_lock);
+    return ok && changes == 1;
 }
 
 char *belya_subagent_collect(BelyaAgent *agent, const char *id) {
@@ -3393,11 +3452,13 @@ char *belya_subagent_collect(BelyaAgent *agent, const char *id) {
 char *belya_subagent_list_json(BelyaAgent *agent) {
     if (!agent || !agent->db) return NULL;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT id, parent_session, role, status, task, summary, error, "
             "budget_tokens, spent_tokens, steps, billed_tokens FROM subagents "
             "ORDER BY created_at, rowid;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return NULL;
     }
     JsonValue *arr = json_create_array();
@@ -3419,6 +3480,7 @@ char *belya_subagent_list_json(BelyaAgent *agent) {
         json_arr_add(arr, obj);
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     char *out = json_serialize(arr);
     json_free(arr);
     return out;
@@ -3612,7 +3674,6 @@ static sqlite3 *subagent_open_connection(BelyaAgent *parent) {
         return NULL;
     }
     sqlite3_busy_timeout(db, 5000);
-    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     return db;
 }
 
@@ -4124,12 +4185,15 @@ bool belya_subagent_run_parallel(BelyaAgent *parent, const char *const *ids, siz
 static bool subagent_child_exists(BelyaAgent *agent, const char *id) {
     if (!agent || !agent->db || !id || !id[0]) return false;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db, "SELECT 1 FROM subagents WHERE id=?1;", -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return false;
     }
     sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
     bool exists = sqlite3_step(st) == SQLITE_ROW;
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     return exists;
 }
 
@@ -4319,9 +4383,11 @@ bool belya_subagent_add_artifact(BelyaAgent *agent, const char *id, const char *
 char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id) {
     if (!agent || !agent->db || !id) return NULL;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT path, bytes FROM subagent_artifacts WHERE subagent_id=?1 ORDER BY id;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return NULL;
     }
     sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
@@ -4333,6 +4399,7 @@ char *belya_subagent_artifacts_json(BelyaAgent *agent, const char *id) {
         json_arr_add(arr, obj);
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     char *out = json_serialize(arr);
     json_free(arr);
     return out;
@@ -4358,10 +4425,12 @@ static void subagent_format_line(char *line, size_t line_sz, const char *id, con
 char *belya_subagent_agents_report(BelyaAgent *agent) {
     if (!agent || !agent->db) return NULL;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT id, role, status, spent_tokens, budget_tokens, task, "
             "billed_tokens FROM subagents "
             "ORDER BY created_at DESC, rowid DESC;", -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return NULL;
     }
     DynString out = dyn_str_new();
@@ -4381,6 +4450,7 @@ char *belya_subagent_agents_report(BelyaAgent *agent) {
         count++;
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     if (count == 0) dyn_str_append(&out, "No subagents.\n");
     char *report = xstrdup(out.data ? out.data : "");
     dyn_str_free(&out);
@@ -4391,9 +4461,11 @@ char *belya_subagent_agents_report(BelyaAgent *agent) {
 static char *subagent_status_of(BelyaAgent *agent, const char *id) {
     if (!agent || !agent->db || !id || !id[0]) return NULL;
     sqlite3_stmt *st = NULL;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT status FROM subagents WHERE id = ?1;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return NULL;
     }
     sqlite3_bind_text(st, 1, id, -1, SQLITE_STATIC);
@@ -4403,6 +4475,7 @@ static char *subagent_status_of(BelyaAgent *agent, const char *id) {
         if (txt) status = xstrdup((const char *)txt);
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     return status;
 }
 
@@ -4511,9 +4584,11 @@ bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
     /* Count */
     sqlite3_stmt *st = NULL;
     size_t total = 0;
+    pthread_mutex_lock(&g_subagent_write_lock);
     if (sqlite3_prepare_v2(agent->db,
             "SELECT COUNT(*) FROM subagents;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return false;
     }
     if (sqlite3_step(st) == SQLITE_ROW) {
@@ -4531,6 +4606,7 @@ bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
     out->text = NULL;
 
     if (total == 0) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         out->text = xstrdup("No subagents.\n");
         return true;
     }
@@ -4542,6 +4618,7 @@ bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
             "billed_tokens FROM subagents "
             "ORDER BY created_at DESC, rowid DESC LIMIT ?2 OFFSET ?3;",
             -1, &st, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&g_subagent_write_lock);
         return false;
     }
     sqlite3_bind_int64(st, 2, (sqlite3_int64)per_page);
@@ -4562,6 +4639,7 @@ bool belya_subagent_agents_page(BelyaAgent *agent, size_t page, size_t per_page,
         dyn_str_append(&out_ds, line);
     }
     sqlite3_finalize(st);
+    pthread_mutex_unlock(&g_subagent_write_lock);
     out->text = out_ds.data ? xstrdup(out_ds.data) : xstrdup("");
     dyn_str_free(&out_ds);
     return true;

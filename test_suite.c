@@ -4202,7 +4202,11 @@ static bool p1a_has_column(BelyaAgent *agent, const char *table, const char *col
 }
 
 static int p1a_count_fds(void) {
+#if defined(__APPLE__)
+    DIR *d = opendir("/dev/fd");
+#else
     DIR *d = opendir("/proc/self/fd");
+#endif
     if (!d) return -1;
     int n = 0;
     struct dirent *e;

@@ -128,10 +128,11 @@ static void apply_plan_mode_kernel_sandbox(void) {
 void belya_safe_pipe_write(int fd, const char *data, size_t len) {
     if (fd < 0 || !data || len == 0) return;
 
-    sigset_t block, old;
-    sigemptyset(&block);
-    sigaddset(&block, SIGPIPE);
-    bool masked = (pthread_sigmask(SIG_BLOCK, &block, &old) == 0);
+    struct sigaction sa, old_sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    bool ignored = (sigaction(SIGPIPE, &sa, &old_sa) == 0);
 
     while (len > 0) {
         ssize_t w = write(fd, data, len);
@@ -140,19 +141,8 @@ void belya_safe_pipe_write(int fd, const char *data, size_t len) {
         len -= (size_t)w;
     }
 
-    if (masked) {
-        sigset_t pending;
-        sigemptyset(&pending);
-        if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE)) {
-#if defined(__APPLE__) || !defined(__linux__)
-            int sig = 0;
-            sigwait(&block, &sig);
-#else
-            struct timespec zero = {0, 0};
-            sigtimedwait(&block, NULL, &zero);   /* drain it, do not deliver it */
-#endif
-        }
-        pthread_sigmask(SIG_SETMASK, &old, NULL);
+    if (ignored) {
+        sigaction(SIGPIPE, &old_sa, NULL);
     }
 }
 
