@@ -289,12 +289,18 @@ static bool is_inert_tool(const char *t) {
 PermTier permission_classify(const char *tool_name, const char *args_json) {
     if (!tool_name) return PERM_TIER_ASK;
 
-    /* bash and run_test_cycle both execute a free-form shell string. The
-     * screening below used to be keyed on the tool name, so a command passed
-     * through run_test_cycle reached `sh -c` with none of these checks. */
+    /* Tools that execute a free-form shell string. Screening used to be keyed on
+     * the name "bash", so a command that arrived through run_test_cycle or a
+     * worker dispatch reached `sh -c` with none of these checks. */
+    const char *cmd_arg = NULL;
     if (strcmp(tool_name, "bash") == 0 || strcmp(tool_name, "run_test_cycle") == 0) {
+        cmd_arg = "command";
+    } else if (strcmp(tool_name, "dispatch_worker_task") == 0) {
+        cmd_arg = "test_cmd";
+    }
+    if (cmd_arg) {
         char cmd[PERM_CMD_MAX];
-        if (!permission_arg_string(args_json, "command", cmd, sizeof cmd) || cmd[0] == '\0') {
+        if (!permission_arg_string(args_json, cmd_arg, cmd, sizeof cmd) || cmd[0] == '\0') {
             return PERM_TIER_ASK;
         }
         if (command_is_destructive(cmd)) return PERM_TIER_DENY;

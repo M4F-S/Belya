@@ -1625,7 +1625,8 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
  * as shell syntax, so a path (or something that looks like a flag) stays exactly
  * one argument. Returns 0 when the child ran and was reaped, -1 when it could not
  * be started at all. */
-static int run_argv_capture(char *const argv[], const char *stdin_data, char *out, size_t outsz, int timeout_s, int *exit_code) {
+static int spawn_capture(char *const argv[], const char *stdin_data, const char *chdir_to,
+                         bool confine, char *out, size_t outsz, int timeout_s, int *exit_code) {
     if (!argv || !argv[0] || !out || outsz == 0) return -1;
     out[0] = '\0';
     int pfd[2];
@@ -1654,6 +1655,10 @@ static int run_argv_capture(char *const argv[], const char *stdin_data, char *ou
             dup2(in_pipe[0], STDIN_FILENO);
             close(in_pipe[0]);
         }
+        if (chdir_to && chdir(chdir_to) != 0) _exit(126);
+        /* A command string is a command string whichever tool carried it: same
+           kernel boundary as the bash tool when the caller asks for it. */
+        if (confine && g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -1699,6 +1704,11 @@ static int run_argv_capture(char *const argv[], const char *stdin_data, char *ou
     out[used] = '\0';
     if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return 0;
+}
+
+/* Most callers want argv, no chdir, no confinement. */
+static int run_argv_capture(char *const argv[], const char *stdin_data, char *out, size_t outsz, int timeout_s, int *exit_code) {
+    return spawn_capture(argv, stdin_data, NULL, false, out, outsz, timeout_s, exit_code);
 }
 
 static char *tool_git_status(BelyaAgent *agent, const JsonValue *args) {
@@ -3590,31 +3600,31 @@ char *belya_dispatch_worker_speculative(BelyaHarness *router_harness, const char
         }
 
         // Check modifications in shadow worktree
-        char status_cmd[8192];
-        snprintf(status_cmd, sizeof(status_cmd), "git -C \"%s\" status --porcelain 2>/dev/null", c->wt_path);
-        FILE *fp_st = popen(status_cmd, "r");
-        char status_line[1024];
-        if (fp_st) {
-            if (fgets(status_line, sizeof(status_line), fp_st)) {
+        {
+            char *st_argv[] = {"git", "-C", c->wt_path, "status", "--porcelain", NULL};
+            char st_out[4096];
+            int st_rc = 0;
+            if (run_argv_capture(st_argv, NULL, st_out, sizeof st_out, 20, &st_rc) == 0 && st_out[0] != '\0') {
                 c->has_modifications = true;
             }
-            pclose(fp_st);
         }
 
         // Run verification test cycle in worktree
         c->tests_passed = true;
         if (c->has_modifications) {
-            char verify_cmd[8192];
-            if (test_cmd && strlen(test_cmd) > 0) {
-                snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && %s 2>&1", c->wt_path, test_cmd);
+            /* The verification command comes from the model's tool arguments. It is
+               still a shell string (a test runner is a command line), but it runs
+               in the worktree with the same kernel sandbox as the bash tool and is
+               screened by permission_classify() before we get here - no more
+               `cd "<wt>" && <model text>` through a shell. */
+            char *sh_argv[] = {"/bin/sh", "-c",
+                               (test_cmd && strlen(test_cmd) > 0) ? (char *)test_cmd : "make test", NULL};
+            int test_rc = 0;
+            if (spawn_capture(sh_argv, NULL, c->wt_path, true, c->test_output,
+                              sizeof(c->test_output) - 1, 300, &test_rc) != 0) {
+                c->tests_passed = false;
             } else {
-                snprintf(verify_cmd, sizeof(verify_cmd), "cd \"%s\" && make test 2>&1", c->wt_path);
-            }
-            FILE *tf = popen(verify_cmd, "r");
-            if (tf) {
-                size_t bytes_read = fread(c->test_output, 1, sizeof(c->test_output) - 1, tf);
-                c->test_output[bytes_read] = '\0';
-                int test_rc = pclose(tf);
+                c->test_output[strlen(c->test_output)] = '\0';
                 if (test_rc != 0) {
                     c->tests_passed = false;
                 }
