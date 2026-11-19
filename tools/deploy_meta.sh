@@ -33,13 +33,25 @@ ACTIVE=$(sha "$CDIR/belya")
 LKG=$(sha "$CDIR/belya.lkg")
 
 # The unit is the authority on which process is serving.
-PID=$(systemctl show belya -p MainPID --value 2>/dev/null)
-case "$PID" in ''|*[!0-9]*) PID="" ;; esac
-RUNNING=""
-if [ -n "$PID" ]; then
-  RUNNING=$(sha "/proc/$PID/exe")
-  [ -n "$RUNNING" ] || PID=""
-fi
+#
+# But a restart is a fraction of a second old when `make deploy` reaches this
+# script: reading /proc/<pid>/exe in that window can resolve to the pre-exec
+# image and record MATCH=no against a service that is in fact running the new
+# binary. Observed on the first real deploy — the file lied for exactly one
+# second. Wait for the image to settle before believing either answer.
+SETTLE=0
+while [ "$SETTLE" -lt 10 ]; do
+  PID=$(systemctl show belya -p MainPID --value 2>/dev/null)
+  case "$PID" in ''|*[!0-9]*) PID="" ;; esac
+  RUNNING=""
+  if [ -n "$PID" ]; then
+    RUNNING=$(sha "/proc/$PID/exe")
+    [ -n "$RUNNING" ] || PID=""
+  fi
+  [ -n "$RUNNING" ] && [ "$RUNNING" = "$ACTIVE" ] && break
+  sleep 1
+  SETTLE=$(( SETTLE + 1 ))
+done
 
 MATCH="no"
 if [ -n "$RUNNING" ] && [ "$RUNNING" = "$ACTIVE" ]; then MATCH="yes"; fi
@@ -78,6 +90,7 @@ TMP="$OUT.new"
   echo "ACTIVE_SHA=${ACTIVE:-missing}"
   echo "RUNNING_SHA=${RUNNING:-unknown}"
   echo "RUNNING_PID=${PID:-none}"
+  echo "SETTLE_SECONDS=$SETTLE"
   echo "MATCH=$MATCH"
   echo "LKG_SHA=${LKG:-missing}"
   echo "BINARY_VERSION=$VERSION"
