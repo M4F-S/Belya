@@ -1619,61 +1619,117 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
     return out.data;
 }
 
+/* Run an argv with no shell in the path and capture stdout+stderr.
+ *
+ * Every tool that shells out should use this shape: arguments cannot be re-parsed
+ * as shell syntax, so a path (or something that looks like a flag) stays exactly
+ * one argument. Returns 0 when the child ran and was reaped, -1 when it could not
+ * be started at all. */
+static int run_argv_capture(char *const argv[], char *out, size_t outsz, int timeout_s, int *exit_code) {
+    if (!argv || !argv[0] || !out || outsz == 0) return -1;
+    out[0] = '\0';
+    int pfd[2];
+    if (pipe(pfd) != 0) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pfd[0]);
+        close(pfd[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        close(pfd[0]);
+        dup2(pfd[1], STDOUT_FILENO);
+        dup2(pfd[1], STDERR_FILENO);
+        close(pfd[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    close(pfd[1]);
+    size_t used = 0;
+    int timed_out = 0;
+    time_t deadline = time(NULL) + (timeout_s > 0 ? timeout_s : 10);
+    for (;;) {
+        if (time(NULL) > deadline) {
+            timed_out = 1;
+            break;
+        }
+        struct pollfd p;
+        p.fd = pfd[0];
+        p.events = POLLIN;
+        p.revents = 0;
+        int pr = poll(&p, 1, 250);
+        if (pr < 0) break;
+        if (pr == 0) continue;
+        char buf[512];
+        ssize_t n = read(pfd[0], buf, sizeof buf);
+        if (n <= 0) break;
+        size_t room = outsz - 1 - used;
+        if (room > 0) {
+            size_t take = (size_t)n < room ? (size_t)n : room;
+            memcpy(out + used, buf, take);
+            used += take;
+        }
+    }
+    close(pfd[0]);
+
+    if (timed_out) kill(pid, SIGKILL);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    out[used] = '\0';
+    if (exit_code) *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return 0;
+}
+
 static char *tool_git_status(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     const char *path = json_obj_get_str(args, "path");
     const char *dir = (path && strlen(path) > 0) ? path : (g_harness && strlen(g_harness->cwd) > 0 ? g_harness->cwd : ".");
-    if (dir && !is_safe_shell_path(dir)) return xstrdup("Error: Invalid characters in directory path.");
 
-    DynString cmd = dyn_str_new();
-    dyn_str_appendf(&cmd, "cd \"%s\" 2>&1 && git status", dir);
-
-    FILE *pipe = popen(cmd.data, "r");
-    dyn_str_free(&cmd);
-    if (!pipe) return xstrdup("Error: Failed to execute git status.");
-
-    DynString out = dyn_str_new();
-    char buf[512];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        dyn_str_append(&out, buf);
-        if (out.len > 10000) break;
+    char *argv[] = {"git", "-C", (char *)dir, "status", NULL};
+    char out[10000];
+    int rc = 0;
+    if (run_argv_capture(argv, out, sizeof out, 10, &rc) != 0) {
+        return xstrdup("Error: Failed to execute git status.");
     }
-    pclose(pipe);
-
-    if (out.len == 0) dyn_str_append(&out, "Working tree clean (no changes).");
-    return out.data;
+    if (out[0] == '\0') return xstrdup("Working tree clean (no changes).");
+    return xstrdup(out);
 }
 
 static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
     bool staged = json_obj_get_bool(args, "staged", false);
     const char *path = json_obj_get_str(args, "path");
-    if (path && !is_safe_shell_path(path)) return xstrdup("Error: Invalid characters in diff path.");
+    const char *cwd = (g_harness && strlen(g_harness->cwd) > 0) ? g_harness->cwd : ".";
 
-    DynString cmd = dyn_str_new();
-    if (g_harness && strlen(g_harness->cwd) > 0) {
-        dyn_str_appendf(&cmd, "cd \"%s\" && git diff %s %s", g_harness->cwd, staged ? "--cached" : "", path ? path : "");
-    } else {
-        dyn_str_appendf(&cmd, "git diff %s %s", staged ? "--cached" : "", path ? path : "");
+    /* "--" ends option parsing: a path that looks like a flag (--output=…) is a
+       pathspec, not an instruction to git. That was reachable while this ran
+       through a shell with the path interpolated unquoted. */
+    char *argv[8];
+    int n = 0;
+    argv[n++] = "git";
+    argv[n++] = "-C";
+    argv[n++] = (char *)cwd;
+    argv[n++] = "diff";
+    if (staged) argv[n++] = "--cached";
+    argv[n++] = "--";
+    if (path && *path) argv[n++] = (char *)path;
+    argv[n] = NULL;
+
+    static char out[50000];
+    int rc = 0;
+    if (run_argv_capture(argv, out, sizeof out, 20, &rc) != 0) {
+        return xstrdup("Error: Failed to execute git diff.");
     }
-
-    FILE *pipe = popen(cmd.data, "r");
-    dyn_str_free(&cmd);
-    if (!pipe) return xstrdup("Error: Failed to execute git diff.");
-
-    DynString out = dyn_str_new();
-    char buf[512];
-    while (fgets(buf, sizeof(buf), pipe)) {
-        dyn_str_append(&out, buf);
-        if (out.len > 50000) {
-            dyn_str_append(&out, "\n[Diff truncated: exceeded 50KB limit]");
-            break;
-        }
+    if (out[0] == '\0') return xstrdup("No diff detected.");
+    if (strlen(out) >= sizeof out - 1) {
+        DynString ds = dyn_str_new();
+        dyn_str_append(&ds, out);
+        dyn_str_append(&ds, "\n[Diff truncated: exceeded 50KB limit]");
+        return ds.data;
     }
-    pclose(pipe);
-
-    if (out.len == 0) dyn_str_append(&out, "No diff detected.");
-    return out.data;
+    return xstrdup(out);
 }
 
 char *belya_ansi_diff_colorize(const char *raw_diff) {

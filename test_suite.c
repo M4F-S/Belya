@@ -5599,6 +5599,64 @@ static void test_run_test_cycle_is_confined(void) {
     printf("  -> confinement PASSED (inside written, outside denied)\n");
 }
 
+/* Both git tools used to interpolate the model's path into a shell command. They
+ * now exec git with an argv. The two probes below are the difference: a path that
+ * looks like an option must stay a pathspec, and a path containing `;` must not
+ * spawn anything. */
+static void test_git_tools_take_no_shell(void) {
+    printf("[Test] git tools pass paths as argv, never as shell words...\n");
+    long pid = (long)getpid();
+    char probe[256], flag_path[320], shell_dir[512], shell_probe[256];
+    snprintf(probe, sizeof probe, "/tmp/belya_arg_probe_%ld", pid);
+    snprintf(flag_path, sizeof flag_path, "--output=%s", probe);
+    snprintf(shell_probe, sizeof shell_probe, "/tmp/belya_shell_probe_%ld", pid);
+    snprintf(shell_dir, sizeof shell_dir, "belya dir probe %ld; touch %s", pid, shell_probe);
+    unlink(probe);
+    unlink(shell_probe);
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    int ran = 0;
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "git_diff") != 0) continue;
+        JsonValue *a = json_create_object();
+        json_obj_add(a, "path", json_create_string(flag_path));
+        char *obs = h->tools[t].callback(agent, a);
+        assert(obs != NULL);
+        free(obs);
+        json_free(a);
+        ran = 1;
+        break;
+    }
+    assert(ran == 1);
+    if (access(probe, F_OK) == 0) {
+        unlink(probe);
+        assert(!"git_diff let a path be re-parsed as a git option");
+    }
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "git_status") != 0) continue;
+        JsonValue *a = json_create_object();
+        json_obj_add(a, "path", json_create_string(shell_dir));
+        char *obs = h->tools[t].callback(agent, a);
+        assert(obs != NULL);
+        free(obs);
+        json_free(a);
+        break;
+    }
+    if (access(shell_probe, F_OK) == 0) {
+        unlink(shell_probe);
+        assert(!"git_status executed a path as shell syntax");
+    }
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> argv-only PASSED (option-shaped path inert, metacharacters inert)\n");
+}
+
 static void test_version_reports_build(void) {
     printf("[Test] Build provenance: version string carries the compiled SHA...\n");
     const char *v = belya_version_string();
@@ -5691,8 +5749,9 @@ int main(void) {
     test_phase1c1_background_cap();
     test_sigpipe_dead_reader_resilience();
     test_run_test_cycle_is_confined();
+    test_git_tools_take_no_shell();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (76/76 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (77/77 - 100%%) ================\n\n");
     return 0;
 }
 
