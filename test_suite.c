@@ -3,6 +3,7 @@
 #include "belya_channel.h"
 #include "minifrontmatter.h"
 #include "belya_company.h"
+#include "build_info.h"
 #include <assert.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -5526,6 +5527,21 @@ void test_sigpipe_dead_reader_resilience(void) {
     printf("  -> SIGPIPE resilience PASSED (70/70)\n");
 }
 
+static void test_version_reports_build(void) {
+    printf("[Test] Build provenance: version string carries the compiled SHA...\n");
+    const char *v = belya_version_string();
+    assert(v != NULL);
+    assert(strncmp(v, "belya ", 6) == 0);
+    assert(strstr(v, belya_build_sha()) != NULL);
+    assert(strlen(belya_build_date()) == 10);      /* YYYY-MM-DD */
+    /* A build made from a git tree must know its commit. A tarball build may not. */
+    if (access(".git", F_OK) == 0) {
+        assert(strcmp(belya_build_sha(), "unknown") != 0);
+        assert(strlen(belya_build_sha()) >= 7);
+    }
+    printf("  -> %s PASSED\n", v);
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -5602,7 +5618,8 @@ int main(void) {
     test_phase1c1_background_execution();
     test_phase1c1_background_cap();
     test_sigpipe_dead_reader_resilience();
-    printf("================ All Tests Passed Successfully (74/74 - 100%%) ================\n\n");
+    test_version_reports_build();
+    printf("================ All Tests Passed Successfully (75/75 - 100%%) ================\n\n");
     return 0;
 }
 

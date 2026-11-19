@@ -1,6 +1,7 @@
 #include "belya_harness.h"
 #include "telegram_adapter.h"
 #include "minifrontmatter.h"
+#include "build_info.h"
 #include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -196,6 +197,15 @@ static void load_env_file(const char *path) {
 }
 
 int main(int argc, char **argv) {
+    /* Provenance must answer before anything else: an operator asking "what is
+     * running?" must not start the daemon, read .env, or probe the gateway. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-V") == 0) {
+            printf("%s\n", belya_version_string());
+            return 0;
+        }
+    }
+
     atexit(cleanup_terminal);
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -243,7 +253,8 @@ int main(int argc, char **argv) {
             printf("  --export-sharegpt <file>   Export trajectory in ShareGPT / Hermes format and exit\n");
             printf("  --export-dpo <file>        Export trajectory in Hermes DPO preference format and exit\n");
             printf("  --headless <prompt>        Alias for --prompt\n");
-            printf("  --eval <prompt>            Alias for --prompt\n\n");
+            printf("  --eval <prompt>            Alias for --prompt\n");
+            printf("  --version                  Print build provenance (git SHA + build date) and exit\n\n");
             return 0;
         } else if (strcmp(argv[i], "--presets") == 0) {
             model_presets_print_list();

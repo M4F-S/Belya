@@ -7,6 +7,13 @@ else
 endif
 CFLAGS = -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -O2 -ffunction-sections -fdata-sections -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700
 
+# Provenance compiled into the artifact. A SHA in a sidecar file describes what
+# someone intended to deploy; this one describes what is running (--version).
+BUILD_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u +%Y-%m-%d)
+PROVENANCE := -DBELYA_BUILD_SHA=\"$(BUILD_SHA)\" -DBELYA_BUILD_DATE=\"$(BUILD_DATE)\"
+CFLAGS += $(PROVENANCE)
+
 # Debian/Ubuntu ship libcurl's headers under the multiarch triplet
 # (/usr/include/x86_64-linux-gnu/curl/curl.h), not /usr/include/curl. Without
 # this the host build says "curl/curl.h: No such file" while the package is
@@ -15,15 +22,16 @@ MULTIARCH := $(shell $(CC) -print-multiarch 2>/dev/null)
 CPPFLAGS += $(if $(MULTIARCH),-I/usr/include/$(MULTIARCH))
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3 -lpthread
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c build_info.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
 DEPLOY_BIN = belya
 DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
+DEPLOY_META = tools/deploy_meta.sh
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c build_info.c test_suite.c
 TEST_TARGET = belya_test
 LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
 LOOP_TARGET = build/test_agent_loop
@@ -144,7 +152,7 @@ $(SIM_TARGET): $(SIM_SRCS)
 	$(CC) $(CFLAGS) -o $@ $(SIM_SRCS) $(LIBS)
 
 test_asan: $(TEST_SRCS)
-	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -o belya_test_asan $(TEST_SRCS) $(LIBS)
+	$(CC) $(PROVENANCE) $(CPPFLAGS) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -o belya_test_asan $(TEST_SRCS) $(LIBS)
 	./belya_test_asan
 
 ADV_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_company_adversarial.c
@@ -160,7 +168,7 @@ $(ADV_TARGET): $(ADV_SRCS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I. -o $@ $(ADV_SRCS) $(LIBS)
 
 test-company-adv-asan: $(ADV_SRCS) | $(BUILD_DIR)
-	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_company_adversarial_asan $(ADV_SRCS) $(LIBS)
+	$(CC) $(PROVENANCE) $(CPPFLAGS) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_company_adversarial_asan $(ADV_SRCS) $(LIBS)
 	./$(BUILD_DIR)/test_company_adversarial_asan
 
 test-crucible: $(CRUCIBLE_TARGET)
@@ -170,7 +178,7 @@ $(CRUCIBLE_TARGET): $(CRUCIBLE_SRCS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -I. -o $@ $(CRUCIBLE_SRCS) $(LIBS)
 
 test-crucible-asan: $(CRUCIBLE_SRCS) | $(BUILD_DIR)
-	$(CC) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_crucible_adversarial_asan $(CRUCIBLE_SRCS) $(LIBS)
+	$(CC) $(PROVENANCE) $(CPPFLAGS) -Wall -Wextra -Werror -Wpedantic -Wshadow -Wformat=2 -g -fsanitize=address,undefined -std=c99 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -I. -o $(BUILD_DIR)/test_crucible_adversarial_asan $(CRUCIBLE_SRCS) $(LIBS)
 	./$(BUILD_DIR)/test_crucible_adversarial_asan
 
 # deploy: publish the built artifact to the path the service actually runs, respecting the
@@ -197,7 +205,13 @@ deploy: $(TARGET)
 	  mv -f "$(DEPLOY_BIN).new" "$(DEPLOY_BIN)"; \
 	  chattr +i "$(DEPLOY_BIN)" 2>/dev/null || true; \
 	  $(DEPLOY_RESTART); \
-	fi
+	fi; \
+	./$(DEPLOY_META) "$(CURDIR)"
+
+# deploy-meta: refresh .deploy_meta without touching the binary. Idempotent —
+# DEPLOY_SEQ only advances when ACTIVE_SHA actually changed.
+deploy-meta:
+	@./$(DEPLOY_META) "$(CURDIR)"
 
 # release: the whole ritual in one command - clean build, test gate, then deploy (H4).
 release:
@@ -214,7 +228,7 @@ clean:
 gdrive:
 	@./scripts/sync_to_gdrive.sh
 
-.PHONY: all test guard-non-root benchmark arena bench clean gdrive deploy release
+.PHONY: all test guard-non-root benchmark arena bench clean gdrive deploy deploy-meta release
 
 # drift-guard
 drift:
