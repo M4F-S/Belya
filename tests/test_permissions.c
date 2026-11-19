@@ -116,8 +116,6 @@ int main(void) {
         if (gw) model_gateway_free(gw);
     }
 
-    printf("\npermission tests: %s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED",
-           g_fail, g_fail == 1 ? "" : "s");
     /* Turbo: widens ASK, never touches DENY. */
     if (permission_apply_turbo(PERM_TIER_ASK, 1) != PERM_TIER_ALLOW) {
         printf("  [FAIL] turbo widens ASK\n");
@@ -160,6 +158,11 @@ int main(void) {
     expect("run_test_cycle", "{\"command\":\"make test\"}", PERM_TIER_ASK);
     expect("run_test_cycle", "{\"framework\":\"pytest\"}", PERM_TIER_ASK);
     expect("run_test_cycle", "{\"command\":\"\"}", PERM_TIER_ASK);
+
+    /* Printed last: the old position was before the rule-addition cases, so a
+     * run with failures still announced "permission tests: PASSED" first. */
+    printf("\npermission tests: %s (%d failure%s)\n", g_fail ? "FAILED" : "PASSED",
+           g_fail, g_fail == 1 ? "" : "s");
 
     return g_fail ? 1 : 0;
 }
