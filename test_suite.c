@@ -5657,6 +5657,44 @@ static void test_git_tools_take_no_shell(void) {
     printf("  -> argv-only PASSED (option-shaped path inert, metacharacters inert)\n");
 }
 
+/* Names and the command used to be pasted straight into the generated server
+ * script, and validation ran that script through a shell pipeline. The hostile
+ * name below used to be able to rewrite the script text. */
+static void test_mcp_synthesis_rejects_hostile_names(void) {
+    printf("[Test] MCP synthesis validates names instead of interpolating them...\n");
+    long pid = (long)getpid();
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    char hostile[512], probe[256];
+    snprintf(probe, sizeof probe, "belya_mcp_probe_%ld", pid);
+    unlink(probe);
+    snprintf(hostile, sizeof hostile, "x; touch %s; #", probe);
+    assert(belya_harness_synthesize_mcp_server(h, hostile, "good_tool", "d", "echo x", NULL) == false);
+    /* The rejection is not the proof - the file is. Before this change the
+       hostile name was interpolated into the validation pipeline's command line,
+       so the `touch` ran even though the call still returned false. */
+    if (access(probe, F_OK) == 0) {
+        unlink(probe);
+        assert(!"MCP synthesis executed a server name as shell syntax");
+    }
+
+    /* Positive control: a legitimate synthesis must still pass validation, which
+       is what proves the rejections above are not the whole path failing. */
+    bool ok = belya_harness_synthesize_mcp_server(h, "probe_mcp", "probe_tool",
+                                                 "probe desc with \"quotes\"", "echo PROBE_OK",
+                                                 "{\"type\":\"object\"}");
+    assert(ok == true);
+    unlink(".belya/mcp/probe_mcp_server.sh");
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> MCP synthesis PASSED (hostile name refused, benign synthesis validates)\n");
+}
+
 static void test_version_reports_build(void) {
     printf("[Test] Build provenance: version string carries the compiled SHA...\n");
     const char *v = belya_version_string();
@@ -5750,8 +5788,9 @@ int main(void) {
     test_sigpipe_dead_reader_resilience();
     test_run_test_cycle_is_confined();
     test_git_tools_take_no_shell();
+    test_mcp_synthesis_rejects_hostile_names();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (77/77 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (78/78 - 100%%) ================\n\n");
     return 0;
 }
 

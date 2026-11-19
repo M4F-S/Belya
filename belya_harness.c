@@ -1625,16 +1625,23 @@ static char *tool_search_files(BelyaAgent *agent, const JsonValue *args) {
  * as shell syntax, so a path (or something that looks like a flag) stays exactly
  * one argument. Returns 0 when the child ran and was reaped, -1 when it could not
  * be started at all. */
-static int run_argv_capture(char *const argv[], char *out, size_t outsz, int timeout_s, int *exit_code) {
+static int run_argv_capture(char *const argv[], const char *stdin_data, char *out, size_t outsz, int timeout_s, int *exit_code) {
     if (!argv || !argv[0] || !out || outsz == 0) return -1;
     out[0] = '\0';
     int pfd[2];
+    int in_pipe[2] = {-1, -1};
     if (pipe(pfd) != 0) return -1;
+    if (stdin_data && pipe(in_pipe) != 0) {
+        close(pfd[0]);
+        close(pfd[1]);
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
         close(pfd[0]);
         close(pfd[1]);
+        if (stdin_data) { close(in_pipe[0]); close(in_pipe[1]); }
         return -1;
     }
     if (pid == 0) {
@@ -1642,8 +1649,20 @@ static int run_argv_capture(char *const argv[], char *out, size_t outsz, int tim
         dup2(pfd[1], STDOUT_FILENO);
         dup2(pfd[1], STDERR_FILENO);
         close(pfd[1]);
+        if (stdin_data) {
+            close(in_pipe[1]);
+            dup2(in_pipe[0], STDIN_FILENO);
+            close(in_pipe[0]);
+        }
         execvp(argv[0], argv);
         _exit(127);
+    }
+
+    if (stdin_data) {
+        close(in_pipe[0]);
+        /* SIGPIPE-safe: a server that exits before reading must not kill us. */
+        belya_safe_pipe_write(in_pipe[1], stdin_data, strlen(stdin_data));
+        close(in_pipe[1]);
     }
 
     close(pfd[1]);
@@ -1690,7 +1709,7 @@ static char *tool_git_status(BelyaAgent *agent, const JsonValue *args) {
     char *argv[] = {"git", "-C", (char *)dir, "status", NULL};
     char out[10000];
     int rc = 0;
-    if (run_argv_capture(argv, out, sizeof out, 10, &rc) != 0) {
+    if (run_argv_capture(argv, NULL, out, sizeof out, 10, &rc) != 0) {
         return xstrdup("Error: Failed to execute git status.");
     }
     if (out[0] == '\0') return xstrdup("Working tree clean (no changes).");
@@ -1719,7 +1738,7 @@ static char *tool_git_diff(BelyaAgent *agent, const JsonValue *args) {
 
     static char out[50000];
     int rc = 0;
-    if (run_argv_capture(argv, out, sizeof out, 20, &rc) != 0) {
+    if (run_argv_capture(argv, NULL, out, sizeof out, 20, &rc) != 0) {
         return xstrdup("Error: Failed to execute git diff.");
     }
     if (out[0] == '\0') return xstrdup("No diff detected.");
@@ -3819,8 +3838,26 @@ static char *tool_lsp_query(BelyaAgent *agent, const JsonValue *args) {
 
 // Late-2026 Phase 3: Repo-to-MCP Dynamic Synthesis
 
+/* Server and tool names land in the generated script's text and in its JSON, so
+ * only characters that are inert in both grammars are accepted. */
+static bool mcp_name_safe(const char *s) {
+    if (!s || !*s || strlen(s) > 64) return false;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (!(isalnum(*p) || *p == '_' || *p == '-' || *p == '.')) return false;
+    }
+    return true;
+}
+
 bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_name, const char *tool_name, const char *desc, const char *script_cmd, const char *schema_json) {
     if (!h || !server_name || !tool_name || !script_cmd) return false;
+    /* These three were interpolated raw into the script body: a name with a quote
+       rewrote the generated server, and a newline in the command broke out of its
+       line. Reject rather than escape - a legitimate name needs none of it. */
+    if (!mcp_name_safe(server_name) || !mcp_name_safe(tool_name)) return false;
+    if (strlen(script_cmd) > 1024) return false;
+    for (const unsigned char *p = (const unsigned char *)script_cmd; *p; p++) {
+        if (*p == '\n' || *p == '\r') return false;
+    }
 
     mkdir(".belya", 0755);
     mkdir(".belya/mcp", 0755);
@@ -3833,6 +3870,16 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
 
     const char *effective_schema = (schema_json && strlen(schema_json) > 0) ? schema_json : "{\"type\":\"object\"}";
 
+    /* The description is free text but sits inside a JSON string literal. */
+    char desc_esc[512];
+    size_t de = 0;
+    for (const unsigned char *p = (const unsigned char *)(desc ? desc : ""); *p && de < sizeof(desc_esc) - 3; p++) {
+        if (*p < 0x20) continue;
+        if (*p == '"' || *p == '\\') desc_esc[de++] = '\\';
+        desc_esc[de++] = (char)*p;
+    }
+    desc_esc[de] = '\0';
+
     fprintf(f, "#!/bin/sh\n");
     fprintf(f, "# Auto-synthesized Paper2Agent MCP Server: %s\n", server_name);
     fprintf(f, "while IFS= read -r line; do\n");
@@ -3842,7 +3889,7 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
     fprintf(f, "  if echo \"$line\" | grep -q '\"method\":\"initialize\"'; then\n");
     fprintf(f, "    echo \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":$id,\\\"result\\\":{\\\"protocolVersion\\\":\\\"2024-11-05\\\",\\\"capabilities\\\":{\\\"tools\\\":{}},\\\"serverInfo\\\":{\\\"name\\\":\\\"%s\\\",\\\"version\\\":\\\"1.0.0\\\"}}}\"\n", server_name);
     fprintf(f, "  elif echo \"$line\" | grep -q '\"method\":\"tools/list\"'; then\n");
-    fprintf(f, "    echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":{\"tools\":[{\"name\":\"%s\",\"description\":\"%s\",\"inputSchema\":%s}]}}'\n", tool_name, desc ? desc : "", effective_schema);
+    fprintf(f, "    echo '{\"jsonrpc\":\"2.0\",\"id\":'$id',\"result\":{\"tools\":[{\"name\":\"%s\",\"description\":\"%s\",\"inputSchema\":%s}]}}'\n", tool_name, desc_esc, effective_schema);
     fprintf(f, "  elif echo \"$line\" | grep -q '\"method\":\"tools/call\"'; then\n");
     fprintf(f, "    output=$(%s 2>&1)\n", script_cmd);
     fprintf(f, "    clean_out=$(printf '%%s' \"$output\" | tr '\\n' ' ' | sed 's/\"/\\\\\"/g')\n");
@@ -3854,13 +3901,22 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
     fclose(f);
     chmod(server_path, 0755);
 
-    // Validation Gating: Test running with initialize & tools/list
-    char test_cmd[1024];
-    snprintf(test_cmd, sizeof(test_cmd),
-             "printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\\n' | %s 2>/dev/null | grep -q '\"name\":\"%s\"'",
-             server_path, tool_name);
-    int rc = system(test_cmd);
-    if (rc != 0) {
+    /* Validation gating: drive the server with a real tools/list request and look
+       for the tool in its reply. This used to be
+       `printf ... | <server> | grep -q '"name":"<tool>"'` through a shell, which
+       put the model's tool name in a pipeline command line. */
+    char request[128];
+    snprintf(request, sizeof(request), "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+    char response[8192];
+    char *argv[] = {server_path, NULL};
+    int rc = 0;
+    if (run_argv_capture(argv, request, response, sizeof(response), 10, &rc) != 0 || rc != 0) {
+        unlink(server_path);
+        return false;
+    }
+    char needle[96];
+    snprintf(needle, sizeof(needle), "\"name\":\"%s\"", tool_name);
+    if (!strstr(response, needle)) {
         unlink(server_path);
         return false;
     }
