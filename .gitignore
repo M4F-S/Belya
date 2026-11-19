@@ -51,6 +51,11 @@ alfa.old-*
 build/
 belya.new
 *.lkg
+
+# Deploy provenance written by `make deploy` (tools/deploy_meta.sh) — runtime
+# state, describes one host's deploy, must never be committed.
+.deploy_meta
+.deploy_meta.new
 # H16b: transient backup written by the rules fixture
 .agentrules.testbak
 
