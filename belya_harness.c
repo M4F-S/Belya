@@ -2079,6 +2079,10 @@ static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
             close(null_fd);
         }
 
+        /* Same kernel boundary as the bash tool. A command string that arrives
+           through run_test_cycle is still a command string: without this, the
+           tool ran a model-supplied shell line with no workspace jail at all. */
+        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         execvp(runner_prog, argv_ptr);
         _exit(127);
     }

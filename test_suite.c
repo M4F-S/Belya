@@ -4,6 +4,7 @@
 #include "minifrontmatter.h"
 #include "belya_company.h"
 #include "build_info.h"
+#include "sandbox.h"
 #include <assert.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -5527,6 +5528,77 @@ void test_sigpipe_dead_reader_resilience(void) {
     printf("  -> SIGPIPE resilience PASSED (70/70)\n");
 }
 
+/* run_test_cycle takes a free-form shell command from the model just like bash
+ * does, so it must sit behind the same kernel boundary. The positive control is
+ * the point of this test: a denial proves nothing unless the same tool really
+ * ran the command, so the in-workspace write must succeed before the
+ * out-of-workspace one is asserted to fail. */
+static void test_run_test_cycle_is_confined(void) {
+    printf("[Test] run_test_cycle runs under the same sandbox as bash...\n");
+    if (!sandbox_supported()) {
+        printf("  -> SKIPPED (no Landlock on this kernel)\n");
+        return;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !*home) {
+        printf("  -> SKIPPED (HOME unset)\n");
+        return;
+    }
+
+    long pid = (long)getpid();
+    char inside_file[128], inside_cmd[192], outside[1024], outside_cmd[1100];
+    snprintf(inside_file, sizeof(inside_file), "belya_sbx_probe_%ld", pid);
+    snprintf(inside_cmd, sizeof(inside_cmd), "touch %s", inside_file);
+    snprintf(outside, sizeof(outside), "%s/belya_sbx_probe_%ld", home, pid);
+    snprintf(outside_cmd, sizeof(outside_cmd), "touch %s", outside);
+    unlink(inside_file);
+    unlink(outside);
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    int ran = 0;
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "run_test_cycle") != 0) continue;
+        JsonValue *in_args = json_create_object();
+        json_obj_add(in_args, "command", json_create_string(inside_cmd));
+        char *obs = h->tools[t].callback(agent, in_args);
+        assert(obs != NULL);
+        free(obs);
+        json_free(in_args);
+        ran = 1;
+        break;
+    }
+    assert(ran == 1);
+    if (access(inside_file, F_OK) != 0) {
+        printf("  -> FAILED: positive control never ran (a denial below would prove nothing)\n");
+        assert(!"run_test_cycle did not execute the in-workspace command");
+    }
+    unlink(inside_file);
+
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "run_test_cycle") != 0) continue;
+        JsonValue *out_args = json_create_object();
+        json_obj_add(out_args, "command", json_create_string(outside_cmd));
+        char *obs = h->tools[t].callback(agent, out_args);
+        assert(obs != NULL);
+        free(obs);
+        json_free(out_args);
+        break;
+    }
+
+    if (access(outside, F_OK) == 0) {
+        unlink(outside);
+        assert(!"run_test_cycle wrote outside the workspace");
+    }
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> confinement PASSED (inside written, outside denied)\n");
+}
+
 static void test_version_reports_build(void) {
     printf("[Test] Build provenance: version string carries the compiled SHA...\n");
     const char *v = belya_version_string();
@@ -5618,8 +5690,9 @@ int main(void) {
     test_phase1c1_background_execution();
     test_phase1c1_background_cap();
     test_sigpipe_dead_reader_resilience();
+    test_run_test_cycle_is_confined();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (75/75 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (76/76 - 100%%) ================\n\n");
     return 0;
 }
 
