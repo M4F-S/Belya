@@ -97,7 +97,7 @@ These matter more than table 1, because several run **without the Landlock sandb
 |---|---|---|---|---|---|
 | E1 | belya_harness.c:621 | `/bin/sh -c <cmd>` (tool_bash) | model | C by design | **yes** `:617` |
 | E2 | belya_harness.c:6185 | `bash -c <command>` (background task) | model | C by design | **yes** `:6184` |
-| **E3** | **belya_harness.c:2020 → 2082** | `sh -c <command>` (run_test_cycle) | **model, `PERM_ALLOW`** (`:5492`) | **C** | **no** |
+| **E3** | **belya_harness.c:2020 → 2082** | `sh -c <command>` (run_test_cycle) | **model** | **C** | **no** |
 | **E4** | **belya_harness.c:4433/4435** | exec of `.belya/tools/<name>.sh` (define_tool) | **model-authored script** | **C** | **no** |
 | **E5** | **belya_harness.c:3787 → 3802 → 3808 → mcp_client.c:84** | generated script containing `output=$(%s 2>&1)`, then `sh -c` server spawn | **model (`script_cmd`)** | **C** | **no** |
 | E6 | belya_harness.c:5871 | project hook script | repo file | B | no (by design) |
@@ -111,13 +111,22 @@ exec path above is unconfined.
 
 ## 4. Ranked findings
 
-**R1 — `run_test_cycle` is an unconfined, auto-approved shell.** `tool_run_test_cycle`
-reads `command` from the tool JSON (`:2015`), wraps it as `sh -c` (`:2020`), forks and
-`execvp`s it (`:2082`) with **no** `sandbox_apply()` in the child, and the tool is
-registered `PERM_ALLOW` (`:5492`). The model therefore has arbitrary shell execution that
-bypasses both the bash tool's permission tier and its Landlock confinement. This is the
-single most serious item in the phase, and it is not a `system()` site — the plan's
-grep-only scope would have missed it.
+**R1 — `run_test_cycle` is an unconfined shell that the production policy lets through.**
+`tool_run_test_cycle` reads `command` from the tool JSON (`:2015`), wraps it as `sh -c`
+(`:2020`), forks and `execvp`s it (`:2082`) with **no** `sandbox_apply()` in the child, and
+is registered at tier `PERM_ALLOW` (`:5492`).
+
+Precisely what that tier means matters. `permission_classify()` (`permissions.c:289`) only
+applies its destructive/denied-vector checks when the tool is named `bash`; any other name
+falls through to `PERM_TIER_ASK`. `belya_harness_permission_gate()` (`:5789-5800`) then
+resolves an ASK with no approver to **ALLOW** when the mode is permissive — which is the
+default, and the deployed unit sets no `BELYA_PERMISSION_MODE`, so the daemon runs
+permissive. The result is a tool that executes a model-supplied command line with
+(a) none of the destructive-command screening `bash` gets, and (b) no kernel confinement.
+Only `tool_bash` (`:617`) and the background PTY (`:6184`) call `sandbox_apply()`.
+
+Under `BELYA_PERMISSION_MODE=strict` the same call is denied — so this is a policy
+dependency, not a hard guarantee, and the strict path is not what production runs today.
 
 **R2 — `dispatch_worker_task` interpolates a model-supplied command.** `test_cmd` comes
 straight from tool args (`:3676`) and lands in `cd "wt" && %s` executed by `popen`
@@ -149,7 +158,7 @@ equivalent to code execution with the daemon's own privileges.
 | 3.3a | S1, S2 | `run_argv()` with `git -C <dir> status` / `git diff`, no shell at all | `path = "x; touch /tmp/pwned"` and `--output=/tmp/pwned` both fail closed; `/tmp/pwned` never created |
 | 3.3b | S18 | replace the `printf \| script \| grep` pipeline with fork/exec of the server script plus an in-process JSON comparison | `tool_name = 'x"; touch /tmp/pwned; #'` → refused, server not created |
 | 3.3c | S13 | decide policy (see Q1) then either argv or `sandbox_apply()` + permission tier in the child | metacharacter payload must not create `/tmp/pwned` |
-| 3.3d | E3 | `run_test_cycle`: apply `sandbox_apply()` in the child **and** put the tool behind the same permission tier as `bash`, or drop the free-form `command` parameter | run `command="touch /tmp/pwned"` → blocked; `command="make test"` still works |
+| 3.3d | E3 | `run_test_cycle`: apply `sandbox_apply()` in the child **and** route its `command` through the same destructive/denied-vector checks `bash` gets (today it classifies ASK, which permissive mode turns into ALLOW), or drop the free-form `command` parameter | run `command="touch /tmp/pwned"` → blocked and no file; `command="make test"` still works |
 | 3.3e | E4 | `sandbox_apply()` in the custom-tool child, and refuse `script_path` outside the workspace | tool writing to `/tmp` is denied, tool writing inside the workspace still works |
 | 3.3f | E5 | MCP server command: argv + explicit approval, or config-only | model-supplied `cmd` cannot inject a second command |
 | 3.3g | tools/lint_no_shell.sh | fail the gate on `system(`/`popen(` **and** `execl?("/bin/sh"`, `execlp("bash"`, `"-c"` exec, outside an allowlist with a written reason | add a dummy `system("echo hi")` → gate fails; remove → passes |
