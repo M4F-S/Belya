@@ -4556,6 +4556,12 @@ static char *tool_custom_script_runner(BelyaAgent *agent, const JsonValue *args)
             }
         }
 
+        /* The script is model-authored code, so run it behind the same kernel
+           boundary as tool_bash: Landlock bounds writes to the workspace and
+           /tmp whatever the body says. Before this, define_tool was the one
+           model code path that executed with the daemon's full write access. */
+        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
+
         execl(script_path, script_path, first_val_str, args_str, (char *)NULL);
         // Fallback to /bin/sh if not directly executable binary
         execl("/bin/sh", "sh", script_path, first_val_str, args_str, (char *)NULL);
@@ -4655,6 +4661,31 @@ static char *tool_define_tool(BelyaAgent *agent, const JsonValue *args) {
     return xstrdup("Error: Failed to register custom tool (max tool limit reached or disk write error).");
 }
 
+/* A custom tool is executed by path, and the metadata naming that path is an
+ * ordinary file the model can edit. Only a script that resolves inside
+ * <workspace>/.belya/tools is accepted: an absolute or traversing script_path
+ * would run code from outside the jail, where the definition and the file no
+ * longer mean what the model wrote. */
+static bool custom_tool_script_in_workspace(const char *path) {
+    if (!path || path[0] == '\0' || strstr(path, "..") != NULL) return false;
+    const char *root = g_workspace_root_set
+                           ? g_workspace_root
+                           : (g_harness && g_harness->cwd[0] ? g_harness->cwd : NULL);
+    if (!root) return false;
+
+    char canon_root[4096];
+    char resolved[4096];
+    if (!realpath(root, canon_root)) return false;
+    if (!realpath(path, resolved)) return false;
+
+    char want[4200];
+    snprintf(want, sizeof(want), "%s/.belya/tools/", canon_root);
+    size_t want_len = strlen(want);
+    if (strncmp(resolved, want, want_len) != 0) return false;
+    const char *leaf = resolved + want_len;
+    return leaf[0] != '\0' && strchr(leaf, '/') == NULL;
+}
+
 bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
     if (!h || !name || !script_body || h->tool_count >= 64) {
         if (params) json_free(params);
@@ -4670,6 +4701,13 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
 
     char script_path[512];
     snprintf(script_path, sizeof(script_path), ".belya/tools/%s.sh", name);
+
+    /* tool_bash can move the process CWD, so '.belya' is not necessarily inside
+       the jail. Refuse to author a tool whose script would land outside it. */
+    if (!is_path_jailed(script_path, NULL, true)) {
+        if (params) json_free(params);
+        return false;
+    }
 
     FILE *sf = fopen(script_path, "wb");
     if (!sf) {
@@ -4749,7 +4787,8 @@ void belya_harness_load_custom_tools(BelyaHarness *h) {
                         const char *s_path = json_obj_get_str(meta, "script_path");
                         JsonValue *t_schema = json_obj_get(meta, "parameters");
 
-                        if (t_name && s_path && h->tool_count < 64) {
+                        if (t_name && s_path && h->tool_count < 64 &&
+                            custom_tool_script_in_workspace(s_path)) {
                             // Check if already registered
                             bool exists = false;
                             for (size_t k = 0; k < h->tool_count; k++) {
