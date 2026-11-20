@@ -31,4 +31,11 @@ jobs:
           grep -q "retry-after: 0 failures" /tmp/gate.log
           grep -q "compaction: PASSED" /tmp/gate.log
           grep -q "SUMMARY: OK=6" /tmp/gate.log
+          # "All Tests Passed" is printed unconditionally, and a test that cannot
+          # run prints SKIPPED. Require the confinement markers themselves so a
+          # skipped security test cannot pass the gate as a green run.
+          grep -q "define_tool confinement PASSED" /tmp/gate.log
+          grep -q "define_tool jail invariant PASSED" /tmp/gate.log
+          grep -q "canonical execution path PASSED" /tmp/gate.log
+          grep -q "in-workspace metadata load PASSED" /tmp/gate.log
           echo "gate: all markers present"
