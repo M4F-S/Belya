@@ -15,6 +15,22 @@
  */
 int sandbox_apply(const char *workspace);
 
+/* Child-process wrapper: call this instead of sandbox_apply() in a forked child.
+ *
+ * sandbox_apply() reports failure, but every caller ignored the return value, so
+ * a kernel that advertises Landlock and then refuses to confine the process left
+ * it running unconfined with no trace. This applies the boundary and decides
+ * whether running anyway is legitimate: it returns for a confined child and for
+ * one the kernel cannot confine at all (no Landlock, or BELYA_SANDBOX=0), and
+ * _exit(126) when a boundary was available and would not take.
+ */
+void sandbox_confine_child(const char *workspace);
+
+/* The decision behind sandbox_confine_child(), pure so it can be tested:
+ * apply_rc is sandbox_apply()'s return value, abi is Landlock's ABI (-1 when the
+ * kernel has none). 1 = the child may run unconfined, 0 = it must not. */
+int sandbox_allow_unconfined(int apply_rc, int abi);
+
 /* 1 = Landlock usable on this kernel, 0 = not. */
 int sandbox_supported(void);
 

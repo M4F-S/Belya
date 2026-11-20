@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is canonicalised the same way (`belya_harness.c`).
 - `define_tool` no longer creates `.belya`/`.belya/tools` in a directory outside the jail before
   refusing, and a custom tool dropped at load now says why on stderr instead of disappearing.
+- A child the kernel refuses to confine no longer runs anyway. `sandbox_confine_child()`
+  (`sandbox.c`) aborts with a FATAL line when Landlock is available and `restrict_self` fails, and
+  continues — with a warning — only when the kernel has no Landlock at all or `BELYA_SANDBOX=0`.
+  Wired into bash, `run_test_cycle`, `spawn_capture`, the PTY background task manager and custom
+  tools, which all previously ignored `sandbox_apply()`'s return value.
 
 ## [v2.1.0] — 2026-10-14
 ### 🚀 Competitive Parity & Late-2026 Sovereign Architecture Release

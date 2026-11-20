@@ -103,13 +103,41 @@ static int test_network(const char *ws) {
     return 1;
 }
 
+/* The fail-closed rule, independent of the kernel: a child may keep running
+ * unconfined only when no boundary was ever possible or the operator asked for
+ * none (BELYA_SANDBOX=0). A refusal on a kernel that does have Landlock is fatal,
+ * because that is the one case where the child was supposed to be confined. */
+static int test_policy(void) {
+    int fails = 0;
+    struct { int rc; int abi; int want; const char *why; } cases[] = {
+        { 0,  6, 0, "confined child must not be described as unconfined" },
+        { 1, -1, 1, "kernel without Landlock must still run" },
+        { 1,  6, 1, "operator opt-out must still run" },
+        {-1, -1, 1, "refusal on a Landlock-less kernel must still run" },
+        {-1,  6, 0, "refusal on a Landlock kernel must abort" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int got = sandbox_allow_unconfined(cases[i].rc, cases[i].abi);
+        if (got != cases[i].want) {
+            printf("  [FAIL] %s (apply=%d abi=%d -> %d, wanted %d)\n",
+                   cases[i].why, cases[i].rc, cases[i].abi, got, cases[i].want);
+            fails++;
+        }
+    }
+    if (!fails) printf("  [ok] fail-closed policy (no unconfined run when Landlock is available)\n");
+    return fails;
+}
+
 int main(void) {
     int fails = 0;
     printf("[Test] Landlock write confinement\n");
 
+    fails += test_policy();
+
     if (!sandbox_supported()) {
         printf("  [SKIP] Landlock unavailable on this kernel\n");
-        return 0;
+        printf("  sandbox: %s (%d failures)\n", fails ? "FAILED" : "PASSED", fails);
+        return fails ? 1 : 0;
     }
 
     char ws[] = "/tmp/belya_sandbox_wsXXXXXX";
@@ -120,8 +148,9 @@ int main(void) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        int rc = sandbox_apply(ws);
-        if (rc != 0) _exit(10);
+        /* Exercise the wrapper the harness actually calls: it returns for a
+           confined child and _exit(126) when a boundary was refused. */
+        sandbox_confine_child(ws);
 
         char inside[256];
         snprintf(inside, sizeof inside, "%s/probe.txt", ws);
@@ -145,7 +174,7 @@ int main(void) {
     if (code == 0) printf("  [ok] workspace write allowed, outside writes refused\n");
     else {
         printf("  [FAIL] child exited %d (11=ws write blocked 12=/etc write allowed "
-               "13=/root write allowed 10=apply failed)\n", code);
+               "13=/root write allowed 126=sandbox refused)\n", code);
         fails++;
     }
 

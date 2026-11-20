@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <linux/landlock.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
@@ -76,6 +77,40 @@ static int ll_restrict(int fd, uint32_t flags) {
 int sandbox_supported(void) {
     int abi = ll_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
     return abi > 0;
+}
+
+/* The ABI the kernel actually offers, or -1 when the syscall is absent or
+ * blocked. Only probed on the failure path, so the confined case pays nothing. */
+static int ll_abi(void) {
+    int abi = ll_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    return abi > 0 ? abi : -1;
+}
+
+int sandbox_allow_unconfined(int apply_rc, int abi) {
+    if (apply_rc == 0) return 0; /* confined */
+    if (apply_rc > 0) return 1;  /* no boundary requested, or none possible */
+    /* Refused by the kernel: tolerable only where Landlock does not exist. */
+    return abi > 0 ? 0 : 1;
+}
+
+void sandbox_confine_child(const char *workspace) {
+    int rc = sandbox_apply(workspace);
+    if (rc == 0) return;
+
+    int abi = ll_abi();
+    if (sandbox_allow_unconfined(rc, abi)) {
+        /* rc > 0: no boundary was requested or possible; -1 with no ABI: nothing
+           to enforce. Stay quiet here: this runs in the child with stderr wired
+           to the tool's output pipe, so a line per command would land in every
+           tool result. The harness reports the missing boundary once at startup. */
+        return;
+    }
+
+    fprintf(stderr,
+            "[sandbox] FATAL: Landlock (ABI %d) is available but refused to confine "
+            "this child; refusing to run it unconfined\n",
+            abi);
+    _exit(126);
 }
 
 static int allow_path(int ruleset_fd, const char *path, uint64_t rights) {
@@ -161,6 +196,15 @@ int sandbox_supported(void) {
 int sandbox_apply(const char *workspace) {
     (void)workspace;
     return 1; /* 1 = unsupported (caller continues unconfined) */
+}
+
+int sandbox_allow_unconfined(int apply_rc, int abi) {
+    (void)abi;
+    return apply_rc != 0 ? 1 : 0;
+}
+
+void sandbox_confine_child(const char *workspace) {
+    (void)workspace; /* no kernel boundary on this platform; nothing to refuse */
 }
 
 #endif
