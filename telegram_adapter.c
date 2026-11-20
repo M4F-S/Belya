@@ -337,6 +337,22 @@ static bool telegram_send_pre_blocks(TelegramBot *bot, const char *chat_id,
     return true;
 }
 
+/* Per-message tool-step budget.
+ *
+ * The old hard-coded 10 steps could not carry a multi-phase job (self-audit,
+ * migration, large refactor): the turn was force-summarised half way and the
+ * work had to be resumed by hand, one user message at a time. Operators can
+ * now raise it with BELYA_TELEGRAM_MAX_STEPS without a rebuild. Clamped to
+ * 1..100 so a typo cannot start an unbounded turn.
+ */
+static int telegram_step_budget(void) {
+    const char *env = getenv("BELYA_TELEGRAM_MAX_STEPS");
+    int steps = (env && *env) ? atoi(env) : 10;
+    if (steps < 1) steps = 1;
+    if (steps > 100) steps = 100;
+    return steps;
+}
+
 typedef struct {
     TelegramBot *bot;
     char chat_id[64];
@@ -1113,7 +1129,8 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                 belya_agent_add_message(harness->agent, "user", text);
 
                 bool turn_running = true;
-                int max_steps = 10; // Adaptive high-speed step budget
+                int max_steps = telegram_step_budget();
+                printf("[Telegram] step budget: %d steps for this message\n", max_steps);
                 double status_msg_id = 0;
                 char last_status_text[256] = {0};
                 char *final_response_text = NULL;
