@@ -5599,6 +5599,129 @@ static void test_run_test_cycle_is_confined(void) {
     printf("  -> confinement PASSED (inside written, outside denied)\n");
 }
 
+/* define_tool persists a model-authored shell script and executes it by path.
+ * The body is model code, so the child must sit behind the same kernel boundary
+ * as tool_bash; and the metadata that names the script is a file the model can
+ * edit, so a script_path resolving outside the workspace must be refused at
+ * load rather than trusted. */
+static void test_custom_tool_execution_is_confined(void) {
+    printf("[Test] define_tool scripts run confined to the workspace...\n");
+    if (!sandbox_supported()) {
+        printf("  -> SKIPPED (no Landlock on this kernel)\n");
+        return;
+    }
+    const char *home = getenv("HOME");
+    if (!home || !*home) {
+        printf("  -> SKIPPED (HOME unset)\n");
+        return;
+    }
+
+    long pid = (long)getpid();
+    char inside[128], outside[1024], script[1600];
+    snprintf(inside, sizeof(inside), "belya_ct_probe_%ld", pid);
+    snprintf(outside, sizeof(outside), "%s/belya_ct_probe_%ld", home, pid);
+    snprintf(script, sizeof(script),
+             "#!/bin/sh\ntouch %s\ntouch %s\necho CUSTOM_TOOL_CONFINED_PROBE\n",
+             inside, outside);
+    unlink(inside);
+    unlink(outside);
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    bool def_ok = belya_harness_define_custom_tool(h, "confinement_probe",
+                                                  "A probe that must run sandboxed",
+                                                  params, script);
+    assert(def_ok == true);
+
+    BelyaRegisteredTool *t = &h->tools[h->tool_count - 1];
+    assert(strcmp(t->name, "confinement_probe") == 0);
+    char *obs = t->callback(agent, NULL);
+    assert(obs != NULL);
+    assert(strstr(obs, "CUSTOM_TOOL_CONFINED_PROBE") != NULL);
+    free(obs);
+
+    /* Positive control first: a denial proves nothing if the body never ran. */
+    if (access(inside, F_OK) != 0) {
+        unlink(outside);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"custom tool did not execute its in-workspace write");
+    }
+    unlink(inside);
+
+    if (access(outside, F_OK) == 0) {
+        unlink(outside);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"custom tool wrote outside the workspace");
+    }
+
+    /* Part two: metadata is model-writable, so a script_path pointing outside
+       the workspace must not load a callable tool at all. */
+    char tname[64], evil_script[1024], evil_meta[512];
+    snprintf(tname, sizeof(tname), "outside_probe_%ld", pid);
+    snprintf(evil_script, sizeof(evil_script), "%s/belya_ct_outside_%ld.sh", home, pid);
+    snprintf(evil_meta, sizeof(evil_meta), ".belya/tools/%s.json", tname);
+    unlink(evil_script);
+    unlink(evil_meta);
+
+    bool evil_written = false;
+    FILE *ef = fopen(evil_script, "wb");
+    if (ef) {
+        fprintf(ef, "#!/bin/sh\necho OUTSIDE_TOOL_LOADED\n");
+        fclose(ef);
+        chmod(evil_script, 0755);
+        evil_written = true;
+    }
+    bool meta_written = false;
+    FILE *mf = fopen(evil_meta, "wb");
+    if (mf) {
+        fprintf(mf, "{\"name\":\"%s\",\"description\":\"probe\","
+                    "\"parameters\":{\"type\":\"object\"},\"script_path\":\"%s\"}\n",
+                tname, evil_script);
+        fclose(mf);
+        meta_written = true;
+    }
+
+    if (!evil_written || !meta_written) {
+        /* Cannot plant the probe: do not report a pass we did not earn. */
+        if (evil_written) unlink(evil_script);
+        if (meta_written) unlink(evil_meta);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        printf("  -> SKIPPED (could not plant the metadata probe)\n");
+        return;
+    }
+
+    belya_harness_load_custom_tools(h);
+    bool loaded = false;
+    for (size_t i = 0; i < h->tool_count; i++) {
+        if (strcmp(h->tools[i].name, tname) == 0) loaded = true;
+    }
+    unlink(evil_meta);
+    unlink(evil_script);
+    if (loaded) {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"a script_path outside the workspace was registered as a tool");
+    }
+
+    unlink(".belya/tools/confinement_probe.sh");
+    unlink(".belya/tools/confinement_probe.json");
+    rmdir(".belya/tools");
+    rmdir(".belya");
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> define_tool confinement PASSED (inside written, outside denied, "
+           "outside metadata refused)\n");
+}
+
 /* Both git tools used to interpolate the model's path into a shell command. They
  * now exec git with an argv. The two probes below are the difference: a path that
  * looks like an option must stay a pathspec, and a path containing `;` must not
@@ -5787,10 +5910,11 @@ int main(void) {
     test_phase1c1_background_cap();
     test_sigpipe_dead_reader_resilience();
     test_run_test_cycle_is_confined();
+    test_custom_tool_execution_is_confined();
     test_git_tools_take_no_shell();
     test_mcp_synthesis_rejects_hostile_names();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (78/78 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (79/79 - 100%%) ================\n\n");
     return 0;
 }
 
