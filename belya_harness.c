@@ -381,6 +381,7 @@ static char *tool_ast_slice(BelyaAgent *agent, const JsonValue *args);
 /* Workspace root captured at harness init; the shell sandbox anchors here. */
 static char g_workspace_root[4096];
 static bool g_workspace_root_set = false;
+static bool g_sandbox_warned = false;
 
 static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
     (void)agent;
@@ -614,7 +615,7 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
            Plan mode may stack its own stricter policy on top of this. */
         /* H27: anchor Landlock to the root captured at init, never to the mutable
            cwd: tool_bash's cd used to move the confinement root with it. */
-        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
+        if (g_harness) sandbox_confine_child(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         if (g_harness && g_harness->plan_mode) {
             apply_plan_mode_kernel_sandbox();
         }
@@ -1658,7 +1659,7 @@ static int spawn_capture(char *const argv[], const char *stdin_data, const char 
         if (chdir_to && chdir(chdir_to) != 0) _exit(126);
         /* A command string is a command string whichever tool carried it: same
            kernel boundary as the bash tool when the caller asks for it. */
-        if (confine && g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
+        if (confine && g_harness) sandbox_confine_child(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -2167,7 +2168,7 @@ static char *tool_run_test_cycle(BelyaAgent *agent, const JsonValue *args) {
         /* Same kernel boundary as the bash tool. A command string that arrives
            through run_test_cycle is still a command string: without this, the
            tool ran a model-supplied shell line with no workspace jail at all. */
-        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
+        if (g_harness) sandbox_confine_child(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
         execvp(runner_prog, argv_ptr);
         _exit(127);
     }
@@ -4560,7 +4561,7 @@ static char *tool_custom_script_runner(BelyaAgent *agent, const JsonValue *args)
            boundary as tool_bash: Landlock bounds writes to the workspace and
            /tmp whatever the body says. Before this, define_tool was the one
            model code path that executed with the daemon's full write access. */
-        if (g_harness) sandbox_apply(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
+        if (g_harness) sandbox_confine_child(g_workspace_root_set ? g_workspace_root : g_harness->cwd);
 
         execl(script_path, script_path, first_val_str, args_str, (char *)NULL);
         // Fallback to /bin/sh if not directly executable binary
@@ -4959,6 +4960,13 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
             }
             g_workspace_root_set = true;
         }
+    }
+    /* Report a missing boundary once, in the daemon log, instead of from every
+       child (whose stderr is the tool output pipe). */
+    if (!g_sandbox_warned && !sandbox_supported()) {
+        g_sandbox_warned = true;
+        fprintf(stderr, "[sandbox] warning: no usable Landlock on this kernel; "
+                        "tool subprocesses run unconfined\n");
     }
     g_harness = h;
 
@@ -6381,7 +6389,7 @@ int belya_harness_spawn_task(BelyaHarness *h, const char *command) {
         }
         close(master_fd);
         setpgid(0, 0);
-        if (h) sandbox_apply(g_workspace_root_set ? g_workspace_root : h->cwd);
+        if (h) sandbox_confine_child(g_workspace_root_set ? g_workspace_root : h->cwd);
         execlp("bash", "bash", "-c", command, (char *)NULL);
         _exit(127);
     }
