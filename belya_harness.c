@@ -4658,7 +4658,7 @@ static char *tool_define_tool(BelyaAgent *agent, const JsonValue *args) {
         dyn_str_appendf(&res, "Tool '%s' successfully defined, persisted, and registered into active tool catalog.", name);
         return res.data;
     }
-    return xstrdup("Error: Failed to register custom tool (max tool limit reached or disk write error).");
+    return xstrdup("Error: Failed to register custom tool (invalid name, tool limit reached, script path resolves outside the workspace jail, or disk write error).");
 }
 
 /* A custom tool is executed by path, and the metadata naming that path is an
@@ -4666,7 +4666,8 @@ static char *tool_define_tool(BelyaAgent *agent, const JsonValue *args) {
  * <workspace>/.belya/tools is accepted: an absolute or traversing script_path
  * would run code from outside the jail, where the definition and the file no
  * longer mean what the model wrote. */
-static bool custom_tool_script_in_workspace(const char *path) {
+static bool custom_tool_script_in_workspace(const char *path, char *canon_out, size_t canon_sz) {
+    if (canon_out && canon_sz) canon_out[0] = '\0';
     if (!path || path[0] == '\0' || strstr(path, "..") != NULL) return false;
     const char *root = g_workspace_root_set
                            ? g_workspace_root
@@ -4683,7 +4684,11 @@ static bool custom_tool_script_in_workspace(const char *path) {
     size_t want_len = strlen(want);
     if (strncmp(resolved, want, want_len) != 0) return false;
     const char *leaf = resolved + want_len;
-    return leaf[0] != '\0' && strchr(leaf, '/') == NULL;
+    if (leaf[0] == '\0' || strchr(leaf, '/') != NULL) return false;
+    /* Hand back the canonical path: the caller must store and execute this, not
+       the metadata string, which is relative to a CWD tool_bash can move. */
+    if (canon_out && canon_sz) snprintf(canon_out, canon_sz, "%s", resolved);
+    return true;
 }
 
 bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
@@ -4696,14 +4701,35 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
         return false;
     }
 
-    mkdir(".belya", 0755);
-    mkdir(".belya/tools", 0755);
+    /* Author the script under the jail root captured at init, never under the
+       process CWD: tool_bash's `cd` is persistent, so a CWD-relative '.belya'
+       either lands outside the jail or makes every later define_tool fail. */
+    char base_dir[4200];
+    char tools_dir[4200];
+    char script_path[4200];
+    char meta_path[4200];
+    const char *root_src = g_workspace_root_set ? g_workspace_root : (h->cwd[0] ? h->cwd : NULL);
+    char canon_root[4096];
+    if (!root_src || !realpath(root_src, canon_root)) {
+        if (params) json_free(params);
+        return false;
+    }
+    int nb = snprintf(base_dir, sizeof(base_dir), "%s/.belya", canon_root);
+    int nt = snprintf(tools_dir, sizeof(tools_dir), "%s/tools", base_dir);
+    int ns = snprintf(script_path, sizeof(script_path), "%s/%s.sh", tools_dir, name);
+    int nm = snprintf(meta_path, sizeof(meta_path), "%s/%s.json", tools_dir, name);
+    if (nb < 0 || nt < 0 || ns < 0 || nm < 0 ||
+        (size_t)nb >= sizeof(base_dir) || (size_t)nt >= sizeof(tools_dir) ||
+        (size_t)ns >= sizeof(script_path) || (size_t)nm >= sizeof(meta_path)) {
+        if (params) json_free(params);
+        return false;
+    }
 
-    char script_path[512];
-    snprintf(script_path, sizeof(script_path), ".belya/tools/%s.sh", name);
+    mkdir(base_dir, 0755);
+    mkdir(tools_dir, 0755);
 
-    /* tool_bash can move the process CWD, so '.belya' is not necessarily inside
-       the jail. Refuse to author a tool whose script would land outside it. */
+    /* Belt and braces: a symlinked .belya that resolves outside the jail still
+       refuses, even though the path was built from the root. */
     if (!is_path_jailed(script_path, NULL, true)) {
         if (params) json_free(params);
         return false;
@@ -4724,8 +4750,6 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
     chmod(script_path, 0755);
 
     // Save JSON metadata for auto-loading on restart
-    char meta_path[512];
-    snprintf(meta_path, sizeof(meta_path), ".belya/tools/%s.json", name);
     JsonValue *meta = json_create_object();
     json_obj_add(meta, "name", json_create_string(name));
     json_obj_add(meta, "description", json_create_string(desc ? desc : ""));
@@ -4787,8 +4811,19 @@ void belya_harness_load_custom_tools(BelyaHarness *h) {
                         const char *s_path = json_obj_get_str(meta, "script_path");
                         JsonValue *t_schema = json_obj_get(meta, "parameters");
 
-                        if (t_name && s_path && h->tool_count < 64 &&
-                            custom_tool_script_in_workspace(s_path)) {
+                        char canon_script[4096];
+                        bool in_jail = t_name && s_path &&
+                                       custom_tool_script_in_workspace(s_path, canon_script, sizeof(canon_script));
+                        if (t_name && s_path && !in_jail) {
+                            /* A tool that used to load and now cannot must not
+                               vanish silently: the operator log needs the reason
+                               and the offending path. */
+                            fprintf(stderr,
+                                    "[custom-tool] not loaded: '%s' names script_path '%.512s', "
+                                    "which is not inside <workspace>/.belya/tools\n",
+                                    t_name, s_path);
+                        }
+                        if (in_jail && h->tool_count < 64) {
                             // Check if already registered
                             bool exists = false;
                             for (size_t k = 0; k < h->tool_count; k++) {
@@ -4805,7 +4840,7 @@ void belya_harness_load_custom_tools(BelyaHarness *h) {
                                 h->tools[h->tool_count].name = xstrdup(t_name);
                                 h->tools[h->tool_count].security = PERM_ALLOW;
                                 h->tools[h->tool_count].callback = tool_custom_script_runner;
-                                h->tools[h->tool_count].custom_script_path = xstrdup(s_path);
+                                h->tools[h->tool_count].custom_script_path = xstrdup(canon_script);
                                 h->tools[h->tool_count].mcp_client = NULL;
                                 h->tool_count++;
 

@@ -5722,6 +5722,319 @@ static void test_custom_tool_execution_is_confined(void) {
            "outside metadata refused)\n");
 }
 
+/* Remove the script a define_tool call wrote plus its sibling metadata. */
+static void remove_custom_tool_files(const char *script_path) {
+    if (!script_path) return;
+    unlink(script_path);
+    char meta[4200];
+    snprintf(meta, sizeof(meta), "%s", script_path);
+    size_t n = strlen(meta);
+    if (n < 4 || n >= sizeof(meta) - 5 || strcmp(meta + n - 3, ".sh") != 0) return;
+    snprintf(meta + n - 3, sizeof(meta) - (n - 3), "%s", ".json");
+    unlink(meta);
+}
+
+/* define_tool authors a model-authored script. Two properties must hold: it
+ * never creates anything under a CWD that sits outside the jail, and it keeps
+ * working after tool_bash has moved that CWD (otherwise one `cd` silently
+ * disables self-tooling for the rest of the session). */
+static void test_define_tool_jail_invariant(void) {
+    printf("[Test] define_tool authors inside the jail whatever the CWD...\n");
+    char saved[4096];
+    if (!getcwd(saved, sizeof(saved))) {
+        printf("  -> SKIPPED (getcwd failed)\n");
+        return;
+    }
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    long pid = (long)getpid();
+    char foreign[1024], leaked[1100];
+    snprintf(foreign, sizeof(foreign), "/tmp/belya_dt_%ld", pid);
+    snprintf(leaked, sizeof(leaked), "%s/.belya", foreign);
+    mkdir(foreign, 0755);
+    if (chdir(foreign) != 0) {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        rmdir(foreign);
+        printf("  -> SKIPPED (could not enter a directory outside the jail)\n");
+        return;
+    }
+
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    bool ok = belya_harness_define_custom_tool(h, "cwd_probe", "cwd probe", params,
+                                               "#!/bin/sh\necho CWD_PROBE_OK\n");
+    bool side_effect = access(leaked, F_OK) == 0;
+    int back = chdir(saved);
+    (void)back;
+
+    if (side_effect) {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"define_tool created .belya under a CWD outside the jail");
+    }
+    if (!ok) {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"define_tool stopped working after the CWD moved");
+    }
+
+    BelyaRegisteredTool *t = &h->tools[h->tool_count - 1];
+    assert(strcmp(t->name, "cwd_probe") == 0);
+    if (!t->custom_script_path || t->custom_script_path[0] != '/') {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"custom tool did not record an absolute script path");
+    }
+    if (access(t->custom_script_path, F_OK) != 0) {
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"the authored script does not exist");
+    }
+    if (strncmp(t->custom_script_path, foreign, strlen(foreign)) == 0) {
+        remove_custom_tool_files(t->custom_script_path);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        assert(!"the authored script landed outside the jail");
+    }
+
+    rmdir(leaked);
+    rmdir(foreign);
+    remove_custom_tool_files(t->custom_script_path);
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> define_tool jail invariant PASSED (authored inside, no CWD side effect)\n");
+}
+
+/* The tool an operator approved must be the file the guard validated. Before
+ * the canonical-path fix, define_tool stored '.belya/tools/<name>.sh', so a
+ * persistent `cd` made the same tool execute a same-named script elsewhere. */
+static void test_custom_tool_exec_uses_canonical_path(void) {
+    printf("[Test] a moved CWD cannot redirect an approved custom tool...\n");
+    char saved[4096];
+    if (!getcwd(saved, sizeof(saved))) {
+        printf("  -> SKIPPED (getcwd failed)\n");
+        return;
+    }
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    long pid = (long)getpid();
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    bool ok = belya_harness_define_custom_tool(h, "canon_probe", "canonical path probe", params,
+                                               "#!/bin/sh\necho CANON_PROBE_OK\n");
+    assert(ok == true);
+    BelyaRegisteredTool *t = &h->tools[h->tool_count - 1];
+    assert(strcmp(t->name, "canon_probe") == 0);
+
+    char foreign[1024], d1[1100], d2[1200], fscript[1300];
+    snprintf(foreign, sizeof(foreign), "/tmp/belya_canon_%ld", pid);
+    snprintf(d1, sizeof(d1), "%s/.belya", foreign);
+    snprintf(d2, sizeof(d2), "%s/tools", d1);
+    snprintf(fscript, sizeof(fscript), "%s/canon_probe.sh", d2);
+    unlink(fscript);
+    mkdir(foreign, 0755);
+    mkdir(d1, 0755);
+    mkdir(d2, 0755);
+
+    bool planted = false;
+    FILE *ff = fopen(fscript, "wb");
+    if (ff) {
+        fprintf(ff, "#!/bin/sh\necho SPOOFED_TOOL_BODY\n");
+        fclose(ff);
+        chmod(fscript, 0755);
+        planted = true;
+    }
+
+    if (planted && chdir(foreign) == 0) {
+        /* What the dispatcher does before invoking a custom tool. */
+        g_active_custom_script_path = t->custom_script_path;
+        char *obs = t->callback(agent, NULL);
+        g_active_custom_script_path = NULL;
+        int back = chdir(saved);
+        (void)back;
+        assert(obs != NULL);
+        bool spoofed = strstr(obs, "SPOOFED_TOOL_BODY") != NULL;
+        bool correct = strstr(obs, "CANON_PROBE_OK") != NULL;
+        free(obs);
+        unlink(fscript);
+        rmdir(d2);
+        rmdir(d1);
+        rmdir(foreign);
+        remove_custom_tool_files(t->custom_script_path);
+        if (spoofed || !correct) {
+            belya_harness_free(h);
+            model_gateway_free(gw);
+            assert(!"a moved CWD redirected the custom tool to another script");
+        }
+    } else {
+        int back = chdir(saved);
+        (void)back;
+        unlink(fscript);
+        rmdir(d2);
+        rmdir(d1);
+        rmdir(foreign);
+        remove_custom_tool_files(t->custom_script_path);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        printf("  -> SKIPPED (could not plant the redirect probe)\n");
+        return;
+    }
+
+    belya_harness_free(h);
+    model_gateway_free(gw);
+    printf("  -> canonical execution path PASSED (moved CWD could not redirect the tool)\n");
+}
+
+/* Positive control for the load guard: a tool whose metadata resolves inside
+ * the workspace must still be registered. Without this, a guard that rejects
+ * everything (every custom tool vanishing after a restart) passes the suite. */
+static void test_legit_custom_tool_metadata_loads(void) {
+    printf("[Test] in-workspace custom tool metadata still loads...\n");
+    char saved[4096];
+    if (!getcwd(saved, sizeof(saved))) {
+        printf("  -> SKIPPED (getcwd failed)\n");
+        return;
+    }
+
+    ModelGateway *gw = model_gateway_init("http://localhost:11434/v1/chat/completions", "none", "hermes-3");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    JsonValue *params = json_create_object();
+    json_obj_add(params, "type", json_create_string("object"));
+    bool ok = belya_harness_define_custom_tool(h, "anchor_probe", "anchor", params,
+                                               "#!/bin/sh\necho ANCHOR\n");
+    assert(ok == true);
+    BelyaRegisteredTool *anchor = &h->tools[h->tool_count - 1];
+
+    /* Derive the jail's tools directory from the path the harness authored. */
+    char tools_dir[4096];
+    snprintf(tools_dir, sizeof(tools_dir), "%s", anchor->custom_script_path);
+    char *slash = strrchr(tools_dir, '/');
+    if (!slash) {
+        remove_custom_tool_files(anchor->custom_script_path);
+        belya_harness_free(h);
+        model_gateway_free(gw);
+        printf("  -> SKIPPED (cannot derive the tools directory)\n");
+        return;
+    }
+    *slash = '\0';
+
+    char rel_script[4200], rel_meta[4200], rel_body[4400];
+    char abs_script[4200], abs_meta[4200], abs_body[4400];
+    snprintf(rel_script, sizeof(rel_script), "%s/legit_rel_probe.sh", tools_dir);
+    snprintf(rel_meta, sizeof(rel_meta), "%s/legit_rel_probe.json", tools_dir);
+    snprintf(abs_script, sizeof(abs_script), "%s/legit_abs_probe.sh", tools_dir);
+    snprintf(abs_meta, sizeof(abs_meta), "%s/legit_abs_probe.json", tools_dir);
+    /* Two shapes must both load: the legacy metadata that names a path relative
+       to the workspace root, and the absolute path define_tool writes now. */
+    snprintf(rel_body, sizeof(rel_body),
+             "{\"name\":\"legit_rel_probe\",\"description\":\"legacy\","
+             "\"parameters\":{\"type\":\"object\"},"
+             "\"script_path\":\".belya/tools/legit_rel_probe.sh\"}\n");
+    snprintf(abs_body, sizeof(abs_body),
+             "{\"name\":\"legit_abs_probe\",\"description\":\"current\","
+             "\"parameters\":{\"type\":\"object\"},\"script_path\":\"%s\"}\n",
+             abs_script);
+    unlink(rel_script);
+    unlink(rel_meta);
+    unlink(abs_script);
+    unlink(abs_meta);
+
+    bool planted = false;
+    {
+        FILE *s1 = fopen(rel_script, "wb");
+        FILE *s2 = fopen(abs_script, "wb");
+        if (s1 && s2) {
+            fprintf(s1, "#!/bin/sh\necho LEGIT_REL_LOADED\n");
+            fprintf(s2, "#!/bin/sh\necho LEGIT_ABS_LOADED\n");
+            fclose(s1);
+            fclose(s2);
+            chmod(rel_script, 0755);
+            chmod(abs_script, 0755);
+            FILE *m1 = fopen(rel_meta, "wb");
+            FILE *m2 = fopen(abs_meta, "wb");
+            if (m1 && m2) {
+                fwrite(rel_body, 1, strlen(rel_body), m1);
+                fwrite(abs_body, 1, strlen(abs_body), m2);
+                fclose(m1);
+                fclose(m2);
+                planted = true;
+            } else {
+                if (m1) fclose(m1);
+                if (m2) fclose(m2);
+            }
+        } else {
+            if (s1) fclose(s1);
+            if (s2) fclose(s2);
+        }
+    }
+
+    bool registered = false;
+    bool canonical = false;
+    if (planted) {
+        /* The scan is CWD-relative, so stand in the jail root while it runs. */
+        char root[4096];
+        snprintf(root, sizeof(root), "%s", tools_dir);
+        char *mark = strstr(root, "/.belya/tools");
+        if (mark) *mark = '\0';
+        int moved = (root[0] != '\0') ? chdir(root) : -1;
+        belya_harness_load_custom_tools(h);
+        int back = chdir(saved);
+        (void)back;
+        if (moved != 0) {
+            unlink(rel_script);
+            unlink(rel_meta);
+            unlink(abs_script);
+            unlink(abs_meta);
+            remove_custom_tool_files(anchor->custom_script_path);
+            belya_harness_free(h);
+            model_gateway_free(gw);
+            printf("  -> SKIPPED (could not enter the workspace root)\n");
+            return;
+        }
+        bool rel_ok = false, abs_ok = false;
+        for (size_t i = 0; i < h->tool_count; i++) {
+            if (strcmp(h->tools[i].name, "legit_rel_probe") == 0) {
+                rel_ok = true;
+                /* The legacy relative path must be stored canonically, or the
+                   exec below resolves it against a CWD tool_bash can move. */
+                if (h->tools[i].custom_script_path && h->tools[i].custom_script_path[0] == '/')
+                    canonical = true;
+            }
+            if (strcmp(h->tools[i].name, "legit_abs_probe") == 0) abs_ok = true;
+        }
+        registered = rel_ok && abs_ok;
+    }
+
+    unlink(rel_script);
+    unlink(rel_meta);
+    unlink(abs_script);
+    unlink(abs_meta);
+    remove_custom_tool_files(anchor->custom_script_path);
+    belya_harness_free(h);
+    model_gateway_free(gw);
+
+    if (!planted) {
+        printf("  -> SKIPPED (could not plant the positive control)\n");
+        return;
+    }
+    assert(registered == true);
+    assert(canonical == true);
+    printf("  -> in-workspace metadata load PASSED (relative and absolute both register)\n");
+}
+
 /* Both git tools used to interpolate the model's path into a shell command. They
  * now exec git with an argv. The two probes below are the difference: a path that
  * looks like an option must stay a pathspec, and a path containing `;` must not
@@ -5911,10 +6224,13 @@ int main(void) {
     test_sigpipe_dead_reader_resilience();
     test_run_test_cycle_is_confined();
     test_custom_tool_execution_is_confined();
+    test_define_tool_jail_invariant();
+    test_custom_tool_exec_uses_canonical_path();
+    test_legit_custom_tool_metadata_loads();
     test_git_tools_take_no_shell();
     test_mcp_synthesis_rejects_hostile_names();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (79/79 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (82/82 - 100%%) ================\n\n");
     return 0;
 }
 

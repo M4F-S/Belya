@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stateful `2025-11-25` flow (initialize + `Mcp-Session-Id`) when a server rejects the modern
   request with HTTP 400. Verified against the official `@modelcontextprotocol/sdk` server.
 
+### 🔧 Fixed
+- `define_tool` no longer lets a moved CWD decide where a custom tool lives or which file it
+  runs. The script is authored under the workspace root captured at init (not `./.belya`), and
+  the registered script path is canonical, so `tool_bash`'s persistent `cd` can no longer make an
+  approved tool execute a same-named script outside `<workspace>/.belya/tools`. Loaded metadata
+  is canonicalised the same way (`belya_harness.c`).
+- `define_tool` no longer creates `.belya`/`.belya/tools` in a directory outside the jail before
+  refusing, and a custom tool dropped at load now says why on stderr instead of disappearing.
 
 ## [v2.1.0] — 2026-10-14
 ### 🚀 Competitive Parity & Late-2026 Sovereign Architecture Release
