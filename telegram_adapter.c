@@ -39,7 +39,7 @@ static JsonValue *telegram_http_post(TelegramBot *bot, const char *method, const
     char *json_body = payload ? json_serialize(payload) : xstrdup("{}");
 
     struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Content-Type: application/json; charset=utf-8");
 
     DynString response_body = dyn_str_new();
 

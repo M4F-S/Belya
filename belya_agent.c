@@ -197,7 +197,14 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
             NULL
         };
         for (int mi = 0; migrations[mi]; mi++) {
-            sqlite3_exec(agent->db, migrations[mi], 0, 0, 0);
+            char *err_msg = NULL;
+            int mrc = sqlite3_exec(agent->db, migrations[mi], 0, 0, &err_msg);
+            if (mrc != SQLITE_OK && err_msg) {
+                if (strstr(err_msg, "duplicate column") == NULL) {
+                    fprintf(stderr, "[SQLite Migration Warning]: %s (rc=%d: %s)\n", migrations[mi], mrc, err_msg);
+                }
+                sqlite3_free(err_msg);
+            }
         }
 
         /* Phase 1a: subagent tables. Additive and idempotent, so a fresh DB and
@@ -226,8 +233,12 @@ BelyaAgent *belya_agent_init(ModelGateway *gw, const char *db_path, const char *
         if (agent->has_fts5) {
             const char *trig4[] = {
                 "CREATE TRIGGER IF NOT EXISTS agent_memory_ai AFTER INSERT ON agent_memory BEGIN "
-                "INSERT INTO agent_memory_fts(rowid, topic, content) VALUES (new.rowid, "
-                "new.topic || ' ' || COALESCE(new.wing,'') || ' ' || COALESCE(new.room,''), new.content); END;",
+                "INSERT INTO agent_memory_fts(rowid, topic, content, wing, room) VALUES (new.rowid, "
+                "new.topic, new.content, COALESCE(new.wing,''), COALESCE(new.room,'')); END;",
+                "CREATE TRIGGER IF NOT EXISTS agent_memory_au AFTER UPDATE ON agent_memory BEGIN "
+                "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; "
+                "INSERT INTO agent_memory_fts(rowid, topic, content, wing, room) VALUES (new.rowid, "
+                "new.topic, new.content, COALESCE(new.wing,''), COALESCE(new.room,'')); END;",
                 "CREATE TRIGGER IF NOT EXISTS agent_memory_ad AFTER DELETE ON agent_memory BEGIN "
                 "DELETE FROM agent_memory_fts WHERE rowid = old.rowid; END;",
                 NULL
@@ -729,35 +740,55 @@ void belya_agent_compact_history_middle_out(BelyaAgent *agent, size_t keep_recen
 
     // Archive intermediate messages into SQLite session_messages_archived
     if (agent->db) {
-        sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0);
-        sqlite3_stmt *stmt = NULL;
-        const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('active', ?, ?, ?, ?);";
-        if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
-            for (size_t i = 2; i < drop_end; i++) {
-                sqlite3_bind_int(stmt, 1, (int)i);
-                sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
-                sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
-                if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
-                    JsonValue *arr = json_create_array();
-                    for (size_t t = 0; t < agent->messages[i].tool_call_count; t++) {
-                        JsonValue *tc_obj = json_create_object();
-                        json_obj_add(tc_obj, "name", json_create_string(agent->messages[i].tool_calls[t].name ? agent->messages[i].tool_calls[t].name : ""));
-                        json_obj_add(tc_obj, "arguments", json_create_string(agent->messages[i].tool_calls[t].arguments_json ? agent->messages[i].tool_calls[t].arguments_json : ""));
-                        json_arr_add(arr, tc_obj);
-                    }
-                    char *tc_str = json_serialize(arr);
-                    sqlite3_bind_text(stmt, 4, tc_str, -1, SQLITE_TRANSIENT);
-                    free(tc_str);
-                    json_free(arr);
-                } else {
-                    sqlite3_bind_null(stmt, 4);
-                }
-                sqlite3_step(stmt);
-                sqlite3_reset(stmt);
+        sqlite3_exec(agent->db, "INSERT OR IGNORE INTO sessions (id, title) VALUES ('active', 'Active Compaction Archive');", 0, 0, 0);
+        int base_idx = 0;
+        sqlite3_stmt *cnt_stmt = NULL;
+        if (sqlite3_prepare_v2(agent->db, "SELECT COALESCE(MAX(turn_idx), 0) FROM session_messages_archived WHERE session_id = 'active';", -1, &cnt_stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+                base_idx = sqlite3_column_int(cnt_stmt, 0);
             }
-            sqlite3_finalize(stmt);
+            sqlite3_finalize(cnt_stmt);
         }
-        sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+        if (sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0) == SQLITE_OK) {
+            sqlite3_stmt *stmt = NULL;
+            const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('active', ?, ?, ?, ?);";
+            bool archive_ok = true;
+            if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
+                for (size_t i = 2; i < drop_end; i++) {
+                    int turn_num = base_idx + (int)(i - 1);
+                    sqlite3_bind_int(stmt, 1, turn_num);
+                    sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
+                    sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
+                    if (agent->messages[i].tool_calls && agent->messages[i].tool_call_count > 0) {
+                        JsonValue *arr = json_create_array();
+                        for (size_t t = 0; t < agent->messages[i].tool_call_count; t++) {
+                            JsonValue *tc_obj = json_create_object();
+                            json_obj_add(tc_obj, "name", json_create_string(agent->messages[i].tool_calls[t].name ? agent->messages[i].tool_calls[t].name : ""));
+                            json_obj_add(tc_obj, "arguments", json_create_string(agent->messages[i].tool_calls[t].arguments_json ? agent->messages[i].tool_calls[t].arguments_json : ""));
+                            json_arr_add(arr, tc_obj);
+                        }
+                        char *tc_str = json_serialize(arr);
+                        sqlite3_bind_text(stmt, 4, tc_str, -1, SQLITE_TRANSIENT);
+                        free(tc_str);
+                        json_free(arr);
+                    } else {
+                        sqlite3_bind_null(stmt, 4);
+                    }
+                    if (sqlite3_step(stmt) != SQLITE_DONE) {
+                        archive_ok = false;
+                    }
+                    sqlite3_reset(stmt);
+                }
+                sqlite3_finalize(stmt);
+            } else {
+                archive_ok = false;
+            }
+            if (archive_ok) {
+                sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+            } else {
+                sqlite3_exec(agent->db, "ROLLBACK;", 0, 0, 0);
+            }
+        }
     }
 
     // Synthesize intermediate summary text
@@ -910,21 +941,38 @@ void belya_agent_compact_5tier(BelyaAgent *agent, CompactTier tier, size_t keep_
         
         // Archive all intermediate messages
         if (agent->db) {
-            sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0);
-            sqlite3_stmt *stmt = NULL;
-            const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('emergency', ?, ?, ?, ?);";
-            if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
-                for (size_t i = 1; i < agent->msg_count - 1; i++) {
-                    sqlite3_bind_int(stmt, 1, (int)i);
-                    sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
-                    sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
-                    sqlite3_bind_null(stmt, 4);
-                    sqlite3_step(stmt);
-                    sqlite3_reset(stmt);
+            sqlite3_exec(agent->db, "INSERT OR IGNORE INTO sessions (id, title) VALUES ('emergency', 'Emergency Compaction Archive');", 0, 0, 0);
+            int base_idx = 0;
+            sqlite3_stmt *cnt_stmt = NULL;
+            if (sqlite3_prepare_v2(agent->db, "SELECT COALESCE(MAX(turn_idx), 0) FROM session_messages_archived WHERE session_id = 'emergency';", -1, &cnt_stmt, NULL) == SQLITE_OK) {
+                if (sqlite3_step(cnt_stmt) == SQLITE_ROW) {
+                    base_idx = sqlite3_column_int(cnt_stmt, 0);
                 }
-                sqlite3_finalize(stmt);
+                sqlite3_finalize(cnt_stmt);
             }
-            sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+            if (sqlite3_exec(agent->db, "BEGIN IMMEDIATE;", 0, 0, 0) == SQLITE_OK) {
+                sqlite3_stmt *stmt = NULL;
+                const char *ins_sql = "INSERT INTO session_messages_archived (session_id, turn_idx, role, content, tool_calls_json) VALUES ('emergency', ?, ?, ?, ?);";
+                bool arch_ok = true;
+                if (sqlite3_prepare_v2(agent->db, ins_sql, -1, &stmt, NULL) == SQLITE_OK) {
+                    for (size_t i = 1; i < agent->msg_count - 1; i++) {
+                        sqlite3_bind_int(stmt, 1, base_idx + (int)i);
+                        sqlite3_bind_text(stmt, 2, agent->messages[i].role ? agent->messages[i].role : "unknown", -1, SQLITE_STATIC);
+                        sqlite3_bind_text(stmt, 3, agent->messages[i].content ? agent->messages[i].content : "", -1, SQLITE_STATIC);
+                        sqlite3_bind_null(stmt, 4);
+                        if (sqlite3_step(stmt) != SQLITE_DONE) arch_ok = false;
+                        sqlite3_reset(stmt);
+                    }
+                    sqlite3_finalize(stmt);
+                } else {
+                    arch_ok = false;
+                }
+                if (arch_ok) {
+                    sqlite3_exec(agent->db, "COMMIT;", 0, 0, 0);
+                } else {
+                    sqlite3_exec(agent->db, "ROLLBACK;", 0, 0, 0);
+                }
+            }
         }
 
         // Save last message
@@ -2526,6 +2574,7 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
                 char auto_msg[96];
                 snprintf(auto_msg, sizeof(auto_msg), "Session auto-saved (turn %zu)", agent->turn_count);
                 belya_agent_log_timeline(agent, "auto_save", auto_msg);
+                sqlite3_wal_checkpoint_v2(agent->db, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
             }
             agent->turns_since_save = 0;
         }

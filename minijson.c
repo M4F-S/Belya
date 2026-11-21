@@ -46,6 +46,32 @@ static char *parse_string_raw(const char **src) {
                     }
                     if (valid) {
                         *src += 4;
+                        if (hex >= 0xD800 && hex <= 0xDBFF && (*src)[1] == '\\' && (*src)[2] == 'u') {
+                            unsigned int hex2 = 0;
+                            int valid2 = 1;
+                            for (int h = 0; h < 4; h++) {
+                                char hc = (*src)[3 + h];
+                                if (!hc) { valid2 = 0; break; }
+                                hex2 <<= 4;
+                                if (hc >= '0' && hc <= '9') hex2 |= (hc - '0');
+                                else if (hc >= 'a' && hc <= 'f') hex2 |= (hc - 'a' + 10);
+                                else if (hc >= 'A' && hc <= 'F') hex2 |= (hc - 'A' + 10);
+                                else { valid2 = 0; break; }
+                            }
+                            if (valid2 && hex2 >= 0xDC00 && hex2 <= 0xDFFF) {
+                                *src += 6;
+                                unsigned int codepoint = 0x10000 + (((hex - 0xD800) << 10) | (hex2 - 0xDC00));
+                                char buf[5] = {
+                                    (char)(0xF0 | ((codepoint >> 18) & 0x07)),
+                                    (char)(0x80 | ((codepoint >> 12) & 0x3F)),
+                                    (char)(0x80 | ((codepoint >> 6) & 0x3F)),
+                                    (char)(0x80 | (codepoint & 0x3F)),
+                                    '\0'
+                                };
+                                dyn_str_append(&ds, buf);
+                                break;
+                            }
+                        }
                         if (hex <= 0x7F) {
                             char buf[2] = {(char)hex, '\0'};
                             dyn_str_append(&ds, buf);
