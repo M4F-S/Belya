@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+_(nothing yet)_
+
+## [v7.5.0] — 2026-11-21
 ### Added
 - Stateless MCP `2026-07-28` HTTP transport (`mcp_http.c` / `mcp_http.h`): JSON-RPC over
   Streamable HTTP with `_meta` inside `params`, `MCP-Protocol-Version` / `Mcp-Method` /

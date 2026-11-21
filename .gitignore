@@ -59,6 +59,9 @@ bench/latest.json
 bench/skills/
 bench/phase0b*.json
 
+# Runtime state (tools authored at runtime, sqlite db, worktrees, mcp caches)
+.belya/
+
 # Dynamic auto-skills & deploy caches
 skills/auto_*
 .deploy_meta
