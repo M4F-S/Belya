@@ -63,7 +63,7 @@ static const char *const k_safe_argv0[] = {
     "stat", "du", "df", "which", "uname", "echo", "printf", "true", "false",
     "date", "sort", "uniq", "cut", "tr", "nl", "diff", "gcc", "cc",
     "clang", "nm", "objdump", "readelf", "sha256sum", "md5sum", "basename",
-    "dirname", "realpath", "tree", "jq", "git", NULL
+    "dirname", "realpath", "tree", "jq", "git", "ps", "uptime", "free", NULL
 };
 
 static const char *const k_safe_git_sub[] = {
@@ -270,7 +270,15 @@ static bool is_read_tool(const char *t) {
      * depends on the call's arguments, not on the tool's name. */
     return strcmp(t, "read_file") == 0 || strcmp(t, "list_dir") == 0 ||
            strcmp(t, "search_files") == 0 || strcmp(t, "git_status") == 0 ||
-           strcmp(t, "git_diff") == 0;
+           strcmp(t, "git_diff") == 0 || strcmp(t, "goto_definition") == 0 ||
+           strcmp(t, "find_callers") == 0 || strcmp(t, "query_ast_graph") == 0 ||
+           strcmp(t, "ast_slice") == 0 || strcmp(t, "lsp_query") == 0 ||
+           strcmp(t, "lsp_definition") == 0 || strcmp(t, "lsp_references") == 0 ||
+           strcmp(t, "audit_security_variants") == 0 || strcmp(t, "cron_list") == 0 ||
+           strcmp(t, "task_list") == 0 || strcmp(t, "task_get") == 0 ||
+           strcmp(t, "check_subagent") == 0 || strcmp(t, "collect_subagent") == 0 ||
+           strcmp(t, "recall_skill") == 0 || strcmp(t, "recall_conversation") == 0 ||
+           strcmp(t, "vps_telemetry") == 0;
 }
 
 static bool is_write_tool(const char *t) {
@@ -280,10 +288,14 @@ static bool is_write_tool(const char *t) {
 
 static bool is_inert_tool(const char *t) {
     return strcmp(t, "todo_write") == 0 || strcmp(t, "todo_read") == 0 ||
-           strcmp(t, "memory_save") == 0 || strcmp(t, "memory_recall") == 0 ||
-           strcmp(t, "send_telegram") == 0 ||
+           strcmp(t, "memory_save") == 0 || strcmp(t, "save_memory") == 0 ||
+           strcmp(t, "memory_recall") == 0 || strcmp(t, "recall_memory") == 0 ||
+           strcmp(t, "save_skill") == 0 || strcmp(t, "task_create") == 0 ||
+           strcmp(t, "task_update") == 0 || strcmp(t, "cron_create") == 0 ||
+           strcmp(t, "cron_tick") == 0 || strcmp(t, "send_telegram") == 0 ||
            strcmp(t, "enter_plan_mode") == 0 || strcmp(t, "task") == 0 ||
-           strcmp(t, "web_search") == 0;
+           strcmp(t, "web_search") == 0 || strcmp(t, "web_fetch") == 0 ||
+           strcmp(t, "ask_user") == 0;
 }
 
 PermTier permission_classify(const char *tool_name, const char *args_json) {

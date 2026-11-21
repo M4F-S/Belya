@@ -401,45 +401,35 @@ static bool tg_edit_html(TelegramBot *bot, const char *chat_id, double msg_id, c
  * in a user's chat. Content deltas accumulate and repaint a single message,
  * throttled to ~1/second because Telegram rate-limits editMessageText.
  */
-/* Turbo mode: auto-approve ASK-tier calls for a bounded window. DENY is not
- * affected - see permission_apply_turbo(). Off by default, armed per operator
- * command or by BELYA_TURBO=1 (24h) so a restart does not silently arm it. */
+/* Turbo mode: auto-approve ASK-tier calls. DENY is not affected -
+ * see permission_apply_turbo(). Armed if BELYA_TURBO=1 in environment,
+ * if persistent marker file exists on disk (default /opt/belya/.turbo),
+ * or for a bounded window via /turbo <minutes>. */
 static time_t g_turbo_until = 0;
-static int g_turbo_forever = 0;
-static int g_turbo_loaded = 0;
 
-/* "Forever" has to survive a restart or it is not forever. A one-byte marker
- * file is the whole persistence layer: present = on, absent = not. */
 static const char *turbo_state_path(void) {
     const char *p = getenv("BELYA_TURBO_FILE");
     return (p && *p) ? p : "/opt/belya/.turbo";
 }
 
-static void turbo_state_load(void) {
-    if (g_turbo_loaded) return;
-    g_turbo_loaded = 1;
-    FILE *f = fopen(turbo_state_path(), "r");
-    if (f) {
-        g_turbo_forever = 1;
-        fclose(f);
-    }
-}
-
 static int turbo_active(void) {
-    turbo_state_load();
-    if (g_turbo_forever) {
-        /* Honour an operator who removed the marker from the shell: the file is
-           the source of truth, not the copy cached at first read. */
-        FILE *f = fopen(turbo_state_path(), "r");
-        if (f) {
-            fclose(f);
-            return 1;
-        }
-        g_turbo_forever = 0;
-    }
+    /* 1. Environment variable override */
     const char *env = getenv("BELYA_TURBO");
-    if (env && env[0] == '1') return 1;
-    return g_turbo_until > time(NULL);
+    if (env && (env[0] == '1' || strcasecmp(env, "true") == 0 || strcasecmp(env, "on") == 0)) {
+        return 1;
+    }
+
+    /* 2. Persistent marker file on disk (default /opt/belya/.turbo) */
+    if (access(turbo_state_path(), F_OK) == 0) {
+        return 1;
+    }
+
+    /* 3. Bounded time-window (/turbo <minutes>) */
+    if (g_turbo_until > time(NULL)) {
+        return 1;
+    }
+
+    return 0;
 }
 
 static void telegram_stream_cb(const char *chunk, bool is_reasoning, void *userdata) {
@@ -816,22 +806,23 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                     const char *arg = text + 6;
                     while (*arg == ' ') arg++;
                     char turbo_msg[320];
-                    turbo_state_load();
                     if (*arg == '\0') {
                         long left = (g_turbo_until > time(NULL)) ? (long)(g_turbo_until - time(NULL)) : 0;
-                        if (g_turbo_forever)
+                        if (access(turbo_state_path(), F_OK) == 0)
                             snprintf(turbo_msg, sizeof(turbo_msg),
                                 "\u26a1 Turbo ON \u2014 permanent (survives restarts). ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
                         else if (left > 0)
                             snprintf(turbo_msg, sizeof(turbo_msg),
                                 "\u26a1 Turbo ON \u2014 %ld min left. ASK gates auto-approve, DENY still blocks.\n/turbo on = permanent, /turbo off = stop.",
                                 left / 60);
+                        else if (turbo_active())
+                            snprintf(turbo_msg, sizeof(turbo_msg),
+                                "\u26a1 Turbo ON \u2014 enabled via BELYA_TURBO environment. ASK gates auto-approve, DENY still blocks.");
                         else
                             snprintf(turbo_msg, sizeof(turbo_msg),
                                 "Turbo OFF. ASK gates prompt with buttons.\n/turbo on = permanent, /turbo 30 = 30 min.");
                     } else if (strcmp(arg, "off") == 0) {
                         g_turbo_until = 0;
-                        g_turbo_forever = 0;
                         if (remove(turbo_state_path()) == 0)
                             snprintf(turbo_msg, sizeof(turbo_msg), "Turbo OFF. Approvals prompt again.");
                         else
@@ -844,7 +835,6 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                         } else {
                             fputc('1', f);
                             fclose(f);
-                            g_turbo_forever = 1;
                             snprintf(turbo_msg, sizeof(turbo_msg),
                                 "\u26a1 Turbo ON \u2014 permanent, survives restarts. ASK gates auto-approve, DENY still blocks.\n/turbo off to stop.");
                         }

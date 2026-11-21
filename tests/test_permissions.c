@@ -79,6 +79,12 @@ int main(void) {
 
     printf("misc\n");
     expect("todo_write", "{}", PERM_TIER_ALLOW);
+    expect("save_memory", "{}", PERM_TIER_ALLOW);
+    expect("recall_memory", "{}", PERM_TIER_ALLOW);
+    expect("vps_telemetry", "{}", PERM_TIER_ALLOW);
+    expect("cron_list", "{}", PERM_TIER_ALLOW);
+    expect("query_ast_graph", "{}", PERM_TIER_ALLOW);
+    expect("web_fetch", "{\"url\":\"https://example.com\"}", PERM_TIER_ALLOW);
     expect("totally_unknown_tool", "{}", PERM_TIER_ASK);
     expect("bash", "{}", PERM_TIER_ASK);
 
