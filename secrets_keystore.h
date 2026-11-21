@@ -11,8 +11,11 @@ extern "C" {
 // Allocate memory pinned in RAM (mlock) and excluded from core dumps (MADV_DONTDUMP)
 void *secrets_alloc_secure(size_t size);
 
-// Secure zeroing with explicit_bzero, munlock, and free
+// Secure zeroing with explicit_bzero/volatile wipe, munlock, and unmap/free
 void secrets_free_secure(void *ptr, size_t size);
+
+// Free secure memory without needing to know the size (header-tracked)
+void secrets_free(void *ptr);
 
 // Duplicate a sensitive string into secure, zero-disk memory
 char *secrets_strdup_secure(const char *s, size_t *out_size);

@@ -13,11 +13,21 @@
 
 #include "secrets_keystore.h"
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <stdio.h>
+
+#define SECRETS_MAGIC 0x53454352U /* "SECR" */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t is_mmap;
+    size_t alloc_size;
+    size_t payload_size;
+} SecureHeader;
 
 static void secure_bzero(void *ptr, size_t size) {
     volatile unsigned char *p = (volatile unsigned char *)ptr;
@@ -28,31 +38,57 @@ void *secrets_alloc_secure(size_t size) {
     if (size == 0) return NULL;
     long page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) page_size = 4096;
-    size_t alloc_size = ((size + (size_t)page_size - 1) / (size_t)page_size) * (size_t)page_size;
 
-    void *ptr = mmap(NULL, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr == MAP_FAILED) {
-        return calloc(1, size);
+    size_t needed = sizeof(SecureHeader) + size;
+    size_t alloc_size = ((needed + (size_t)page_size - 1) / (size_t)page_size) * (size_t)page_size;
+
+    void *raw = mmap(NULL, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) {
+        SecureHeader *hdr = (SecureHeader *)calloc(1, needed);
+        if (!hdr) return NULL;
+        hdr->magic = SECRETS_MAGIC;
+        hdr->is_mmap = 0;
+        hdr->alloc_size = needed;
+        hdr->payload_size = size;
+        return (void *)((char *)hdr + sizeof(SecureHeader));
     }
 
-    (void)mlock(ptr, alloc_size);
+    (void)mlock(raw, alloc_size);
 
 #ifdef MADV_DONTDUMP
-    (void)madvise(ptr, alloc_size, MADV_DONTDUMP);
+    (void)madvise(raw, alloc_size, MADV_DONTDUMP);
 #endif
 
-    return ptr;
+    SecureHeader *hdr = (SecureHeader *)raw;
+    hdr->magic = SECRETS_MAGIC;
+    hdr->is_mmap = 1;
+    hdr->alloc_size = alloc_size;
+    hdr->payload_size = size;
+
+    return (void *)((char *)raw + sizeof(SecureHeader));
+}
+
+void secrets_free(void *ptr) {
+    if (!ptr) return;
+    SecureHeader *hdr = (SecureHeader *)((char *)ptr - sizeof(SecureHeader));
+    if (hdr->magic == SECRETS_MAGIC) {
+        size_t alloc_sz = hdr->alloc_size;
+        uint32_t is_mmap = hdr->is_mmap;
+        secure_bzero(hdr, alloc_sz);
+        if (is_mmap) {
+            (void)munlock(hdr, alloc_sz);
+            (void)munmap(hdr, alloc_sz);
+        } else {
+            free(hdr);
+        }
+    } else {
+        free(ptr);
+    }
 }
 
 void secrets_free_secure(void *ptr, size_t size) {
-    if (!ptr || size == 0) return;
-    long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) page_size = 4096;
-    size_t alloc_size = ((size + (size_t)page_size - 1) / (size_t)page_size) * (size_t)page_size;
-
-    secure_bzero(ptr, alloc_size);
-    (void)munlock(ptr, alloc_size);
-    (void)munmap(ptr, alloc_size);
+    (void)size;
+    secrets_free(ptr);
 }
 
 char *secrets_strdup_secure(const char *s, size_t *out_size) {
@@ -79,29 +115,52 @@ static size_t match_secret_token(const char *p) {
     // sk-or-v1-...
     if (strncmp(p, "sk-or-v1-", 9) == 0) {
         size_t len = 9;
-        while (isxdigit((unsigned char)p[len]) || isalnum((unsigned char)p[len])) len++;
-        if (len >= 30) return len;
+        while (isxdigit((unsigned char)p[len]) || isalnum((unsigned char)p[len]) || p[len] == '-' || p[len] == '_') len++;
+        if (len >= 25) return len;
     }
 
-    // ghp_... or gho_...
-    if (strncmp(p, "ghp_", 4) == 0 || strncmp(p, "gho_", 4) == 0 || strncmp(p, "ghu_", 4) == 0) {
+    // sk-proj-...
+    if (strncmp(p, "sk-proj-", 8) == 0) {
+        size_t len = 8;
+        while (isalnum((unsigned char)p[len]) || p[len] == '-' || p[len] == '_') len++;
+        if (len >= 25) return len;
+    }
+
+    // general sk-... (OpenAI legacy or standard tokens)
+    if (strncmp(p, "sk-", 3) == 0) {
+        size_t len = 3;
+        while (isalnum((unsigned char)p[len]) || p[len] == '-' || p[len] == '_') len++;
+        if (len >= 25) return len;
+    }
+
+    // AWS Access Key ID: AKIA... or ASIA... (exactly 20 alphanumeric characters)
+    if (strncmp(p, "AKIA", 4) == 0 || strncmp(p, "ASIA", 4) == 0) {
+        size_t len = 4;
+        while (isalnum((unsigned char)p[len])) len++;
+        if (len == 20) return len;
+    }
+
+    // ghp_... or gho_... or ghu_... or ghs_... or ghr_...
+    if (strncmp(p, "ghp_", 4) == 0 || strncmp(p, "gho_", 4) == 0 ||
+        strncmp(p, "ghu_", 4) == 0 || strncmp(p, "ghs_", 4) == 0 ||
+        strncmp(p, "ghr_", 4) == 0) {
         size_t len = 4;
         while (isalnum((unsigned char)p[len]) || p[len] == '_') len++;
-        if (len >= 30) return len;
+        if (len >= 25) return len;
     }
 
     // github_pat_...
     if (strncmp(p, "github_pat_", 11) == 0) {
         size_t len = 11;
         while (isalnum((unsigned char)p[len]) || p[len] == '_') len++;
-        if (len >= 40) return len;
+        if (len >= 35) return len;
     }
 
     // tvly-...
     if (strncmp(p, "tvly-", 5) == 0) {
         size_t len = 5;
         while (isalnum((unsigned char)p[len]) || p[len] == '-') len++;
-        if (len >= 25) return len;
+        if (len >= 20) return len;
     }
 
     // Telegram bot token: [0-9]{8,12}:[a-zA-Z0-9_-]{30,45}

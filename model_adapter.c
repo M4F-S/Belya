@@ -1,3 +1,4 @@
+#include "secrets_keystore.h"
 #include "common.h"
 #include "model_adapter.h"
 #include <curl/curl.h>
@@ -1083,7 +1084,7 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     ModelGateway *gw = calloc(1, sizeof(ModelGateway));
     if (!gw) return NULL;
     gw->endpoint = xstrdup(endpoint);
-    gw->api_key = xstrdup(api_key ? api_key : "");
+    gw->api_key = secrets_strdup_secure(api_key ? api_key : "", NULL);
     gw->model = xstrdup(model ? model : "hermes-3");
     const char *ua_env = getenv("MODEL_USER_AGENT");
     gw->user_agent = xstrdup(ua_env && strlen(ua_env) > 0 ? ua_env : "BelyaAgent/4.0 (Autonomous C99 Engine)");
@@ -1138,20 +1139,20 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
 void model_gateway_set_fallback(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model) {
     if (!gw) return;
     if (gw->fallback_endpoint) { free(gw->fallback_endpoint); gw->fallback_endpoint = NULL; }
-    if (gw->fallback_api_key) { free(gw->fallback_api_key); gw->fallback_api_key = NULL; }
+    if (gw->fallback_api_key) { secrets_free(gw->fallback_api_key); gw->fallback_api_key = NULL; }
     if (gw->fallback_model) { free(gw->fallback_model); gw->fallback_model = NULL; }
     if (endpoint && strlen(endpoint) > 0) gw->fallback_endpoint = xstrdup(endpoint);
-    if (api_key && strlen(api_key) > 0) gw->fallback_api_key = xstrdup(api_key);
+    if (api_key && strlen(api_key) > 0) gw->fallback_api_key = secrets_strdup_secure(api_key, NULL);
     if (model && strlen(model) > 0) gw->fallback_model = xstrdup(model);
 }
 
 void model_gateway_set_local(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model) {
     if (!gw) return;
     if (gw->local_endpoint) { free(gw->local_endpoint); gw->local_endpoint = NULL; }
-    if (gw->local_api_key) { free(gw->local_api_key); gw->local_api_key = NULL; }
+    if (gw->local_api_key) { secrets_free(gw->local_api_key); gw->local_api_key = NULL; }
     if (gw->local_model) { free(gw->local_model); gw->local_model = NULL; }
     if (endpoint && strlen(endpoint) > 0) gw->local_endpoint = xstrdup(endpoint);
-    if (api_key && strlen(api_key) > 0) gw->local_api_key = xstrdup(api_key);
+    if (api_key && strlen(api_key) > 0) gw->local_api_key = secrets_strdup_secure(api_key, NULL);
     if (model && strlen(model) > 0) gw->local_model = xstrdup(model);
 }
 
@@ -1162,14 +1163,14 @@ void model_gateway_free(ModelGateway *gw) {
         gw->curl_handle = NULL;
     }
     free(gw->endpoint);
-    free(gw->api_key);
+    secrets_free(gw->api_key);
     free(gw->model);
     free(gw->user_agent);
     if (gw->fallback_endpoint) free(gw->fallback_endpoint);
-    if (gw->fallback_api_key) free(gw->fallback_api_key);
+    if (gw->fallback_api_key) secrets_free(gw->fallback_api_key);
     if (gw->fallback_model) free(gw->fallback_model);
     if (gw->local_endpoint) free(gw->local_endpoint);
-    if (gw->local_api_key) free(gw->local_api_key);
+    if (gw->local_api_key) secrets_free(gw->local_api_key);
     if (gw->local_model) free(gw->local_model);
     free(gw);
 }

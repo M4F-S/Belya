@@ -1,3 +1,4 @@
+#include "secrets_keystore.h"
 #include "common.h"
 #include "jev_client.h"
 #include <curl/curl.h>
@@ -17,7 +18,7 @@ JevClient *jev_client_init(const char *api_key) {
     JevClient *client = calloc(1, sizeof(JevClient));
     if (!client) return NULL;
 
-    client->api_key = xstrdup(api_key);
+    client->api_key = secrets_strdup_secure(api_key, NULL);
     if (!client->api_key) {
         free(client);
         return NULL;
@@ -36,7 +37,7 @@ JevClient *jev_client_init(const char *api_key) {
 
 void jev_client_free(JevClient *client) {
     if (!client) return;
-    if (client->api_key) free(client->api_key);
+    if (client->api_key) secrets_free(client->api_key);
     if (client->base_url) free(client->base_url);
     free(client);
 }

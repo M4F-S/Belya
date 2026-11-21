@@ -3526,15 +3526,17 @@ static void test_secrets_keystore_and_sanitization(void) {
     assert(sec != NULL);
     assert(strcmp(sec, "super_secret_token_12345") == 0);
     assert(sz > 0);
-    secrets_free_secure(sec, sz);
+    secrets_free(sec);
 
-    // 2. Secret token scrubbing
-    const char *dirty = "Here is my key: sk-ant-api03-abcdef1234567890abcdef1234567890 and github token ghp_1234567890abcdefghijklmnopqrstuvwxyz12 and bot 7934918808:AAG7X_wZ0987654321abcdefghijklmnopqrstu.";
+    // 2. Secret token scrubbing (testing Anthropic, GitHub, Telegram, OpenAI sk-proj, AWS AKIA)
+    const char *dirty = "Keys: sk-ant-api03-abcdef1234567890abcdef1234567890 and ghp_1234567890abcdefghijklmnopqrstuvwxyz12 and 7934918808:AAG7X_wZ0987654321abcdefghijklmnopqrstu and sk-proj-1234567890abcdef1234567890abcdef1234567890 and AKIAIOSFODNN7EXAMPLE end.";
     char *clean = secrets_scrub_string(dirty);
     assert(clean != NULL);
     assert(strstr(clean, "sk-ant-") == NULL);
     assert(strstr(clean, "ghp_") == NULL);
     assert(strstr(clean, "7934918808:AAG") == NULL);
+    assert(strstr(clean, "sk-proj-") == NULL);
+    assert(strstr(clean, "AKIAIOSFODNN7EXAMPLE") == NULL);
     assert(strstr(clean, "[REDACTED_SECRET]") != NULL);
     free(clean);
 

@@ -1,3 +1,4 @@
+#include "secrets_keystore.h"
 #include "common.h"
 #include "belya_harness.h"
 #include "sandbox.h"
@@ -4801,6 +4802,11 @@ bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const c
     meta->u.object.members[2].value = NULL;
     json_free(meta);
 
+    if (h->tool_count >= BELYA_HARNESS_MAX_TOOLS) {
+        json_free(meta);
+        return false;
+    }
+
     // Register into active harness
     char *name_copy2 = xstrdup(name);
     if (!name_copy2) {
@@ -8107,8 +8113,8 @@ void belya_harness_repl(BelyaHarness *h) {
                 free(h->agent->gateway->model);
                 h->agent->gateway->model = xstrdup(new_m);
                 if (or_key && strlen(or_key) > 0 && strcmp(or_key, "ollama") != 0 && strcmp(or_key, "none") != 0) {
-                    free(h->agent->gateway->api_key);
-                    h->agent->gateway->api_key = xstrdup(or_key);
+                    secrets_free(h->agent->gateway->api_key);
+                    h->agent->gateway->api_key = secrets_strdup_secure(or_key, NULL);
                 }
                 printf("\033[1;32mSwitched to OpenRouter: Model: %s | Endpoint: %s\033[0m\n", h->agent->gateway->model, h->agent->gateway->endpoint);
                 if (!h->agent->gateway->api_key || strcmp(h->agent->gateway->api_key, "none") == 0 || strcmp(h->agent->gateway->api_key, "ollama") == 0) {
@@ -8144,8 +8150,8 @@ void belya_harness_repl(BelyaHarness *h) {
                 const char *new_k = strlen(input_buf) > 4 ? input_buf + 4 : "";
                 while (*new_k == ' ') new_k++;
                 if (strlen(new_k) > 0) {
-                    free(h->agent->gateway->api_key);
-                    h->agent->gateway->api_key = xstrdup(new_k);
+                    secrets_free(h->agent->gateway->api_key);
+                    h->agent->gateway->api_key = secrets_strdup_secure(new_k, NULL);
                     setenv("OPENROUTER_API_KEY", new_k, 1);
                     setenv("MODEL_API_KEY", new_k, 1);
                     printf("\033[1;32mAPI Key updated successfully.\033[0m\n\n");
@@ -8166,8 +8172,8 @@ void belya_harness_repl(BelyaHarness *h) {
                         h->agent->gateway->endpoint = xstrdup("https://openrouter.ai/api/v1/chat/completions");
                         const char *or_key = getenv("OPENROUTER_API_KEY");
                         if (or_key && strlen(or_key) > 0 && strcmp(or_key, "ollama") != 0) {
-                            free(h->agent->gateway->api_key);
-                            h->agent->gateway->api_key = xstrdup(or_key);
+                            secrets_free(h->agent->gateway->api_key);
+                            h->agent->gateway->api_key = secrets_strdup_secure(or_key, NULL);
                         }
                         printf("\033[1;32mModel set to '%s' (Auto-routed endpoint to OpenRouter: %s)\033[0m\n\n", h->agent->gateway->model, h->agent->gateway->endpoint);
                     } else {
