@@ -3775,11 +3775,43 @@ static char *tool_dispatch_worker_task(BelyaAgent *agent, const JsonValue *args)
 
 // Inter-Agent Mesh & LSP Query Tool Implementations
 
+static char *belya_mesh_incoming_handler(AgentMesh *mesh, const AgentMeshMessage *msg, void *userdata) {
+    (void)mesh;
+    BelyaHarness *h = (BelyaHarness *)userdata;
+    if (!h || !msg) return xstrdup("{\"error\":\"Harness unavailable\"}");
+
+    const char *action = msg->action;
+    if (!action || strlen(action) == 0) action = "status";
+
+    if (strcmp(action, "ping") == 0) {
+        return xstrdup("{\"status\":\"pong\",\"agent\":\"belya\",\"version\":\"7.4.0\"}");
+    }
+
+    if (strcmp(action, "status") == 0) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "{\"agent\":\"belya\",\"role\":\"systems_security\",\"tools_count\":%zu,\"cwd\":\"%s\"}",
+                        h->tool_count, h->cwd);
+        return ds.data;
+    }
+
+    if (strcmp(action, "consult") == 0 || strcmp(action, "ask") == 0) {
+        DynString ds = dyn_str_new();
+        dyn_str_appendf(&ds, "{\"response\":\"[Belya Peer Response]: Acknowledged consultation from '%s'. Systems harness online.\",\"source\":\"belya\"}",
+                        msg->source[0] != '\0' ? msg->source : "peer");
+        return ds.data;
+    }
+
+    return xstrdup("{\"status\":\"ok\",\"agent\":\"belya\"}");
+}
+
 char *belya_mesh_collaborate(BelyaHarness *h, const char *target, const char *action, const char *message) {
     if (!h) return xstrdup("Error: Harness unavailable.");
     if (!h->mesh) {
-        h->mesh = agent_mesh_init("belya", AGENT_MESH_DEFAULT_SOCK_PATH);
-        if (h->mesh) agent_mesh_start(h->mesh);
+        h->mesh = agent_mesh_init("belya", NULL);
+        if (h->mesh) {
+            agent_mesh_set_handler(h->mesh, belya_mesh_incoming_handler, h);
+            agent_mesh_start(h->mesh);
+        }
     }
     if (!h->mesh) {
         return xstrdup("Error: Failed to initialize inter-agent mesh socket.");
@@ -3790,7 +3822,7 @@ char *belya_mesh_collaborate(BelyaHarness *h, const char *target, const char *ac
     if (!resp) {
         DynString ds = dyn_str_new();
         dyn_str_appendf(&ds, "[Agent Mesh IPC]: Peer '%s' offline or did not reply within timeout. Socket: %s",
-                        tgt, AGENT_MESH_DEFAULT_SOCK_PATH);
+                        tgt, agent_mesh_get_socket_path(h->mesh));
         return ds.data;
     }
     return resp;
@@ -4947,8 +4979,11 @@ BelyaHarness *belya_harness_init_bounded(BelyaAgent *agent, const char *tools_wh
     }
     h->tui_hud_enabled = true;
     if (!role_name || strcmp(role_name, "worker") != 0) {
-        h->mesh = agent_mesh_init("belya", AGENT_MESH_DEFAULT_SOCK_PATH);
-        if (h->mesh) agent_mesh_start(h->mesh);
+        h->mesh = agent_mesh_init("belya", NULL);
+        if (h->mesh) {
+            agent_mesh_set_handler(h->mesh, belya_mesh_incoming_handler, h);
+            agent_mesh_start(h->mesh);
+        }
     }
     /* Capture the workspace root exactly once, at first harness init.
        The jail must NOT follow later chdir() calls from tool_bash. */

@@ -235,7 +235,14 @@ AgentMesh *agent_mesh_init(const char *agent_name, const char *socket_path) {
     if (socket_path && strlen(socket_path) > 0) {
         strncpy(mesh->socket_path, socket_path, sizeof(mesh->socket_path) - 1);
     } else {
-        strncpy(mesh->socket_path, AGENT_MESH_DEFAULT_SOCK_PATH, sizeof(mesh->socket_path) - 1);
+        const char *env_path = getenv("AGENT_MESH_SOCK_PATH");
+        if (env_path && strlen(env_path) > 0) {
+            strncpy(mesh->socket_path, env_path, sizeof(mesh->socket_path) - 1);
+        } else if (access("/run/agent-mesh", W_OK) == 0) {
+            strncpy(mesh->socket_path, AGENT_MESH_SHARED_SOCK_PATH, sizeof(mesh->socket_path) - 1);
+        } else {
+            strncpy(mesh->socket_path, AGENT_MESH_DEFAULT_SOCK_PATH, sizeof(mesh->socket_path) - 1);
+        }
     }
 
     mesh->listen_fd = -1;
@@ -288,6 +295,7 @@ bool agent_mesh_start(AgentMesh *mesh) {
         close(srv_fd);
         return false;
     }
+    chmod(mesh->socket_path, 0666);
 
     if (listen(srv_fd, 5) != 0) {
         close(srv_fd);
@@ -453,4 +461,8 @@ void agent_mesh_free(AgentMesh *mesh) {
     pthread_mutex_destroy(&mesh->lock);
     pthread_cond_destroy(&mesh->cond);
     free(mesh);
+}
+
+const char *agent_mesh_get_socket_path(const AgentMesh *mesh) {
+    return mesh ? mesh->socket_path : AGENT_MESH_DEFAULT_SOCK_PATH;
 }

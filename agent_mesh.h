@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 #define AGENT_MESH_DEFAULT_SOCK_PATH "/tmp/belya_almaz_mesh.sock"
+#define AGENT_MESH_SHARED_SOCK_PATH  "/run/agent-mesh/mesh.sock"
 
 typedef struct {
     char source[64];
@@ -48,6 +49,9 @@ bool agent_mesh_is_online(AgentMesh *mesh);
 // Teardown and clean shutdown
 void agent_mesh_stop(AgentMesh *mesh);
 void agent_mesh_free(AgentMesh *mesh);
+
+// Get resolved socket path
+const char *agent_mesh_get_socket_path(const AgentMesh *mesh);
 
 #ifdef __cplusplus
 }
