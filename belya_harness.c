@@ -5904,40 +5904,215 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     h->mcp_servers[h->mcp_server_count++] = client;
 
     JsonValue *tools = mcp_client_list_tools(client);
-    if (tools && tools->type == JSON_ARRAY) {
-        printf("\033[1;32m[MCP] Discovered %zu tools:\033[0m\n", tools->u.array.count);
-        for (size_t i = 0; i < tools->u.array.count; i++) {
-            JsonValue *t = tools->u.array.items[i];
-            const char *t_name = json_obj_get_str(t, "name");
-            const char *t_desc = json_obj_get_str(t, "description");
-            JsonValue *t_schema = json_obj_get(t, "inputSchema");
+    if (!tools || tools->type != JSON_ARRAY) {
+        printf("\033[1;31m[MCP] Server did not return a valid tools list: %s\033[0m\n", server_cmd);
+        h->mcp_server_count--;
+        mcp_client_close(client);
+        if (tools) json_free(tools);
+        return false;
+    }
 
-            if (t_name && h->tool_count < 64) {
-                /* R2 (2026-10-11): discovered MCP tools must respect the tool
-                   whitelist. An empty whitelist keeps the harness unrestricted --
-                   parity with the native registration path (REGISTER_IF_PERMITTED). */
-                if (h->tools_whitelist[0] && !belya_harness_is_tool_whitelisted(h->tools_whitelist, t_name)) {
-                    printf("  - \033[1;31m%s\033[0m: skipped (not in tool whitelist)\n", t_name);
-                    continue;
+    printf("\033[1;32m[MCP] Discovered %zu tools:\033[0m\n", tools->u.array.count);
+    for (size_t i = 0; i < tools->u.array.count; i++) {
+        JsonValue *t = tools->u.array.items[i];
+        const char *t_name = json_obj_get_str(t, "name");
+        const char *t_desc = json_obj_get_str(t, "description");
+        JsonValue *t_schema = json_obj_get(t, "inputSchema");
+
+        if (t_name && h->tool_count < 64) {
+            /* R2 (2026-10-11): discovered MCP tools must respect the tool
+               whitelist. An empty whitelist keeps the harness unrestricted --
+               parity with the native registration path (REGISTER_IF_PERMITTED). */
+            if (h->tools_whitelist[0] && !belya_harness_is_tool_whitelisted(h->tools_whitelist, t_name)) {
+                printf("  - \033[1;31m%s\033[0m: skipped (not in tool whitelist)\n", t_name);
+                continue;
+            }
+            printf("  + \033[1;33m%s\033[0m: %s\n", t_name, t_desc ? t_desc : "");
+            char *mcp_name = xstrdup(t_name);
+            if (!mcp_name) continue;
+            h->tools[h->tool_count].name = mcp_name;
+            h->tools[h->tool_count].security = PERM_ALLOW;
+            h->tools[h->tool_count].callback = NULL;
+            h->tools[h->tool_count].custom_script_path = NULL;
+            h->tools[h->tool_count].mcp_client = client;
+            h->tool_count++;
+
+            char mcp_desc[1024];
+            if (t_desc && strncmp(t_desc, "[MCP]", 5) == 0) {
+                snprintf(mcp_desc, sizeof(mcp_desc), "%s", t_desc);
+            } else {
+                snprintf(mcp_desc, sizeof(mcp_desc), "[MCP] %s", t_desc ? t_desc : "");
+            }
+
+            char *sch_str = t_schema ? json_serialize(t_schema) : xstrdup("{\"type\":\"object\"}");
+            JsonValue *sch_clone = json_parse(sch_str);
+            free(sch_str);
+            belya_agent_register_schema(h->agent, t_name, mcp_desc, sch_clone);
+        }
+    }
+    json_free(tools);
+    return true;
+}
+
+bool belya_harness_load_mcp_config(BelyaHarness *h, const char *config_path) {
+    if (!h) return false;
+    const char *path = config_path;
+    if (!path || !path[0]) path = "mcp_servers.json";
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        const char *env_path = getenv("MCP_CONFIG_PATH");
+        if (env_path && *env_path) {
+            f = fopen(env_path, "rb");
+            if (f) path = env_path;
+        }
+    }
+    if (!f) {
+        if (strcmp(path, "mcp_servers.json") != 0) {
+            f = fopen("mcp_servers.json", "rb");
+            if (f) path = "mcp_servers.json";
+        }
+    }
+    if (!f) {
+        // Optional configuration file: silent return when absent
+        return true;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long fsize = ftell(f);
+    if (fsize <= 0 || fsize > 1024 * 1024) {
+        fclose(f);
+        return false;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    char *buf = malloc((size_t)fsize + 1);
+    if (!buf) {
+        fclose(f);
+        return false;
+    }
+    size_t r = fread(buf, 1, (size_t)fsize, f);
+    buf[r] = '\0';
+    fclose(f);
+
+    JsonValue *root = json_parse(buf);
+    free(buf);
+    if (!root || root->type != JSON_OBJECT) {
+        fprintf(stderr, "\033[1;33m[MCP] Warning: Failed to parse %s as valid JSON object.\033[0m\n", path);
+        if (root) json_free(root);
+        return false;
+    }
+
+    JsonValue *servers = json_obj_get(root, "mcpServers");
+    if (!servers || servers->type != JSON_OBJECT) {
+        json_free(root);
+        return true;
+    }
+
+    printf("\033[1;32m[MCP] Loading persistent MCP server configuration from %s (%zu servers configured)\033[0m\n",
+           path, servers->u.object.count);
+
+    for (size_t s = 0; s < servers->u.object.count; s++) {
+        if (h->mcp_server_count >= 8) {
+            fprintf(stderr, "\033[1;33m[MCP] Reached maximum MCP servers limit (8). Skipping remaining entries.\033[0m\n");
+            break;
+        }
+        if (h->tool_count >= 64) {
+            fprintf(stderr, "\033[1;33m[MCP] Reached maximum tool limit (64). Skipping remaining entries.\033[0m\n");
+            break;
+        }
+
+        const char *server_id = servers->u.object.members[s].key;
+        JsonValue *server_cfg = servers->u.object.members[s].value;
+        if (!server_id || !server_cfg || server_cfg->type != JSON_OBJECT) continue;
+
+        // Propagate environment variables
+        JsonValue *env_val = json_obj_get(server_cfg, "env");
+        if (env_val && env_val->type == JSON_OBJECT) {
+            for (size_t e = 0; e < env_val->u.object.count; e++) {
+                const char *env_k = env_val->u.object.members[e].key;
+                JsonValue *v = env_val->u.object.members[e].value;
+                if (!env_k || !v || v->type != JSON_STRING || !v->u.string) continue;
+
+                const char *raw_v = v->u.string;
+                if (raw_v[0] == '$') {
+                    char clean_name[128];
+                    const char *var_name = NULL;
+                    if (raw_v[1] == '{') {
+                        size_t len = strlen(raw_v);
+                        if (len > 3 && raw_v[len - 1] == '}') {
+                            size_t nlen = len - 3;
+                            if (nlen < sizeof(clean_name)) {
+                                memcpy(clean_name, raw_v + 2, nlen);
+                                clean_name[nlen] = '\0';
+                                var_name = clean_name;
+                            }
+                        }
+                    } else {
+                        var_name = raw_v + 1;
+                    }
+
+                    if (var_name && *var_name) {
+                        const char *resolved = getenv(var_name);
+                        if (resolved && *resolved) {
+                            setenv(env_k, resolved, 1);
+                        }
+                    }
+                } else {
+                    setenv(env_k, raw_v, 1);
                 }
-                printf("  + \033[1;33m%s\033[0m: %s\n", t_name, t_desc ? t_desc : "");
-                char *mcp_name = xstrdup(t_name);
-                if (!mcp_name) continue;
-                h->tools[h->tool_count].name = mcp_name;
-                h->tools[h->tool_count].security = PERM_ALLOW;
-                h->tools[h->tool_count].callback = NULL;
-                h->tools[h->tool_count].custom_script_path = NULL;
-                h->tools[h->tool_count].mcp_client = client;
-                h->tool_count++;
-
-                char *sch_str = t_schema ? json_serialize(t_schema) : xstrdup("{\"type\":\"object\"}");
-                JsonValue *sch_clone = json_parse(sch_str);
-                free(sch_str);
-                belya_agent_register_schema(h->agent, t_name, t_desc ? t_desc : "", sch_clone);
             }
         }
-        json_free(tools);
+
+        const char *url = json_obj_get_str(server_cfg, "url");
+        if (url && (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0)) {
+            if (!belya_harness_connect_mcp(h, url)) {
+                fprintf(stderr, "\033[1;33m[MCP] Warning: Failed to connect to HTTP server '%s' (%s). Continuing boot.\033[0m\n",
+                        server_id, url);
+            }
+        } else {
+            const char *cmd = json_obj_get_str(server_cfg, "command");
+            if (cmd && *cmd) {
+                DynString cmd_ds = dyn_str_new();
+                dyn_str_append(&cmd_ds, cmd);
+
+                JsonValue *args = json_obj_get(server_cfg, "args");
+                if (args && args->type == JSON_ARRAY) {
+                    for (size_t a = 0; a < args->u.array.count; a++) {
+                        JsonValue *arg = args->u.array.items[a];
+                        if (arg && arg->type == JSON_STRING && arg->u.string) {
+                            dyn_str_append(&cmd_ds, " ");
+                            const char *as = arg->u.string;
+                            if (strpbrk(as, " \t\r\n\"'")) {
+                                dyn_str_append(&cmd_ds, "\"");
+                                for (const char *p = as; *p; p++) {
+                                    if (*p == '"' || *p == '\\' || *p == '$') dyn_str_append(&cmd_ds, "\\");
+                                    char ch[2] = {*p, '\0'};
+                                    dyn_str_append(&cmd_ds, ch);
+                                }
+                                dyn_str_append(&cmd_ds, "\"");
+                            } else {
+                                dyn_str_append(&cmd_ds, as);
+                            }
+                        }
+                    }
+                }
+
+                if (!belya_harness_connect_mcp(h, cmd_ds.data)) {
+                    fprintf(stderr, "\033[1;33m[MCP] Warning: Failed to connect to stdio server '%s'. Continuing boot.\033[0m\n",
+                            server_id);
+                }
+                dyn_str_free(&cmd_ds);
+            }
+        }
     }
+    json_free(root);
     return true;
 }
 

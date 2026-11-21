@@ -81,6 +81,10 @@ MCPClient *mcp_client_start(const char *command_line) {
         dup2(stdout_pipe[1], STDOUT_FILENO);
         close(stdout_pipe[1]);
 
+        if (!getenv("XDG_CACHE_HOME")) setenv("XDG_CACHE_HOME", "/tmp/.cache", 1);
+        if (!getenv("npm_config_cache")) setenv("npm_config_cache", "/tmp/.npm", 1);
+        if (!getenv("UV_CACHE_DIR")) setenv("UV_CACHE_DIR", "/tmp/.uv_cache", 1);
+
         execl("/bin/sh", "sh", "-c", command_line, (char *)NULL);
         _exit(127);
     }
@@ -129,14 +133,22 @@ MCPClient *mcp_client_start(const char *command_line) {
     free(req_str);
 
     // Read initialize response
-    char *resp_str = read_line_timeout(client->stdout_fd, 5);
-    if (!resp_str) {
-        mcp_client_close(client);
-        return NULL;
-    }
+    int init_timeout = 15;
+    const char *to_env = getenv("MCP_INIT_TIMEOUT_SEC");
+    if (to_env && atoi(to_env) > 0) init_timeout = atoi(to_env);
 
-    JsonValue *init_resp = json_parse(resp_str);
-    free(resp_str);
+    JsonValue *init_resp = NULL;
+    time_t init_start = time(NULL);
+    while (!init_resp && (time(NULL) - init_start) < init_timeout) {
+        char *resp_str = read_line_timeout(client->stdout_fd, 3);
+        if (!resp_str) continue;
+        const char *p = resp_str;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (*p == '{') {
+            init_resp = json_parse(p);
+        }
+        free(resp_str);
+    }
     if (!init_resp) {
         mcp_client_close(client);
         return NULL;
@@ -191,11 +203,22 @@ JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *
     safe_write(client->stdin_fd, "\n", 1);
     free(req_str);
 
-    char *resp_str = read_line_timeout(client->stdout_fd, 15);
-    if (!resp_str) return NULL;
+    int req_timeout = 15;
+    const char *req_to_env = getenv("MCP_REQ_TIMEOUT_SEC");
+    if (req_to_env && atoi(req_to_env) > 0) req_timeout = atoi(req_to_env);
 
-    JsonValue *resp = json_parse(resp_str);
-    free(resp_str);
+    JsonValue *resp = NULL;
+    time_t req_start = time(NULL);
+    while (!resp && (time(NULL) - req_start) < req_timeout) {
+        char *resp_str = read_line_timeout(client->stdout_fd, 3);
+        if (!resp_str) continue;
+        const char *p = resp_str;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (*p == '{') {
+            resp = json_parse(p);
+        }
+        free(resp_str);
+    }
     return resp;
 }
 

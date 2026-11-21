@@ -206,6 +206,7 @@ void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *
 bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body);
 void belya_harness_load_custom_tools(BelyaHarness *h);
 bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd);
+bool belya_harness_load_mcp_config(BelyaHarness *h, const char *config_path);
 void belya_harness_repl(BelyaHarness *h);
 void belya_harness_execute_turn(BelyaHarness *h, const char *prompt);
 void belya_harness_reset_turn_state(BelyaHarness *h);
