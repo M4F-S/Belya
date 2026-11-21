@@ -13,11 +13,7 @@
     },
     "serena": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/oraios/serena", "serena-mcp", "--project-dir", "."]
-    },
-    "semgrep": {
-      "command": "uvx",
-      "args": ["semgrep-mcp"]
+      "args": ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--project-from-cwd"]
     }
   }
 }

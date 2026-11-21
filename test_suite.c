@@ -1,4 +1,5 @@
 #include "belya_harness.h"
+#include "secrets_keystore.h"
 #include "telegram_adapter.h"
 #include "belya_channel.h"
 #include "minifrontmatter.h"
@@ -3516,6 +3517,30 @@ static void test_gateway_preflight_probe(void) {
     printf("  -> Gateway Pre-Flight Health & Auth Probe PASSED\n");
 }
 
+static void test_secrets_keystore_and_sanitization(void) {
+    printf("[Test] Zero-Disk Secret Buffering (mlock) & Token Scrubbing...\n");
+
+    // 1. Secure alloc and free
+    size_t sz = 0;
+    char *sec = secrets_strdup_secure("super_secret_token_12345", &sz);
+    assert(sec != NULL);
+    assert(strcmp(sec, "super_secret_token_12345") == 0);
+    assert(sz > 0);
+    secrets_free_secure(sec, sz);
+
+    // 2. Secret token scrubbing
+    const char *dirty = "Here is my key: sk-ant-api03-abcdef1234567890abcdef1234567890 and github token ghp_1234567890abcdefghijklmnopqrstuvwxyz12 and bot 7934918808:AAG7X_wZ0987654321abcdefghijklmnopqrstu.";
+    char *clean = secrets_scrub_string(dirty);
+    assert(clean != NULL);
+    assert(strstr(clean, "sk-ant-") == NULL);
+    assert(strstr(clean, "ghp_") == NULL);
+    assert(strstr(clean, "7934918808:AAG") == NULL);
+    assert(strstr(clean, "[REDACTED_SECRET]") != NULL);
+    free(clean);
+
+    printf("  -> Zero-Disk Secret Buffering & Token Scrubbing PASSED\n");
+}
+
 static void test_championship_presets_and_stage_telemetry(void) {
     printf("[Test] Dubai Championship UAE Falcon Presets & Stage Telemetry...\n");
 
@@ -6221,6 +6246,7 @@ int main(void) {
     test_phase6_web_search_notebook_and_lsp();
     test_phase7_omnichannel_and_remote_backends();
     test_gateway_preflight_probe();
+    test_secrets_keystore_and_sanitization();
     test_championship_presets_and_stage_telemetry();
     test_belya_company_system();
     test_sota_parity_pillars();
@@ -6254,7 +6280,7 @@ int main(void) {
     test_git_tools_take_no_shell();
     test_mcp_synthesis_rejects_hostile_names();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (82/82 - 100%%) ================\n\n");
+    printf("================ All Tests Passed Successfully (83/83 - 100%%) ================\n\n");
     return 0;
 }
 

@@ -8,6 +8,7 @@
 #include "common.h"
 
 #include "belya_agent.h"
+#include "secrets_keystore.h"
 #include "belya_harness.h"
 #include "minifrontmatter.h"
 #include <time.h>
@@ -473,14 +474,16 @@ void belya_agent_add_tool_result(BelyaAgent *agent, const char *tool_call_id, co
 
 void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const char *summary) {
     if (!agent || !agent->db || !event_type || !summary) return;
+    char *clean_sum = secrets_scrub_string(summary);
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO agent_timeline (event_type, summary) VALUES (?, ?);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, event_type, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 2, summary, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, clean_sum ? clean_sum : summary, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
+    if (clean_sum) free(clean_sum);
 }
 
 char *belya_agent_get_timeline(BelyaAgent *agent, int limit) {
@@ -516,12 +519,17 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     const char *w = (wing && strlen(wing) > 0) ? wing : "default";
     const char *r = (room && strlen(room) > 0) ? room : "general";
 
+    char *scrubbed_content = secrets_scrub_string(content);
+    char *scrubbed_topic = secrets_scrub_string(topic);
+    const char *save_content = scrubbed_content ? scrubbed_content : content;
+    const char *save_topic = scrubbed_topic ? scrubbed_topic : topic;
+
     // Delete existing duplicate with identical topic, wing, and room to prevent pollution
     sqlite3_stmt *del_stmt;
 
     const char *del_sql = "DELETE FROM agent_memory WHERE topic = ? AND wing = ? AND room = ?;";
     if (sqlite3_prepare_v2(agent->db, del_sql, -1, &del_stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(del_stmt, 1, topic, -1, SQLITE_STATIC);
+        sqlite3_bind_text(del_stmt, 1, save_topic, -1, SQLITE_STATIC);
         sqlite3_bind_text(del_stmt, 2, w, -1, SQLITE_STATIC);
         sqlite3_bind_text(del_stmt, 3, r, -1, SQLITE_STATIC);
         sqlite3_step(del_stmt);
@@ -531,8 +539,8 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     sqlite3_stmt *stmt;
     const char *sql = "INSERT INTO agent_memory (topic, content, wing, room, salience, access_count) VALUES (?, ?, ?, ?, 1.0, 0);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, topic, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 2, content, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 1, save_topic, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, save_content, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 3, w, -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 4, r, -1, SQLITE_STATIC);
         sqlite3_step(stmt);
@@ -542,8 +550,11 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
     /* the FTS row is written by the agent_memory_ai trigger */
 
     char log_summary[256];
-    snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, topic);
+    snprintf(log_summary, sizeof(log_summary), "[%s/%s] %s", w, r, save_topic);
     belya_agent_log_timeline(agent, "memory_persisted", log_summary);
+
+    if (scrubbed_content) free(scrubbed_content);
+    if (scrubbed_topic) free(scrubbed_topic);
 }
 
 void belya_agent_persist_memory(BelyaAgent *agent, const char *topic, const char *content) {

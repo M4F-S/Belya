@@ -22,7 +22,7 @@ MULTIARCH := $(shell $(CC) -print-multiarch 2>/dev/null)
 CPPFLAGS += $(if $(MULTIARCH),-I/usr/include/$(MULTIARCH))
 LIBS = $(DEAD_STRIP) -lcurl -lsqlite3 -lpthread
 
-SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c build_info.c main.c
+SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c secrets_keystore.c build_info.c main.c
 OBJS = $(SRCS:.c=.o)
 BUILD_DIR = build
 TARGET = $(BUILD_DIR)/belya
@@ -31,7 +31,7 @@ DEPLOY_SVC = belya
 DEPLOY_RESTART = systemctl restart $(DEPLOY_SVC)
 DEPLOY_META = tools/deploy_meta.sh
 
-TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c build_info.c test_suite.c
+TEST_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c secrets_keystore.c build_info.c test_suite.c
 TEST_TARGET = belya_test
 LOOP_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_agent_loop.c
 LOOP_TARGET = build/test_agent_loop
@@ -42,7 +42,7 @@ MCP_HTTP_TEST_TARGET = build/test_mcp_http
 BENCHMARK_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
-SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c company_simulation.c
+SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c secrets_keystore.c company_simulation.c
 SIM_TARGET = company_simulation
 
 all: $(TARGET)

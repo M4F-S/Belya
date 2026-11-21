@@ -63,3 +63,4 @@ bench/phase0b*.json
 skills/auto_*
 .deploy_meta
 .turbo
+.serena/
