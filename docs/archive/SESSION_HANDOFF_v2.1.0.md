@@ -3,7 +3,7 @@
 > **Date:** October 14, 2026  
 > **Status:** Competitive Parity (Phases 0–7) 100% Complete & Verified  
 > **Repositories:** `M4F-S/Belya` (`main`, commit `8ddb4e7`) & `M4F-S/Almaz` (`harden/v0.7.1`, commit `09521f9`)  
-> **VPS Deployment:** `root@187.124.2.26` (`belya.service` & `almaz.service` Active & Supervised)  
+> **VPS Deployment:** `root@<production-vps-ip>` (`belya.service` & `almaz.service` Active & Supervised)  
 > **Google Drive Mirror:** `gdrive:AI_Coding_Agents_Belya_Almaz` (Auto-Syncing via Git hooks & cron)  
 > **Customizations:** Cleaned & trimmed to <800 tokens (irrelevant domain plugins disabled)
 
@@ -19,12 +19,12 @@ Please read this comprehensive initialization dossier carefully to resume our de
 
 ### 🏛️ 1. System Topology, Lineage & Working Trees
 1. **Belya (Deterministic Engineering Workhorse & Security Execution Harness):**
-   - **Local Workspace:** `/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent`
+   - **Local Workspace:** `/opt/belya`
    - **Git Remote:** `git@github.com:M4F-S/Belya.git` | Branch: `main` (Latest commit: `8ddb4e7`)
    - **VPS Path:** `/opt/belya` | Service: `belya.service` (PID active running `/opt/belya/belya --telegram`)
    - **Primary Role:** Ultra-fast, deterministic C99 execution engine, 41 native tools, PTY subshells, sandboxed worktrees, omnichannel gateway, remote execution backends.
 2. **Almaz (Autopoietic Self-Evolving, Self-Healing Software Organism):**
-   - **Local Workspace:** `/Users/mohamedfathy/Desktop/Privacy C/Almaz`
+   - **Local Workspace:** `/opt/almaz`
    - **Git Remote:** `git@github.com:M4F-S/Almaz.git` | Branch: `harden/v0.7.1` (Latest commit: `09521f9`)
    - **VPS Path:** `/opt/almaz` | Service: `almaz.service` (supervised by `almaz-watchdog`, daily Darwinian mutation timer `almaz-daily.timer`)
    - **Primary Role:** Living cognitive organism featuring SARSI closed-loop self-model, VIGIL emotional appraisal, KnowSelf situational gating, FadeMem biological decay, CORAL dual-stream memory, and autonomic subconscious idle loop.
@@ -104,7 +104,7 @@ All 8 phases of the Competitive Parity Master Plan are 100% implemented, compile
 1. **Verification Quick-Check:** Run `make test` in Belya and `make test` in Almaz to verify baseline health.
 2. **Channel Token Onboarding:** Onboard Discord Bot Token and Slack App Tokens into environment secrets for live omnichannel routing.
 3. **Containerized Execution Validation:** Use the `exec_backend` tool to execute untrusted code in isolated Docker containers.
-4. **VPS Telemetry & Organism Monitoring:** Check live VPS status (`ssh root@187.124.2.26 systemctl status belya almaz`), inspect autonomic idle cycles and emotional appraisal stabilization.
+4. **VPS Telemetry & Organism Monitoring:** Check live VPS status (`ssh root@<production-vps-ip> systemctl status belya almaz`), inspect autonomic idle cycles and emotional appraisal stabilization.
 
 Please confirm receipt of this handoff, run the verification quick-check, and report readiness for our next objectives!
 ```
@@ -115,12 +115,12 @@ Please confirm receipt of this handoff, run the verification quick-check, and re
 
 | Action | Command | Working Directory |
 | :--- | :--- | :--- |
-| **Verify Belya Unit Tests** | `make test` | `/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent` |
-| **Verify Almaz Unit Tests** | `make test` | `/Users/mohamedfathy/Desktop/Privacy C/Almaz` |
-| **Verify Almaz Holdout Tests** | `make test-holdout` | `/Users/mohamedfathy/Desktop/Privacy C/Almaz` |
+| **Verify Belya Unit Tests** | `make test` | `/opt/belya` |
+| **Verify Almaz Unit Tests** | `make test` | `/opt/almaz` |
+| **Verify Almaz Holdout Tests** | `make test-holdout` | `/opt/almaz` |
 | **Verify 6-Arena Benchmarks** | `make arena` | Either repo |
 | **Verify Exercism Suite** | `make exercism` | Either repo |
 | **Run Full 7-Gate CI/CD** | `./scripts/verify_phase.sh 7` | Either repo |
-| **Sync Almaz with Belya** | `./scripts/sync_almaz.sh` | `/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent` |
+| **Sync Almaz with Belya** | `./scripts/sync_almaz.sh` | `/opt/belya` |
 | **Sync to Google Drive** | `make gdrive` | Either repo |
-| **Check VPS Status** | `ssh root@187.124.2.26 "systemctl status belya almaz"` | Terminal |
+| **Check VPS Status** | `ssh root@<production-vps-ip> "systemctl status belya almaz"` | Terminal |

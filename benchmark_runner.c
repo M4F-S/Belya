@@ -656,14 +656,14 @@ static void benchmark_arena3_memory_retention(void) {
 
     // Test 1: Domain-Isolated Multi-Room Scoping
     {
-        belya_agent_persist_memory_scoped(agent, "VPS IP", "187.124.2.26 (Root user)", "infrastructure", "deployment");
+        belya_agent_persist_memory_scoped(agent, "VPS IP", "192.0.2.1 (Root user)", "infrastructure", "deployment");
         belya_agent_persist_memory_scoped(agent, "Test Coverage", "20/20 strict tests passing", "quality", "test_suite");
         belya_agent_persist_memory_scoped(agent, "Model Name", "deepseek/deepseek-v4-flash", "llm", "gateway");
 
         char *s1 = belya_agent_search_memory(agent, "infrastructure/deployment: VPS");
         char *s2 = belya_agent_search_memory(agent, "quality/test_suite: Coverage");
 
-        if (s1 && strstr(s1, "187.124.2.26") && s2 && strstr(s2, "20/20 strict tests")) {
+        if (s1 && strstr(s1, "192.0.2.1") && s2 && strstr(s2, "20/20 strict tests")) {
             passed++;
             printf("  [3.1] Domain-Isolated Multi-Room Scoping: \033[1;32mPASSED\033[0m\n");
         } else {

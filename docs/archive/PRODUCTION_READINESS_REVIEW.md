@@ -11,7 +11,7 @@
   - `main` branch: Commit `a8ddddf` (clean, verified with AddressSanitizer).
   - `evolve/almaz` branch: Commit `cf13a2e` (merged with latest fixes).
 - **Core Technology:** Pure C99, zero dependencies outside libc, libcurl, and libsqlite3.
-- **Active VPS (`187.124.2.26`):**
+- **Active VPS (`<production-vps-ip>`):**
   - **Core Belya (Champion):** `/opt/belya` (symlink `/opt/charness`), systemd unit `belya.service`, handle `@AgentCthe_bot`.
   - **Almaz (Challenger):** `/opt/almaz`, systemd unit `almaz.service`, handle `@AlmaztheBot`.
   - **Model Backend:** OpenRouter `deepseek/deepseek-v4-flash`.
@@ -73,7 +73,7 @@ make test
 make benchmark
 
 # 2. VPS Remote Verification
-ssh root@187.124.2.26 "cd /opt/belya && make clean && make test && make benchmark"
-ssh root@187.124.2.26 "cd /opt/almaz && make clean && make test && make benchmark"
-ssh root@187.124.2.26 "systemctl status belya.service almaz.service --no-pager"
+ssh root@<production-vps-ip> "cd /opt/belya && make clean && make test && make benchmark"
+ssh root@<production-vps-ip> "cd /opt/almaz && make clean && make test && make benchmark"
+ssh root@<production-vps-ip> "systemctl status belya.service almaz.service --no-pager"
 ```

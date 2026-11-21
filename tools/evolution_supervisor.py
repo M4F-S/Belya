@@ -841,7 +841,7 @@ def dispatch_daily_report(findings, evo_result, arena_result, healing_status, en
     scorecard = (
         f"⚔️ *ALMAZ SOVEREIGN ORGANISM ARENA SCORECARD*\n"
         f"📅 *Timestamp:* `{now_str}`\n"
-        f"🏛️ *Deployment:* VPS `srv1412364` (`187.124.2.26`)\n\n"
+        f"🏛️ *Deployment:* VPS `production-node` (`<production-vps-ip>`)\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🛡️ *1. Project & Security Audit (Outward)*\n"
         f"• Status: Clean C99 POSIX Audit\n"

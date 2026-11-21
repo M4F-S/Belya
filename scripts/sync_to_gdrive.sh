@@ -23,9 +23,9 @@ if [ -z "$RCLONE_BIN" ] || [ ! -x "$RCLONE_BIN" ]; then
     exit 1
 fi
 
-if [ -d "/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent" ]; then
-    BELYA_DIR="/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent"
-    ALMAZ_DIR="/Users/mohamedfathy/Desktop/Privacy C/Almaz"
+if [ -d "/opt/belya" ]; then
+    BELYA_DIR="/opt/belya"
+    ALMAZ_DIR="/opt/almaz"
 else
     BELYA_DIR="${BELYA_DIR:-/opt/belya}"
     ALMAZ_DIR="${ALMAZ_DIR:-/opt/almaz}"

@@ -10,7 +10,7 @@
 
 **Repository:** `M4F-S/Belya`  
 **Current Version:** `v2.1.0-phase7` (Competitive Parity & Late-2026 Sovereign Architecture)  
-**Host Environment:** Remote VPS Ubuntu 24.04, Linux x86-64 (`187.124.2.26`) — the repo also builds on macOS (Darwin ARM64) dev hosts; **this deployment is Linux**  
+**Host Environment:** Remote VPS Ubuntu 24.04, Linux x86-64 (`<production-vps-ip>`) — the repo also builds on macOS (Darwin ARM64) dev hosts; **this deployment is Linux**  
 **Deployment Daemon:** `/opt/belya/belya` under `belya.service`  
 **Active Inference Backend:** `deepseek-v4.1-flash` via OpenCode Go Flat-Rate Gateway  
 **Memory Architecture:** SQLite 3 with FTS5, Gomaa Scoped Wings, and WAL Mode (`belya_memory.sqlite`)  
@@ -50,7 +50,7 @@ Belya is the **production-grade, rock-solid, high-performance C99 autonomous cod
 
 ## 🚀 3. Production Deployment Status
 
-- **VPS Host:** `187.124.2.26` (Ubuntu 24.04 LTS, root access).
+- **VPS Host:** `<production-vps-ip>` (Ubuntu 24.04 LTS, root access).
 - **Service Name:** `belya.service` (`systemd`).
 - **Target Working Directory:** `/opt/belya`.
 - **Git Branch:** `main` tracking `origin/main`.

@@ -15,17 +15,20 @@ import subprocess
 from pathlib import Path
 
 BASE_DIR = Path("/tmp/belya_benchmarks")
-PROJECT_ROOT = Path("/Users/mohamedfathy/Desktop/Privacy C/C Harness and Agent")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BELYA_BIN = PROJECT_ROOT / "belya"
 ENV_FILE = PROJECT_ROOT / ".env"
 AGENT_RULES = PROJECT_ROOT / ".agentrules"
 
-# If .env not in project root, copy from /opt/belya on VPS
+# If .env not in project root, optionally fetch from remote host if VPS_HOST is defined
 if not ENV_FILE.exists():
-    vps_env = Path("/tmp/belya_vps.env")
-    if not vps_env.exists():
-        subprocess.run(["scp", "root@187.124.2.26:/opt/belya/.env", str(vps_env)], check=True)
-    shutil.copy(vps_env, ENV_FILE)
+    vps_host = os.getenv("VPS_HOST")
+    if vps_host:
+        vps_env = Path("/tmp/belya_vps.env")
+        if not vps_env.exists():
+            subprocess.run(["scp", f"root@{vps_host}:/opt/belya/.env", str(vps_env)], check=True)
+        if vps_env.exists():
+            shutil.copy(vps_env, ENV_FILE)
 
 BENCHMARKS = [
     {

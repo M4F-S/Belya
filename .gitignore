@@ -58,3 +58,8 @@ bench/.work/
 bench/latest.json
 bench/skills/
 bench/phase0b*.json
+
+# Dynamic auto-skills & deploy caches
+skills/auto_*
+.deploy_meta
+.turbo

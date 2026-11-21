@@ -39,7 +39,7 @@ PERMS_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) tests/test_permissions.c
 PERMS_TARGET = build/test_permissions
 MCP_HTTP_TEST_TARGET = build/test_mcp_http
 
-BENCHMARK_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c benchmark_runner.c
+BENCHMARK_SRCS = $(filter-out test_suite.c,$(TEST_SRCS)) benchmark_runner.c
 BENCHMARK_TARGET = belya_benchmark
 
 SIM_SRCS = linenoise.c minijson.c minifrontmatter.c mcp_client.c mcp_http.c jev_client.c model_adapter.c belya_agent.c belya_harness.c permissions.c sandbox.c telegram_render.c telegram_adapter.c belya_channel.c belya_company.c terminal_tui.c lsp_client.c agent_mesh.c company_simulation.c

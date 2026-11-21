@@ -1,7 +1,7 @@
 # 🏛️ Workspace: Belya & Almaz Sovereign C99 Engineering & Cognitive Suite
 
 > **Database Record & System Dossier**  
-> **Workspace Path:** `/Users/mohamedfathy/Desktop/Privacy C`  
+> **Workspace Path:** `/opt/belya`  
 > **Systems Covered:** **Belya** (`/C Harness and Agent`) & **Almaz** (`/Almaz`)  
 > **Status:** `🟢 100% Production Verified & Deployed`  
 > **Standard:** `ISO/IEC 9899:1999 (Pure ANSI C99) + POSIX.1-2008`  
@@ -26,7 +26,7 @@
 | **Sovereign Models** | UAE TII Falcon-3 (7B/10B), Falcon-2 (11B), vLLM / Ollama Airgap | UAE TII Falcon-3 (7B/10B), Falcon-2 (11B), vLLM / Ollama Airgap |
 | **Test Verification** | **51 / 51 Unit Tests (100%)** + 35 Arenas + 11/11 Exercism Pass@1 | **62 / 62 Unit Tests (100%)** + **65 / 65 Holdout Assertions (100%)** |
 | **Sanitizer Profile** | `0` warnings under `-Wall -Wextra -Werror -Wpedantic`; ASan/UBSan clean | `0` warnings under `-Wall -Wextra -Werror -Wpedantic`; ASan/UBSan clean |
-| **Production Target** | Ubuntu 24.04 LTS (`root@187.124.2.26`) via `belya.service` | Ubuntu 24.04 LTS (`root@187.124.2.26`) via `almaz.service` + Watchdog |
+| **Production Target** | Ubuntu 24.04 LTS (`root@<production-vps-ip>`) via `belya.service` | Ubuntu 24.04 LTS (`root@<production-vps-ip>`) via `almaz.service` + Watchdog |
 | **Sandbox Tier** | Docker (`belya-sandbox`), Linux Landlock LSM, macOS Seatbelt | Docker (`almaz-sandbox`), Landlock LSM, `chattr +i` immutability |
 
 ---
@@ -522,11 +522,11 @@ Open-weight instruction models frequently wrap tool invocations in markdown code
 # 9. Production Operations, CLI Reference & Deployment Runbook
 
 ### 9.1 VPS Topology & Systemd Supervisors
-Both engines are actively deployed on the production VPS (`187.124.2.26`):
+Both engines are actively deployed on the production VPS (`<production-vps-ip>`):
 
 ```
 +--------------------------------------------------------------------------------------------------------+
-|                                PRODUCTION VPS TOPOLOGY (root@187.124.2.26)                             |
+|                                PRODUCTION VPS TOPOLOGY (root@<production-vps-ip>)                             |
 +--------------------------------------------------------------------------------------------------------+
 |  HOST OS: Ubuntu 24.04 LTS x86_64 | 4 vCPUs | 8 GB RAM | systemd 255.4                                  |
 +---------------------------------------------------+----------------------------------------------------+
