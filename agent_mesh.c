@@ -13,27 +13,37 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 
 struct AgentMesh {
     char agent_name[64];
-    char socket_path[104];
+    char socket_path[108];
     bool is_server;
+    bool is_client;
+    bool listener_started;
     int listen_fd;
-    int peer_fd;
     volatile bool running;
     pthread_t listener_thread;
     pthread_mutex_t lock;
-    pthread_cond_t cond;
     int next_msg_id;
     AgentMeshHandlerFn handler;
     void *userdata;
-
-    // Pending response matching
-    int pending_req_id;
-    char *pending_response;
-    bool pending_arrived;
 };
+
+static void safe_copy_str(char *dst, const char *src, size_t dst_size) {
+    if (!dst || dst_size == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dst_size && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
 
 static double mesh_get_time_ms(void) {
     struct timeval tv;
@@ -65,17 +75,7 @@ static void mesh_handle_incoming_line(AgentMesh *mesh, int client_fd, const char
     JsonValue *p_val = json_obj_get(jv, "payload");
     char *payload_str = p_val ? json_serialize(p_val) : NULL;
 
-    if (is_resp) {
-        // Matched pending response
-        pthread_mutex_lock(&mesh->lock);
-        if (msg_id == mesh->pending_req_id) {
-            if (mesh->pending_response) free(mesh->pending_response);
-            mesh->pending_response = payload_str ? strdup(payload_str) : strdup("{}");
-            mesh->pending_arrived = true;
-            pthread_cond_broadcast(&mesh->cond);
-        }
-        pthread_mutex_unlock(&mesh->lock);
-    } else {
+    if (!is_resp) {
         // Incoming request or notification
         if (action && strcmp(action, "ping") == 0) {
             // Reply pong
@@ -96,9 +96,9 @@ static void mesh_handle_incoming_line(AgentMesh *mesh, int client_fd, const char
             }
         } else if (mesh->handler) {
             AgentMeshMessage msg;
-            strncpy(msg.source, src ? src : "", sizeof(msg.source) - 1);
-            strncpy(msg.target, dst ? dst : "", sizeof(msg.target) - 1);
-            strncpy(msg.action, action ? action : "", sizeof(msg.action) - 1);
+            safe_copy_str(msg.source, src ? src : "", sizeof(msg.source));
+            safe_copy_str(msg.target, dst ? dst : "", sizeof(msg.target));
+            safe_copy_str(msg.action, action ? action : "", sizeof(msg.action));
             msg.payload_json = payload_str;
             msg.request_id = msg_id;
             msg.is_response = false;
@@ -112,7 +112,16 @@ static void mesh_handle_incoming_line(AgentMesh *mesh, int client_fd, const char
             json_obj_add(resp_jv, "dst", json_create_string(src ? src : "peer"));
             json_obj_add(resp_jv, "action", json_create_string(action ? action : "reply"));
             json_obj_add(resp_jv, "resp", json_create_bool(true));
-            json_obj_add(resp_jv, "payload", json_create_string(resp_payload ? resp_payload : "ok"));
+            if (resp_payload && (resp_payload[0] == '{' || resp_payload[0] == '[')) {
+                JsonValue *p_parsed = json_parse(resp_payload);
+                if (p_parsed) {
+                    json_obj_add(resp_jv, "payload", p_parsed);
+                } else {
+                    json_obj_add(resp_jv, "payload", json_create_string(resp_payload));
+                }
+            } else {
+                json_obj_add(resp_jv, "payload", json_create_string(resp_payload ? resp_payload : "ok"));
+            }
             char *serialized = json_serialize(resp_jv);
             json_free(resp_jv);
             if (resp_payload) free(resp_payload);
@@ -132,32 +141,37 @@ static void mesh_handle_incoming_line(AgentMesh *mesh, int client_fd, const char
 static void *mesh_server_worker(void *arg) {
     AgentMesh *mesh = (AgentMesh *)arg;
 
-    while (mesh->running) {
+    while (mesh->running && mesh->listen_fd >= 0) {
         struct pollfd pfd;
         pfd.fd = mesh->listen_fd;
         pfd.events = POLLIN;
 
         int prc = poll(&pfd, 1, 200);
-        if (prc <= 0) continue;
+        if (prc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (prc == 0) continue;
 
         int conn = accept(mesh->listen_fd, NULL, NULL);
         if (conn < 0) continue;
 
-        pthread_mutex_lock(&mesh->lock);
-        if (mesh->peer_fd >= 0) close(mesh->peer_fd);
-        mesh->peer_fd = conn;
-        pthread_mutex_unlock(&mesh->lock);
+        struct timeval tv;
+        tv.tv_sec = 2;
+        tv.tv_usec = 0;
+        setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-        char buf[4096];
+        char buf[8192];
         size_t buf_pos = 0;
 
         while (mesh->running) {
             struct pollfd cpfd;
             cpfd.fd = conn;
             cpfd.events = POLLIN;
-            int cprc = poll(&cpfd, 1, 200);
+            int cprc = poll(&cpfd, 1, 500);
             if (cprc < 0) break;
-            if (cprc == 0) continue;
+            if (cprc == 0) break;
 
             ssize_t nr = read(conn, buf + buf_pos, sizeof(buf) - buf_pos - 1);
             if (nr <= 0) break;
@@ -181,47 +195,6 @@ static void *mesh_server_worker(void *arg) {
         }
 
         close(conn);
-        pthread_mutex_lock(&mesh->lock);
-        if (mesh->peer_fd == conn) mesh->peer_fd = -1;
-        pthread_mutex_unlock(&mesh->lock);
-    }
-
-    return NULL;
-}
-
-static void *mesh_client_worker(void *arg) {
-    AgentMesh *mesh = (AgentMesh *)arg;
-    char buf[4096];
-    size_t buf_pos = 0;
-
-    while (mesh->running && mesh->peer_fd >= 0) {
-        struct pollfd pfd;
-        pfd.fd = mesh->peer_fd;
-        pfd.events = POLLIN;
-
-        int prc = poll(&pfd, 1, 200);
-        if (prc < 0) break;
-        if (prc == 0) continue;
-
-        ssize_t nr = read(mesh->peer_fd, buf + buf_pos, sizeof(buf) - buf_pos - 1);
-        if (nr <= 0) break;
-        buf_pos += (size_t)nr;
-        buf[buf_pos] = '\0';
-
-        char *line_start = buf;
-        char *newline = NULL;
-        while ((newline = strchr(line_start, '\n')) != NULL) {
-            *newline = '\0';
-            mesh_handle_incoming_line(mesh, mesh->peer_fd, line_start);
-            line_start = newline + 1;
-        }
-
-        if (line_start > buf) {
-            size_t remaining = buf_pos - (size_t)(line_start - buf);
-            memmove(buf, line_start, remaining);
-            buf_pos = remaining;
-            buf[buf_pos] = '\0';
-        }
     }
 
     return NULL;
@@ -231,25 +204,24 @@ AgentMesh *agent_mesh_init(const char *agent_name, const char *socket_path) {
     AgentMesh *mesh = (AgentMesh *)calloc(1, sizeof(AgentMesh));
     if (!mesh) return NULL;
 
-    strncpy(mesh->agent_name, agent_name ? agent_name : "agent", sizeof(mesh->agent_name) - 1);
+    safe_copy_str(mesh->agent_name, agent_name ? agent_name : "agent", sizeof(mesh->agent_name));
+
     if (socket_path && strlen(socket_path) > 0) {
-        strncpy(mesh->socket_path, socket_path, sizeof(mesh->socket_path) - 1);
+        safe_copy_str(mesh->socket_path, socket_path, sizeof(mesh->socket_path));
     } else {
         const char *env_path = getenv("AGENT_MESH_SOCK_PATH");
         if (env_path && strlen(env_path) > 0) {
-            strncpy(mesh->socket_path, env_path, sizeof(mesh->socket_path) - 1);
+            safe_copy_str(mesh->socket_path, env_path, sizeof(mesh->socket_path));
         } else if (access("/run/agent-mesh", W_OK) == 0) {
-            strncpy(mesh->socket_path, AGENT_MESH_SHARED_SOCK_PATH, sizeof(mesh->socket_path) - 1);
+            snprintf(mesh->socket_path, sizeof(mesh->socket_path), "/run/agent-mesh/%.80s.sock", mesh->agent_name);
         } else {
-            strncpy(mesh->socket_path, AGENT_MESH_DEFAULT_SOCK_PATH, sizeof(mesh->socket_path) - 1);
+            snprintf(mesh->socket_path, sizeof(mesh->socket_path), "/tmp/%.80s_mesh.sock", mesh->agent_name);
         }
     }
 
     mesh->listen_fd = -1;
-    mesh->peer_fd = -1;
     mesh->next_msg_id = 1;
     pthread_mutex_init(&mesh->lock, NULL);
-    pthread_cond_init(&mesh->cond, NULL);
 
     return mesh;
 }
@@ -265,24 +237,24 @@ void agent_mesh_set_handler(AgentMesh *mesh, AgentMeshHandlerFn handler, void *u
 bool agent_mesh_start(AgentMesh *mesh) {
     if (!mesh) return false;
 
-    // Check if socket already exists and connect as client
-    int cli_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    // Check if socket already exists and has a live server
+    int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", mesh->socket_path);
 
-    if (cli_fd >= 0 && connect(cli_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-        // Successfully connected to existing mesh server as client
+    if (test_fd >= 0 && connect(test_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        close(test_fd);
+        // Another server is already active on this exact path (e.g. multi-agent unit test sharing socket)
         mesh->is_server = false;
-        mesh->peer_fd = cli_fd;
+        mesh->is_client = true;
         mesh->running = true;
-        pthread_create(&mesh->listener_thread, NULL, mesh_client_worker, mesh);
         return true;
     }
-    if (cli_fd >= 0) close(cli_fd);
+    if (test_fd >= 0) close(test_fd);
 
-    // Stale socket or not running: act as server
+    // Stale socket or fresh startup: bind as server
     unlink(mesh->socket_path);
 
     int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -297,41 +269,136 @@ bool agent_mesh_start(AgentMesh *mesh) {
     }
     chmod(mesh->socket_path, 0666);
 
-    if (listen(srv_fd, 5) != 0) {
+    if (listen(srv_fd, 16) != 0) {
         close(srv_fd);
         unlink(mesh->socket_path);
         return false;
     }
 
+    // Maintain backward-compatible /run/agent-mesh/mesh.sock symlink pointing to belya or active node
+    if (access("/run/agent-mesh", W_OK) == 0) {
+        if (strcmp(mesh->agent_name, "belya") == 0 || access("/run/agent-mesh/mesh.sock", F_OK) != 0) {
+            unlink("/run/agent-mesh/mesh.sock");
+            if (symlink(mesh->socket_path, "/run/agent-mesh/mesh.sock") != 0) {
+                // Best-effort symlink for backward compatibility
+            }
+        }
+    }
+
     mesh->is_server = true;
+    mesh->is_client = false;
     mesh->listen_fd = srv_fd;
     mesh->running = true;
-    pthread_create(&mesh->listener_thread, NULL, mesh_server_worker, mesh);
+    if (pthread_create(&mesh->listener_thread, NULL, mesh_server_worker, mesh) == 0) {
+        mesh->listener_started = true;
+    }
 
     return true;
 }
 
-bool agent_mesh_send(AgentMesh *mesh, const char *target, const char *action, const char *payload_json, int *out_req_id) {
-    if (!mesh || mesh->peer_fd < 0) return false;
+static bool resolve_target_socket(const AgentMesh *mesh, const char *target, char *out_path, size_t out_max) {
+    if (!out_path || out_max < 16) return false;
+
+    const char *tgt = (target && strlen(target) > 0) ? target : "peer";
+    if (strcmp(tgt, "peer") == 0) {
+        tgt = (strcmp(mesh->agent_name, "belya") == 0) ? "almaz" : "belya";
+    }
+
+    // Direct filesystem path
+    if (tgt[0] == '/') {
+        safe_copy_str(out_path, tgt, out_max);
+        return true;
+    }
+
+    // If running in client mode on a shared socket (e.g. test harness)
+    if (mesh->is_client && mesh->socket_path[0] != '\0') {
+        if (access(mesh->socket_path, F_OK) == 0) {
+            safe_copy_str(out_path, mesh->socket_path, out_max);
+            return true;
+        }
+    }
+
+    // Check dedicated socket in /run/agent-mesh/<target>.sock
+    char cand1[108];
+    snprintf(cand1, sizeof(cand1), "/run/agent-mesh/%.80s.sock", tgt);
+    if (access(cand1, F_OK) == 0) {
+        safe_copy_str(out_path, cand1, out_max);
+        return true;
+    }
+
+    // Check /tmp/<target>_mesh.sock
+    char cand2[108];
+    snprintf(cand2, sizeof(cand2), "/tmp/%.80s_mesh.sock", tgt);
+    if (access(cand2, F_OK) == 0) {
+        safe_copy_str(out_path, cand2, out_max);
+        return true;
+    }
+
+    // Check instance custom socket if not self
+    if (mesh->socket_path[0] != '\0' && access(mesh->socket_path, F_OK) == 0) {
+        safe_copy_str(out_path, mesh->socket_path, out_max);
+        return true;
+    }
+
+    // Check shared mesh.sock
+    if (access("/run/agent-mesh/mesh.sock", F_OK) == 0) {
+        safe_copy_str(out_path, "/run/agent-mesh/mesh.sock", out_max);
+        return true;
+    }
+
+    // Default fallback
+    safe_copy_str(out_path, cand1, out_max);
+    return true;
+}
+
+char *agent_mesh_consult(AgentMesh *mesh, const char *target, const char *action, const char *query_json, int timeout_ms) {
+    if (!mesh) return NULL;
+
+    char target_sock[108];
+    if (!resolve_target_socket(mesh, target, target_sock, sizeof(target_sock))) {
+        return NULL;
+    }
+
+    int cli_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (cli_fd < 0) return NULL;
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms > 0 ? (timeout_ms / 1000) : 4;
+    tv.tv_usec = timeout_ms > 0 ? ((timeout_ms % 1000) * 1000) : 0;
+    if (tv.tv_sec == 0 && tv.tv_usec < 500000) {
+        tv.tv_usec = 500000;
+    }
+    setsockopt(cli_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(cli_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", target_sock);
+
+    if (connect(cli_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(cli_fd);
+        return NULL;
+    }
 
     pthread_mutex_lock(&mesh->lock);
     int req_id = mesh->next_msg_id++;
-    if (out_req_id) *out_req_id = req_id;
+    pthread_mutex_unlock(&mesh->lock);
 
     JsonValue *jv = json_create_object();
     json_obj_add(jv, "mesh", json_create_string("1.0"));
     json_obj_add(jv, "id", json_create_number(req_id));
     json_obj_add(jv, "src", json_create_string(mesh->agent_name));
     json_obj_add(jv, "dst", json_create_string(target ? target : "peer"));
-    json_obj_add(jv, "action", json_create_string(action ? action : "message"));
+    json_obj_add(jv, "action", json_create_string(action ? action : "consult"));
     json_obj_add(jv, "resp", json_create_bool(false));
 
-    if (payload_json && strlen(payload_json) > 0) {
-        JsonValue *parsed = json_parse(payload_json);
+    if (query_json && strlen(query_json) > 0) {
+        JsonValue *parsed = json_parse(query_json);
         if (parsed) {
             json_obj_add(jv, "payload", parsed);
         } else {
-            json_obj_add(jv, "payload", json_create_string(payload_json));
+            json_obj_add(jv, "payload", json_create_string(query_json));
         }
     } else {
         json_obj_add(jv, "payload", json_create_object());
@@ -340,78 +407,64 @@ bool agent_mesh_send(AgentMesh *mesh, const char *target, const char *action, co
     char *msg_str = json_serialize(jv);
     json_free(jv);
 
-    bool ok = false;
-    if (msg_str) {
-        ok = mesh_write_all(mesh->peer_fd, msg_str, strlen(msg_str)) &&
-             mesh_write_all(mesh->peer_fd, "\n", 1);
-        free(msg_str);
-    }
-
-    pthread_mutex_unlock(&mesh->lock);
-    return ok;
-}
-
-char *agent_mesh_consult(AgentMesh *mesh, const char *target, const char *action, const char *query_json, int timeout_ms) {
-    if (!mesh) return NULL;
-
-    // Ensure connection
-    if (mesh->peer_fd < 0 && !mesh->is_server) {
-        int cli_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        struct sockaddr_un addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sun_family = AF_UNIX;
-        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", mesh->socket_path);
-        if (cli_fd >= 0 && connect(cli_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-            mesh->peer_fd = cli_fd;
-            mesh->running = true;
-            pthread_create(&mesh->listener_thread, NULL, mesh_client_worker, mesh);
-        } else {
-            if (cli_fd >= 0) close(cli_fd);
-        }
-    }
-
-    if (mesh->peer_fd < 0) return NULL;
-
-    pthread_mutex_lock(&mesh->lock);
-    int req_id = 0;
-    mesh->pending_req_id = mesh->next_msg_id;
-    mesh->pending_arrived = false;
-    if (mesh->pending_response) {
-        free(mesh->pending_response);
-        mesh->pending_response = NULL;
-    }
-    pthread_mutex_unlock(&mesh->lock);
-
-    if (!agent_mesh_send(mesh, target, action, query_json, &req_id)) {
+    if (!msg_str) {
+        close(cli_fd);
         return NULL;
     }
 
-    pthread_mutex_lock(&mesh->lock);
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += timeout_ms / 1000;
-    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) {
-        ts.tv_sec += 1;
-        ts.tv_nsec -= 1000000000L;
+    bool sent = mesh_write_all(cli_fd, msg_str, strlen(msg_str)) &&
+                mesh_write_all(cli_fd, "\n", 1);
+    free(msg_str);
+
+    if (!sent) {
+        close(cli_fd);
+        return NULL;
     }
 
-    while (!mesh->pending_arrived) {
-        int rc = pthread_cond_timedwait(&mesh->cond, &mesh->lock, &ts);
-        if (rc == ETIMEDOUT) break;
+    // Wait for response line with timeout
+    struct pollfd pfd;
+    pfd.fd = cli_fd;
+    pfd.events = POLLIN;
+
+    int prc = poll(&pfd, 1, timeout_ms > 0 ? timeout_ms : 4000);
+    if (prc <= 0) {
+        close(cli_fd);
+        return NULL;
     }
 
+    char resp_buf[8192];
+    ssize_t nr = read(cli_fd, resp_buf, sizeof(resp_buf) - 1);
+    close(cli_fd);
+
+    if (nr <= 0) return NULL;
+    resp_buf[nr] = '\0';
+
+    char *nl = strchr(resp_buf, '\n');
+    if (nl) *nl = '\0';
+
+    JsonValue *resp_jv = json_parse(resp_buf);
+    if (!resp_jv) return strdup(resp_buf);
+
+    JsonValue *p_val = json_obj_get(resp_jv, "payload");
     char *res = NULL;
-    if (mesh->pending_arrived && mesh->pending_response) {
-        res = strdup(mesh->pending_response);
-        free(mesh->pending_response);
-        mesh->pending_response = NULL;
+    if (p_val) {
+        res = json_serialize(p_val);
+    } else {
+        res = json_serialize(resp_jv);
     }
-    mesh->pending_req_id = 0;
-    mesh->pending_arrived = false;
+    json_free(resp_jv);
 
-    pthread_mutex_unlock(&mesh->lock);
     return res;
+}
+
+bool agent_mesh_send(AgentMesh *mesh, const char *target, const char *action, const char *payload_json, int *out_req_id) {
+    char *res = agent_mesh_consult(mesh, target, action, payload_json, 2000);
+    if (res) {
+        free(res);
+        if (out_req_id) *out_req_id = 1;
+        return true;
+    }
+    return false;
 }
 
 bool agent_mesh_ping(AgentMesh *mesh, const char *target, double *out_rtt_ms) {
@@ -428,22 +481,21 @@ bool agent_mesh_ping(AgentMesh *mesh, const char *target, double *out_rtt_ms) {
 }
 
 bool agent_mesh_is_online(AgentMesh *mesh) {
-    return mesh && (mesh->peer_fd >= 0 || mesh->listen_fd >= 0);
+    return mesh && (mesh->listen_fd >= 0 || mesh->is_client || mesh->running);
 }
 
 void agent_mesh_stop(AgentMesh *mesh) {
     if (!mesh) return;
 
     mesh->running = false;
-    if (mesh->peer_fd >= 0) {
-        close(mesh->peer_fd);
-        mesh->peer_fd = -1;
-    }
     if (mesh->listen_fd >= 0) {
         close(mesh->listen_fd);
         mesh->listen_fd = -1;
     }
-    pthread_join(mesh->listener_thread, NULL);
+    if (mesh->listener_started) {
+        pthread_join(mesh->listener_thread, NULL);
+        mesh->listener_started = false;
+    }
     if (mesh->is_server) {
         unlink(mesh->socket_path);
     }
@@ -452,14 +504,7 @@ void agent_mesh_stop(AgentMesh *mesh) {
 void agent_mesh_free(AgentMesh *mesh) {
     if (!mesh) return;
     agent_mesh_stop(mesh);
-    pthread_mutex_lock(&mesh->lock);
-    if (mesh->pending_response) {
-        free(mesh->pending_response);
-        mesh->pending_response = NULL;
-    }
-    pthread_mutex_unlock(&mesh->lock);
     pthread_mutex_destroy(&mesh->lock);
-    pthread_cond_destroy(&mesh->cond);
     free(mesh);
 }
 
