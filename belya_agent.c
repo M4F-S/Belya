@@ -2921,8 +2921,8 @@ ModelGatewayResponse belya_agent_step(BelyaAgent *agent) {
     // For models that support native tools, avoid scanning reasoning content so hypothetical thoughts are not executed.
     // For models like deepseek-r1 where tools schema is stripped, reasoning scan is preserved.
     if (!resp.has_tool_call && (resp.content != NULL || resp.reasoning_content != NULL) && agent->schema_count > 0) {
-        const char *known_names[64];
-        size_t known_count = agent->schema_count < 64 ? agent->schema_count : 64; // M8: clamp to buffer size
+        const char *known_names[BELYA_HARNESS_MAX_TOOLS];
+        size_t known_count = agent->schema_count < BELYA_HARNESS_MAX_TOOLS ? agent->schema_count : BELYA_HARNESS_MAX_TOOLS;
         for (size_t s = 0; s < known_count; s++) {
             known_names[s] = agent->schemas[s].name;
         }

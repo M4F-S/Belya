@@ -121,7 +121,7 @@ typedef struct BelyaWorkerVTable {
 
 struct BelyaHarness {
     BelyaAgent *agent;
-    BelyaRegisteredTool tools[96];
+    BelyaRegisteredTool tools[BELYA_HARNESS_MAX_TOOLS];
     size_t tool_count;
     char cwd[4096];
     MCPClient *mcp_servers[8];

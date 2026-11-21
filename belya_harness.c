@@ -4693,7 +4693,7 @@ static bool custom_tool_script_in_workspace(const char *path, char *canon_out, s
 }
 
 bool belya_harness_define_custom_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, const char *script_body) {
-    if (!h || !name || !script_body || h->tool_count >= 64) {
+    if (!h || !name || !script_body || h->tool_count >= BELYA_HARNESS_MAX_TOOLS) {
         if (params) json_free(params);
         return false;
     }
@@ -4824,7 +4824,7 @@ void belya_harness_load_custom_tools(BelyaHarness *h) {
                                     "which is not inside <workspace>/.belya/tools\n",
                                     t_name, s_path);
                         }
-                        if (in_jail && h->tool_count < 64) {
+                        if (in_jail && h->tool_count < BELYA_HARNESS_MAX_TOOLS) {
                             // Check if already registered
                             bool exists = false;
                             for (size_t k = 0; k < h->tool_count; k++) {
@@ -5867,7 +5867,7 @@ BelyaHarness *belya_harness_init_worker(BelyaAgent *agent, const char *worktree_
 }
 
 void belya_harness_register_tool(BelyaHarness *h, const char *name, const char *desc, JsonValue *params, SecurityLevel sec, BelyaToolCallback fn) {
-    if (h->tool_count >= 64) {
+    if (h->tool_count >= BELYA_HARNESS_MAX_TOOLS) {
         if (params) json_free(params);
         return;
     }
@@ -5919,7 +5919,7 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
         const char *t_desc = json_obj_get_str(t, "description");
         JsonValue *t_schema = json_obj_get(t, "inputSchema");
 
-        if (t_name && h->tool_count < 64) {
+        if (t_name && h->tool_count < BELYA_HARNESS_MAX_TOOLS) {
             /* R2 (2026-10-11): discovered MCP tools must respect the tool
                whitelist. An empty whitelist keeps the harness unrestricted --
                parity with the native registration path (REGISTER_IF_PERMITTED). */
@@ -6023,8 +6023,8 @@ bool belya_harness_load_mcp_config(BelyaHarness *h, const char *config_path) {
             fprintf(stderr, "\033[1;33m[MCP] Reached maximum MCP servers limit (8). Skipping remaining entries.\033[0m\n");
             break;
         }
-        if (h->tool_count >= 64) {
-            fprintf(stderr, "\033[1;33m[MCP] Reached maximum tool limit (64). Skipping remaining entries.\033[0m\n");
+        if (h->tool_count >= BELYA_HARNESS_MAX_TOOLS) {
+            fprintf(stderr, "\033[1;33m[MCP] Reached maximum tool limit (%d). Skipping remaining entries.\033[0m\n", BELYA_HARNESS_MAX_TOOLS);
             break;
         }
 

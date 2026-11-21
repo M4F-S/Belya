@@ -60,6 +60,7 @@
 #endif
 
 /* Core Architectural Boundaries & Capacity Invariants */
+#define BELYA_HARNESS_MAX_TOOLS    96
 #define BELYA_MAX_BACKGROUND_TASKS 16
 #define BELYA_TASK_RING_CAPACITY   65536 /* 64 KB per task = 1 MB max memory */
 #define BELYA_MAX_NOTEBOOK_BYTES   (16 * 1024 * 1024) /* 16 MB max .ipynb limit */
