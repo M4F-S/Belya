@@ -281,12 +281,13 @@ static size_t curl_sink_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
     return total;
 }
 
-static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema, bool use_fallback) {
+static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema,
+                                                       const char *ep, const char *key, const char *mod, bool has_fallback) {
     ModelGatewayResponse res = {0};
-
-    const char *ep = (use_fallback && self->fallback_endpoint) ? self->fallback_endpoint : self->endpoint;
-    const char *key = (use_fallback && self->fallback_api_key) ? self->fallback_api_key : self->api_key;
-    const char *mod = (use_fallback && self->fallback_model) ? self->fallback_model : self->model;
+    if (!ep || strlen(ep) == 0) {
+        res.content = xstrdup("Error: No endpoint configured for this tier.");
+        return res;
+    }
 
     JsonValue *payload = json_create_object();
     json_obj_add(payload, "model", json_create_string(mod ? mod : "hermes-3"));
@@ -429,9 +430,9 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
             }
             if (stream_ctx.tool_calls) free(stream_ctx.tool_calls);
 
-            if (code == CURLE_COULDNT_CONNECT && strstr(self->endpoint, "localhost") != NULL) {
+            if (code == CURLE_COULDNT_CONNECT && (strstr(ep, "localhost") != NULL || strstr(ep, "127.0.0.1") != NULL)) {
                 DynString err_ds = dyn_str_new();
-                dyn_str_appendf(&err_ds, "Connection Error: Failed to connect to local Ollama server at '%s'. Please ensure 'ollama serve' is running in another terminal.", self->endpoint);
+                dyn_str_appendf(&err_ds, "Connection Error: Failed to connect to server at '%s'.", ep);
                 res.content = err_ds.data;
                 free(json_body);
                 return res;
@@ -450,6 +451,24 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
         }
 
         if ((http_code == 429 || http_code >= 500) && attempt < max_attempts - 1) {
+            if (http_code == 429 && has_fallback) {
+                dyn_str_free(&stream_ctx.line_buf);
+                dyn_str_free(&stream_ctx.accum_content);
+                dyn_str_free(&stream_ctx.accum_reasoning);
+                dyn_str_free(&stream_ctx.raw_fallback);
+                dyn_str_free(&non_stream_body);
+                for (size_t k = 0; k < stream_ctx.tool_call_count; k++) {
+                    if (stream_ctx.tool_calls[k].id) free(stream_ctx.tool_calls[k].id);
+                    if (stream_ctx.tool_calls[k].name) free(stream_ctx.tool_calls[k].name);
+                    if (stream_ctx.tool_calls[k].arguments_json) free(stream_ctx.tool_calls[k].arguments_json);
+                }
+                if (stream_ctx.tool_calls) free(stream_ctx.tool_calls);
+                DynString err_ds = dyn_str_new();
+                dyn_str_appendf(&err_ds, "API Error (HTTP 429): Rate limit exceeded on endpoint '%s'.", ep);
+                res.content = err_ds.data;
+                free(json_body);
+                return res;
+            }
             /* 429 is a rate limit, not a hiccup: use the provider's own number
                when it sent one (capped so a hostile value cannot stall a turn),
                otherwise floor the backoff at 4s. */
@@ -632,6 +651,19 @@ static ModelGatewayResponse openai_chat_complete_inner(ModelGateway *self, const
     return res;
 }
 
+static bool gateway_response_is_hard_failure(const ModelGatewayResponse *r) {
+    if (!r) return true;
+    if (r->has_tool_call) return false;
+    if (!r->content || r->content[0] == '\0') return true;
+    return strncmp(r->content, "Error:", 6) == 0 ||
+           strncmp(r->content, "API Error", 9) == 0 ||
+           strncmp(r->content, "Network Error", 13) == 0 ||
+           strncmp(r->content, "Connection Error", 16) == 0 ||
+           strncmp(r->content, "System Error", 12) == 0 ||
+           strncmp(r->content, "Empty model response", 20) == 0 ||
+           strncmp(r->content, "Empty response from stream", 26) == 0;
+}
+
 static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonValue *messages_json, const JsonValue *tools_schema) {
     if (!self) {
         ModelGatewayResponse r = {0};
@@ -639,29 +671,96 @@ static ModelGatewayResponse openai_chat_complete(ModelGateway *self, const JsonV
         return r;
     }
 
-    ModelGatewayResponse res = openai_chat_complete_inner(self, messages_json, tools_schema, false);
-    bool failed = !res.has_tool_call && (
-        !res.content ||
-        strncmp(res.content, "Network Error", 13) == 0 ||
-        strncmp(res.content, "API Error", 9) == 0 ||
-        strncmp(res.content, "Connection Error", 16) == 0 ||
-        strncmp(res.content, "Error: Maximum retry", 20) == 0
-    );
+    time_t now = time(NULL);
 
-    bool same_ep = (self->endpoint && self->fallback_endpoint && strcmp(self->endpoint, self->fallback_endpoint) == 0 &&
+    bool has_fb = (self->fallback_endpoint && strlen(self->fallback_endpoint) > 0 &&
+                   self->fallback_api_key && strlen(self->fallback_api_key) > 0);
+    bool same_fb = (has_fb && self->endpoint && strcmp(self->endpoint, self->fallback_endpoint) == 0 &&
                     self->model && self->fallback_model && strcmp(self->model, self->fallback_model) == 0);
+    if (same_fb) has_fb = false;
 
-    if (!same_ep && failed && self->fallback_endpoint && self->fallback_api_key && strlen(self->fallback_api_key) > 0) {
-        char *primary_err = res.content ? xstrdup(res.content) : xstrdup("Unknown error");
-        fprintf(stderr, "\033[1;33m[ModelGateway Failover]: Primary endpoint '%s' (%s) failed [%s]. Switching to fallback '%s' (%s)...\033[0m\n",
-                self->endpoint ? self->endpoint : "unknown",
-                self->model ? self->model : "",
-                primary_err,
-                self->fallback_endpoint,
-                self->fallback_model ? self->fallback_model : "");
-        free(primary_err);
+    bool has_loc = (self->local_endpoint && strlen(self->local_endpoint) > 0);
+    bool same_loc = (has_loc && self->endpoint && strcmp(self->endpoint, self->local_endpoint) == 0);
+    if (same_loc) has_loc = false;
+
+    bool primary_circuit_open = (self->primary_breaker_tripped_until > now);
+    bool try_primary = (self->endpoint && strlen(self->endpoint) > 0 && !primary_circuit_open);
+
+    ModelGatewayResponse res = {0};
+    bool primary_attempted = false;
+
+    if (try_primary) {
+        primary_attempted = true;
+        res = openai_chat_complete_inner(self, messages_json, tools_schema,
+                                         self->endpoint, self->api_key, self->model,
+                                         has_fb || has_loc);
+        if (!gateway_response_is_hard_failure(&res)) {
+            self->primary_consecutive_failures = 0;
+            self->primary_breaker_tripped_until = 0;
+            return res;
+        }
+
+        self->primary_consecutive_failures++;
+        bool is_429 = (res.content && strstr(res.content, "HTTP 429") != NULL);
+        if (is_429 || self->primary_consecutive_failures >= 2) {
+            self->primary_breaker_tripped_until = now + 60;
+            fprintf(stderr, "[1;31m[ModelGateway CircuitBreaker]: Primary endpoint '%s' tripped breaker for 60s (failures=%d, 429=%d)[0m\n",
+                    self->endpoint ? self->endpoint : "unknown",
+                    self->primary_consecutive_failures, is_429 ? 1 : 0);
+        }
+    } else if (primary_circuit_open) {
+        fprintf(stderr, "[1;33m[ModelGateway CircuitBreaker]: Primary endpoint breaker OPEN (cooling down for %ld more s). Routing to fallback ladder.[0m\n",
+                (long)(self->primary_breaker_tripped_until - now));
+    }
+
+    // Tier 2: Fallback (e.g. OpenRouter)
+    if (has_fb) {
+        bool fb_circuit_open = (self->fallback_breaker_tripped_until > now);
+        if (!fb_circuit_open || !try_primary) {
+            if (primary_attempted) {
+                char *primary_err = res.content ? xstrdup(res.content) : xstrdup("Unknown error");
+                fprintf(stderr, "[1;33m[ModelGateway Failover]: Tier 1 Primary '%s' (%s) failed [%s]. Switching to Tier 2 Fallback '%s' (%s)...[0m\n",
+                        self->endpoint ? self->endpoint : "unknown",
+                        self->model ? self->model : "",
+                        primary_err,
+                        self->fallback_endpoint,
+                        self->fallback_model ? self->fallback_model : "");
+                free(primary_err);
+                model_gateway_response_free(&res);
+            }
+
+            res = openai_chat_complete_inner(self, messages_json, tools_schema,
+                                             self->fallback_endpoint, self->fallback_api_key, self->fallback_model,
+                                             has_loc);
+            if (!gateway_response_is_hard_failure(&res)) {
+                self->fallback_consecutive_failures = 0;
+                self->fallback_breaker_tripped_until = 0;
+                return res;
+            }
+
+            self->fallback_consecutive_failures++;
+            if (self->fallback_consecutive_failures >= 2) {
+                self->fallback_breaker_tripped_until = now + 60;
+            }
+        }
+    }
+
+    // Tier 3: Local / Emergency Airgap
+    if (has_loc) {
+        char *prev_err = res.content ? xstrdup(res.content) : xstrdup("Unknown error");
+        fprintf(stderr, "[1;35m[ModelGateway Failover]: Higher tiers failed [%s]. Switching to Tier 3 Local/Airgap '%s' (%s)...[0m\n",
+                prev_err,
+                self->local_endpoint,
+                self->local_model ? self->local_model : "");
+        free(prev_err);
         model_gateway_response_free(&res);
-        res = openai_chat_complete_inner(self, messages_json, tools_schema, true);
+
+        res = openai_chat_complete_inner(self, messages_json, tools_schema,
+                                         self->local_endpoint, self->local_api_key, self->local_model,
+                                         false);
+        if (!gateway_response_is_hard_failure(&res)) {
+            return res;
+        }
     }
 
     return res;
@@ -1023,6 +1122,16 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
         model_gateway_set_fallback(gw, fb_ep, fb_key, fb_mod);
     }
 
+    // Auto-detect local/airgap provider if configured (Tier 3)
+    const char *loc_ep = getenv("LOCAL_MODEL_ENDPOINT");
+    if (!loc_ep || strlen(loc_ep) == 0) loc_ep = getenv("MODEL_LOCAL_ENDPOINT");
+    const char *loc_key = getenv("LOCAL_MODEL_API_KEY");
+    const char *loc_mod = getenv("LOCAL_MODEL_NAME");
+    if (!loc_mod || strlen(loc_mod) == 0) loc_mod = "qwen2.5-coder:7b";
+    if (loc_ep && strlen(loc_ep) > 0) {
+        model_gateway_set_local(gw, loc_ep, loc_key ? loc_key : "none", loc_mod);
+    }
+
     return gw;
 }
 
@@ -1034,6 +1143,16 @@ void model_gateway_set_fallback(ModelGateway *gw, const char *endpoint, const ch
     if (endpoint && strlen(endpoint) > 0) gw->fallback_endpoint = xstrdup(endpoint);
     if (api_key && strlen(api_key) > 0) gw->fallback_api_key = xstrdup(api_key);
     if (model && strlen(model) > 0) gw->fallback_model = xstrdup(model);
+}
+
+void model_gateway_set_local(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model) {
+    if (!gw) return;
+    if (gw->local_endpoint) { free(gw->local_endpoint); gw->local_endpoint = NULL; }
+    if (gw->local_api_key) { free(gw->local_api_key); gw->local_api_key = NULL; }
+    if (gw->local_model) { free(gw->local_model); gw->local_model = NULL; }
+    if (endpoint && strlen(endpoint) > 0) gw->local_endpoint = xstrdup(endpoint);
+    if (api_key && strlen(api_key) > 0) gw->local_api_key = xstrdup(api_key);
+    if (model && strlen(model) > 0) gw->local_model = xstrdup(model);
 }
 
 void model_gateway_free(ModelGateway *gw) {
@@ -1049,6 +1168,9 @@ void model_gateway_free(ModelGateway *gw) {
     if (gw->fallback_endpoint) free(gw->fallback_endpoint);
     if (gw->fallback_api_key) free(gw->fallback_api_key);
     if (gw->fallback_model) free(gw->fallback_model);
+    if (gw->local_endpoint) free(gw->local_endpoint);
+    if (gw->local_api_key) free(gw->local_api_key);
+    if (gw->local_model) free(gw->local_model);
     free(gw);
 }
 
@@ -1297,8 +1419,16 @@ ModelGatewayProbeResult model_gateway_preflight_probe(const ModelGateway *gw) {
         res.fallback = probe_single_endpoint(gw->fallback_endpoint, gw->fallback_api_key, gw->fallback_model, gw->user_agent);
     }
 
+    if (gw->local_endpoint && strlen(gw->local_endpoint) > 0) {
+        res.has_local = true;
+        res.local = probe_single_endpoint(gw->local_endpoint, gw->local_api_key, gw->local_model, gw->user_agent);
+    }
+
     res.all_ok = (res.primary.reachable && res.primary.auth_valid);
     if (!res.all_ok && res.has_fallback && res.fallback.reachable && res.fallback.auth_valid) {
+        res.all_ok = true;
+    }
+    if (!res.all_ok && res.has_local && res.local.reachable && res.local.auth_valid) {
         res.all_ok = true;
     }
 
@@ -1316,6 +1446,13 @@ void model_gateway_probe_result_free(ModelGatewayProbeResult *res) {
     if (res->fallback.model) free(res->fallback.model);
     if (res->fallback.provider) free(res->fallback.provider);
     if (res->fallback.details) free(res->fallback.details);
+
+    if (res->has_local) {
+        if (res->local.endpoint) free(res->local.endpoint);
+        if (res->local.model) free(res->local.model);
+        if (res->local.provider) free(res->local.provider);
+        if (res->local.details) free(res->local.details);
+    }
 
     memset(res, 0, sizeof(ModelGatewayProbeResult));
 }

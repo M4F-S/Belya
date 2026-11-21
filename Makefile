@@ -53,7 +53,7 @@ $(BUILD_DIR):
 $(TARGET): $(OBJS) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LIBS)
 
-%.o: %.c
+%.o: %.c $(wildcard *.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 test: guard-non-root $(TEST_TARGET) $(MCP_HTTP_TEST_TARGET)

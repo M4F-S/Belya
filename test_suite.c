@@ -3489,6 +3489,30 @@ static void test_gateway_preflight_probe(void) {
         model_gateway_free(gw2);
     }
 
+        // 3. Test 3-tier fallback ladder and circuit breaker invariants
+    ModelGateway *gw_ladder = model_gateway_init("http://127.0.0.1:9999/v1/chat/completions", "none", "primary-model");
+    assert(gw_ladder != NULL);
+    model_gateway_set_fallback(gw_ladder, "https://openrouter.ai/api/v1/chat/completions", "key", "fallback-model");
+    model_gateway_set_local(gw_ladder, "http://127.0.0.1:11434/v1/chat/completions", "none", "qwen2.5-coder:7b");
+    assert(gw_ladder->local_endpoint != NULL);
+    assert(strcmp(gw_ladder->local_endpoint, "http://127.0.0.1:11434/v1/chat/completions") == 0);
+    assert(gw_ladder->primary_breaker_tripped_until == 0);
+    assert(gw_ladder->primary_consecutive_failures == 0);
+
+    // Verify 3-tier probe
+    ModelGatewayProbeResult probe3 = model_gateway_preflight_probe(gw_ladder);
+    assert(probe3.has_fallback == true);
+    assert(probe3.has_local == true);
+    assert(probe3.local.endpoint != NULL);
+    model_gateway_probe_result_free(&probe3);
+
+    // Simulate circuit breaker trip
+    gw_ladder->primary_consecutive_failures = 2;
+    gw_ladder->primary_breaker_tripped_until = time(NULL) + 60;
+    assert(gw_ladder->primary_breaker_tripped_until > time(NULL));
+
+    model_gateway_free(gw_ladder);
+
     printf("  -> Gateway Pre-Flight Health & Auth Probe PASSED\n");
 }
 

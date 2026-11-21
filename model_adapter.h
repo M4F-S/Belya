@@ -2,6 +2,7 @@
 #define MODEL_ADAPTER_H
 
 #include "common.h"
+#include <time.h>
 #include "minijson.h"
 
 typedef struct {
@@ -39,6 +40,13 @@ typedef struct ModelGateway {
     char *fallback_endpoint;
     char *fallback_api_key;
     char *fallback_model;
+    char *local_endpoint;
+    char *local_api_key;
+    char *local_model;
+    time_t primary_breaker_tripped_until;
+    int primary_consecutive_failures;
+    time_t fallback_breaker_tripped_until;
+    int fallback_consecutive_failures;
     int timeout_sec;
     int max_retries;
     bool streaming;
@@ -56,6 +64,7 @@ ModelProtocolMode model_gateway_detect_protocol(const char *endpoint, const char
 void model_gateway_set_protocol(ModelGateway *gw, ModelProtocolMode protocol);
 void model_gateway_set_thinking_budget(ModelGateway *gw, int budget_tokens);
 void model_gateway_set_fallback(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model);
+void model_gateway_set_local(ModelGateway *gw, const char *endpoint, const char *api_key, const char *model);
 void model_gateway_free(ModelGateway *gw);
 void model_gateway_response_free(ModelGatewayResponse *resp);
 
@@ -77,7 +86,9 @@ typedef struct {
 typedef struct {
     GatewayEndpointProbe primary;
     GatewayEndpointProbe fallback;
+    GatewayEndpointProbe local;
     bool has_fallback;
+    bool has_local;
     bool all_ok;
 } ModelGatewayProbeResult;
 
