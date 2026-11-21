@@ -4466,10 +4466,10 @@ static char *tool_fetch_url(BelyaAgent *agent, const JsonValue *args) {
         return err.data;
     }
 
-    if (body.len > 100000) {
-        body.data[100000] = '\0';
-        body.len = 100000;
-        dyn_str_append(&body, "\n[Content truncated by Belya Harness (100KB buffer limit)]");
+    if (body.len > 500000) {
+        body.data[500000] = '\0';
+        body.len = 500000;
+        dyn_str_append(&body, "\n[Content truncated by Belya Harness (500KB buffer limit)]");
     }
 
     if (body.len == 0) {
@@ -6782,7 +6782,7 @@ char *belya_harness_task_kill(BelyaHarness *h, int id) {
 
 char *belya_html_to_markdown(const char *html, size_t max_bytes) {
     if (!html) return xstrdup("");
-    if (max_bytes == 0) max_bytes = 51200;
+    if (max_bytes == 0) max_bytes = 256000;
 
     DynString md = dyn_str_new();
     const char *p = html;
@@ -6978,12 +6978,12 @@ char *belya_harness_web_fetch(BelyaHarness *h, const char *url, const char *extr
     }
 
     if (extract_mode && strcmp(extract_mode, "text") == 0) {
-        char *converted = belya_html_to_markdown(raw, 51200);
+        char *converted = belya_html_to_markdown(raw, 256000);
         free(raw);
         return converted;
     }
 
-    char *md = belya_html_to_markdown(raw, 51200);
+    char *md = belya_html_to_markdown(raw, 256000);
     free(raw);
     return md;
 }

@@ -1759,6 +1759,9 @@ size_t belya_agent_load_manifests(BelyaAgent *agent, const char *agents_dir) {
         free(buf);
     }
     closedir(d);
+    if (agent->has_fts5) {
+        sqlite3_exec(agent->db, "INSERT INTO agent_manifests_fts(agent_manifests_fts) VALUES('rebuild');", NULL, NULL, NULL);
+    }
     return loaded;
 }
 
