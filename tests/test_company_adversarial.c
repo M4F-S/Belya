@@ -9,6 +9,10 @@
 #include <assert.h>
 #include <unistd.h>
 
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+
 static void test_null_pointer_resilience(void) {
     printf("[Adversarial Test 1]: Exhaustive NULL Pointer Resilience...\n");
 
