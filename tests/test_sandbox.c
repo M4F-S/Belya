@@ -180,6 +180,54 @@ int main(void) {
 
     fails += test_network(ws);
 
+    /* Plan mode used to ignore every landlock_* return and omit TRUNCATE from
+       handled_access_fs: create/rename/unlink were refused but truncate(2) on
+       any readable file succeeded. This is that regression test. */
+    {
+        char victim[512];
+        snprintf(victim, sizeof victim, "./plan_mode_victim.txt");
+        int vf = open(victim, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (vf < 0) {
+            printf("  [SKIP] plan-mode test: cannot create victim in cwd\n");
+        } else {
+            if (write(vf, "0123456789", 10) != 10) { /* size matters */ }
+            close(vf);
+
+            pid_t p2 = fork();
+            if (p2 == 0) {
+                if (sandbox_apply_plan_mode() < 0) _exit(24);
+
+                int fd = open("./plan_mode_outside.txt", O_CREAT | O_WRONLY, 0600);
+                if (fd >= 0) { close(fd); _exit(21); }
+
+                errno = 0;
+                if (truncate(victim, 0) == 0) _exit(22);
+
+                struct stat sb;
+                if (stat(victim, &sb) == 0 && sb.st_size != 10) _exit(22);
+
+                int t = open("/tmp/belya_plan_mode_ok.txt", O_CREAT | O_WRONLY, 0600);
+                if (t < 0) _exit(23);
+                close(t);
+                _exit(0);
+            }
+
+            int st2 = 0;
+            waitpid(p2, &st2, 0);
+            int c2 = WIFEXITED(st2) ? WEXITSTATUS(st2) : -1;
+            if (c2 == 0) {
+                printf("  [ok] plan mode: create and truncate refused, /tmp writable\n");
+            } else {
+                printf("  [FAIL] plan mode exited %d (21=create allowed 22=truncate allowed "
+                       "23=/tmp blocked 24=boundary refused)\n", c2);
+                fails++;
+            }
+            unlink("./plan_mode_outside.txt");
+            unlink("/tmp/belya_plan_mode_ok.txt");
+            unlink(victim);
+        }
+    }
+
     char inside[256];
     snprintf(inside, sizeof inside, "%s/probe.txt", ws);
     unlink(inside);

@@ -56,6 +56,14 @@ static void safe_write(int fd, const char *data, size_t len) {
     }
 }
 
+static MCPConfineFn g_confine_fn = NULL;
+static const char *g_confine_ws = NULL;
+
+void mcp_client_set_confine_hook(MCPConfineFn fn, const char *workspace) {
+    g_confine_fn = fn;
+    g_confine_ws = workspace;
+}
+
 MCPClient *mcp_client_start(const char *command_line) {
     if (!command_line || strlen(command_line) == 0) return NULL;
 
@@ -84,6 +92,20 @@ MCPClient *mcp_client_start(const char *command_line) {
         if (!getenv("XDG_CACHE_HOME")) setenv("XDG_CACHE_HOME", "/tmp/.cache", 1);
         if (!getenv("npm_config_cache")) setenv("npm_config_cache", "/tmp/.npm", 1);
         if (!getenv("UV_CACHE_DIR")) setenv("UV_CACHE_DIR", "/tmp/.uv_cache", 1);
+
+        /* An MCP server is an arbitrary command line. Confine it to the
+           workspace before exec so a model-authored one cannot outlive the
+           boundary the rest of the tools run under. The hook may _exit(126)
+           when the kernel refuses, which is the intended fail-closed path.
+           Cache dirs are forced inside the boundary first: npx and uv write to
+           $HOME by default, which Landlock refuses and which turns every npm
+           server into an EACCES at startup. */
+        if (g_confine_fn && g_confine_ws && *g_confine_ws) {
+            setenv("XDG_CACHE_HOME", "/tmp/.cache", 1);
+            setenv("npm_config_cache", "/tmp/.npm", 1);
+            setenv("UV_CACHE_DIR", "/tmp/.uv_cache", 1);
+            g_confine_fn(g_confine_ws);
+        }
 
         execl("/bin/sh", "sh", "-c", command_line, (char *)NULL);
         _exit(127);
