@@ -37,6 +37,12 @@ typedef struct MCPClient {
 MCPClient *mcp_client_start(const char *command_line);
 MCPClient *mcp_client_start_http(const char *url);
 
+/* Optional kernel-boundary hook. When registered, every stdio MCP server child
+ * confines itself before exec(). Kept as a callback so mcp_client stays
+ * linkable without sandbox.c (mcp_http_selftest links this file alone). */
+typedef void (*MCPConfineFn)(const char *workspace);
+void mcp_client_set_confine_hook(MCPConfineFn fn, const char *workspace);
+
 JsonValue *mcp_client_request(MCPClient *client, const char *method, JsonValue *params);
 JsonValue *mcp_client_list_tools(MCPClient *client);
 char *mcp_client_call_tool(MCPClient *client, const char *tool_name, const JsonValue *arguments);

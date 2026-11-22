@@ -113,6 +113,75 @@ void sandbox_confine_child(const char *workspace) {
     _exit(126);
 }
 
+/* Plan mode. Read everywhere, write only /tmp and /dev/null.
+ *
+ * History: this used to live in belya_harness.c with every landlock_* return
+ * value ignored and LANDLOCK_ACCESS_FS_TRUNCATE missing from the ruleset, so
+ * `truncate(2)` on any readable file succeeded while the code believed the
+ * process was sandboxed. Measured: create/rename/unlink refused, truncate
+ * allowed. Each step is checked now and the caller refuses to run on -1. */
+int sandbox_apply_plan_mode(void) {
+    int abi = ll_abi();
+    struct landlock_ruleset_attr ra;
+    memset(&ra, 0, sizeof ra);
+    ra.handled_access_fs =
+        LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE |
+        LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
+        LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE |
+        LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
+        LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK |
+        LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+        LANDLOCK_ACCESS_FS_MAKE_SYM;
+#if defined(LANDLOCK_ACCESS_FS_TRUNCATE)
+    /* ABI 3 added TRUNCATE. Asking for it on an older kernel makes
+     * landlock_create_ruleset() fail with EINVAL, so gate it on the ABI. */
+    if (abi >= 3) ra.handled_access_fs |= LANDLOCK_ACCESS_FS_TRUNCATE;
+#else
+    if (abi >= 3) return -1; /* kernel enforces TRUNCATE, headers cannot express it */
+#endif
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
+
+    int rfd = ll_create_ruleset(&ra, sizeof ra, 0);
+    if (rfd < 0) return -1;
+
+    int root_fd = open("/", O_PATH | O_CLOEXEC);
+    if (root_fd < 0) { close(rfd); return -1; }
+    struct landlock_path_beneath_attr root_ro = {
+        .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE |
+                          LANDLOCK_ACCESS_FS_READ_DIR |
+                          LANDLOCK_ACCESS_FS_EXECUTE,
+        .parent_fd = root_fd,
+    };
+    int rc = ll_add_rule(rfd, LANDLOCK_RULE_PATH_BENEATH, &root_ro, 0);
+    close(root_fd);
+    if (rc != 0) { close(rfd); return -1; }
+
+    int tmp_fd = open("/tmp", O_PATH | O_CLOEXEC);
+    if (tmp_fd < 0) { close(rfd); return -1; }
+    struct landlock_path_beneath_attr tmp_rw = {
+        .allowed_access = ra.handled_access_fs,
+        .parent_fd = tmp_fd,
+    };
+    rc = ll_add_rule(rfd, LANDLOCK_RULE_PATH_BENEATH, &tmp_rw, 0);
+    close(tmp_fd);
+    if (rc != 0) { close(rfd); return -1; }
+
+    int null_fd = open("/dev/null", O_PATH | O_CLOEXEC);
+    if (null_fd >= 0) {
+        struct landlock_path_beneath_attr null_rw = {
+            .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE |
+                              LANDLOCK_ACCESS_FS_WRITE_FILE,
+            .parent_fd = null_fd,
+        };
+        (void)ll_add_rule(rfd, LANDLOCK_RULE_PATH_BENEATH, &null_rw, 0);
+        close(null_fd);
+    }
+
+    if (ll_restrict(rfd, 0) != 0) { close(rfd); return -1; }
+    close(rfd);
+    return 0;
+}
+
 static int allow_path(int ruleset_fd, const char *path, uint64_t rights) {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) return -1;
@@ -196,6 +265,11 @@ int sandbox_supported(void) {
 int sandbox_apply(const char *workspace) {
     (void)workspace;
     return 1; /* 1 = unsupported (caller continues unconfined) */
+}
+
+/* No Linux kernel boundary here; the caller keeps its own platform sandbox. */
+int sandbox_apply_plan_mode(void) {
+    return 1;
 }
 
 int sandbox_allow_unconfined(int apply_rc, int abi) {

@@ -15,6 +15,13 @@
  */
 int sandbox_apply(const char *workspace);
 
+/* Plan mode: read everything, write nothing outside /tmp and /dev/null.
+ * Return: 0 = boundary established, 1 = platform has no such boundary,
+ * -1 = the kernel refused a step (caller must NOT run the command unconfined).
+ * Every syscall is checked: a boundary that silently fails to apply is worse
+ * than none, because callers read 0 as "restricted". */
+int sandbox_apply_plan_mode(void);
+
 /* Child-process wrapper: call this instead of sandbox_apply() in a forked child.
  *
  * sandbox_apply() reports failure, but every caller ignored the return value, so

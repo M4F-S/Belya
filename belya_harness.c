@@ -62,53 +62,15 @@ extern void sandbox_free_error(char *errorbuf);
 #endif
 
 static void apply_plan_mode_kernel_sandbox(void) {
-#ifdef __linux__
-#if defined(LANDLOCK_ACCESS_FS_EXECUTE) && defined(PR_SET_NO_NEW_PRIVS)
-    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-    struct landlock_ruleset_attr ruleset_attr = {
-        .handled_access_fs =
-            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE |
-            LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR |
-            LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE |
-            LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
-            LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK |
-            LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
-            LANDLOCK_ACCESS_FS_MAKE_SYM
-    };
-    int ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
-    if (ruleset_fd >= 0) {
-        int root_fd = open("/", O_PATH | O_CLOEXEC);
-        if (root_fd >= 0) {
-            struct landlock_path_beneath_attr root_ro = {
-                .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_EXECUTE,
-                .parent_fd = root_fd,
-            };
-            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &root_ro, 0);
-            close(root_fd);
-        }
-        int tmp_fd = open("/tmp", O_PATH | O_CLOEXEC);
-        if (tmp_fd >= 0) {
-            struct landlock_path_beneath_attr tmp_rw = {
-                .allowed_access = ruleset_attr.handled_access_fs,
-                .parent_fd = tmp_fd,
-            };
-            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &tmp_rw, 0);
-            close(tmp_fd);
-        }
-        int null_fd = open("/dev/null", O_PATH | O_CLOEXEC);
-        if (null_fd >= 0) {
-            struct landlock_path_beneath_attr null_rw = {
-                .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
-                .parent_fd = null_fd,
-            };
-            landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &null_rw, 0);
-            close(null_fd);
-        }
-        landlock_restrict_self(ruleset_fd, 0);
-        close(ruleset_fd);
+#ifndef __APPLE__
+    /* Kernel policy lives in sandbox.c so the tests can reach it.
+       -1 = the kernel refused a step: never continue unconfined. */
+    if (sandbox_apply_plan_mode() < 0) {
+        fprintf(stderr, "[sandbox] plan mode: kernel refused the boundary; refusing to run\n");
+        _exit(126);
     }
 #endif
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
     char *errbuf = NULL;
     const char *profile =
         "(version 1)(allow default)(deny file-write*)"
@@ -3954,7 +3916,10 @@ bool belya_harness_synthesize_mcp_server(BelyaHarness *h, const char *server_nam
     char response[8192];
     char *argv[] = {server_path, NULL};
     int rc = 0;
-    if (run_argv_capture(argv, request, response, sizeof(response), 10, &rc) != 0 || rc != 0) {
+    /* The server is model-authored shell, so it gets the same kernel boundary
+       as tool_bash before it ever runs. Without this the entry body executes
+       with the daemon's full write access. */
+    if (spawn_capture(argv, request, NULL, true, response, sizeof(response), 10, &rc) != 0 || rc != 0) {
         unlink(server_path);
         return false;
     }
@@ -5931,6 +5896,13 @@ bool belya_harness_connect_mcp(BelyaHarness *h, const char *server_cmd) {
     if (!h || !server_cmd || h->mcp_server_count >= 8) return false;
 
     printf("\033[1;36m[MCP] Connecting to server:\033[0m %s\n", server_cmd);
+
+    /* Every stdio MCP server runs inside the same kernel boundary as the other
+       tools. Model-synthesized servers are arbitrary shell, and before this the
+       entry body ran with the daemon's full write access. */
+    mcp_client_set_confine_hook(sandbox_confine_child,
+                                g_workspace_root_set ? g_workspace_root : h->cwd);
+
     MCPClient *client = NULL;
     if (strncmp(server_cmd, "http://", 7) == 0 || strncmp(server_cmd, "https://", 8) == 0) {
         client = mcp_client_start_http(server_cmd);
