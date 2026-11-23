@@ -16,11 +16,36 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 
 #define SECRETS_MAGIC 0x53454352U /* "SECR" */
+
+/* Live-allocation registry.
+   secrets_free() used to recover its header by reading sizeof(SecureHeader) bytes
+   BEFORE the caller's pointer. Handing it an ordinary malloc'd pointer therefore
+   read outside the allocation, and if the preceding bytes happened to carry the
+   magic it wiped and freed using a size it had just read from foreign memory.
+   The registry answers "is this one of ours?" from memory we own, so nothing is
+   ever read outside a live allocation. */
+#define SECRETS_MAX_LIVE 256
+
+typedef struct {
+    void *base; /* start of the mmap/calloc block; NULL when the slot is free */
+    size_t alloc_size;
+    int is_mmap;
+} SecretsLiveSlot;
+
+static SecretsLiveSlot g_live[SECRETS_MAX_LIVE];
+static pthread_mutex_t g_live_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int g_mlock_failures;
+static int g_mlock_warned;
+static int g_test_alloc_fail;
 
 typedef struct {
     uint32_t magic;
@@ -34,8 +59,98 @@ static void secure_bzero(void *ptr, size_t size) {
     while (size--) *p++ = 0;
 }
 
+void secrets_test_fail_next_alloc(int n) {
+    g_test_alloc_fail = (n > 0) ? n : 0;
+}
+
+int secrets_mlock_failures(void) {
+    return g_mlock_failures;
+}
+
+static void *keystore_malloc(size_t n) {
+    if (g_test_alloc_fail > 0) {
+        g_test_alloc_fail--;
+        return NULL;
+    }
+    return malloc(n);
+}
+
+static void *keystore_realloc(void *p, size_t n) {
+    if (g_test_alloc_fail > 0) {
+        g_test_alloc_fail--;
+        return NULL;
+    }
+    return realloc(p, n);
+}
+
+static bool live_slot_add(void *base, size_t alloc_size, int is_mmap) {
+    bool ok = false;
+    pthread_mutex_lock(&g_live_lock);
+    for (size_t i = 0; i < SECRETS_MAX_LIVE; i++) {
+        if (g_live[i].base == NULL) {
+            g_live[i].base = base;
+            g_live[i].alloc_size = alloc_size;
+            g_live[i].is_mmap = is_mmap;
+            ok = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_live_lock);
+    return ok;
+}
+
+static bool live_slot_take(void *base, size_t *out_size, int *out_is_mmap) {
+    bool found = false;
+    pthread_mutex_lock(&g_live_lock);
+    for (size_t i = 0; i < SECRETS_MAX_LIVE; i++) {
+        if (g_live[i].base == base) {
+            *out_size = g_live[i].alloc_size;
+            *out_is_mmap = g_live[i].is_mmap;
+            g_live[i].base = NULL;
+            g_live[i].alloc_size = 0;
+            g_live[i].is_mmap = 0;
+            found = true;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_live_lock);
+    return found;
+}
+
+/* Raise the mlock ceiling once. The default soft limit (64 KiB - 8 MiB) is small
+   enough that locking a page-sized secret fails, and the old code discarded that
+   failure while still claiming the buffer was pinned. */
+static void raise_memlock_limit(void) {
+    static int done = 0;
+    if (done) return;
+    done = 1;
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return;
+    if (rl.rlim_cur == rl.rlim_max) return;
+    struct rlimit want;
+    want.rlim_cur = rl.rlim_max;
+    want.rlim_max = rl.rlim_max;
+    (void)setrlimit(RLIMIT_MEMLOCK, &want);
+}
+
+static void lock_pages(void *base, size_t alloc_size) {
+    raise_memlock_limit();
+    if (mlock(base, alloc_size) == 0) return;
+    int err = errno;
+    g_mlock_failures++;
+    if (!g_mlock_warned) {
+        g_mlock_warned = 1;
+        fprintf(stderr, "[keystore] mlock failed (%s): secret pages are swappable — raise LimitMEMLOCK\n",
+                strerror(err));
+    }
+}
+
 void *secrets_alloc_secure(size_t size) {
     if (size == 0) return NULL;
+    if (g_test_alloc_fail > 0) {
+        g_test_alloc_fail--;
+        return NULL;
+    }
     long page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) page_size = 4096;
 
@@ -46,6 +161,10 @@ void *secrets_alloc_secure(size_t size) {
     if (raw == MAP_FAILED) {
         SecureHeader *hdr = (SecureHeader *)calloc(1, needed);
         if (!hdr) return NULL;
+        if (!live_slot_add(hdr, needed, 0)) {
+            free(hdr);
+            return NULL;
+        }
         hdr->magic = SECRETS_MAGIC;
         hdr->is_mmap = 0;
         hdr->alloc_size = needed;
@@ -53,7 +172,12 @@ void *secrets_alloc_secure(size_t size) {
         return (void *)((char *)hdr + sizeof(SecureHeader));
     }
 
-    (void)mlock(raw, alloc_size);
+    if (!live_slot_add(raw, alloc_size, 1)) {
+        (void)munmap(raw, alloc_size);
+        return NULL;
+    }
+
+    lock_pages(raw, alloc_size);
 
 #ifdef MADV_DONTDUMP
     (void)madvise(raw, alloc_size, MADV_DONTDUMP);
@@ -70,19 +194,20 @@ void *secrets_alloc_secure(size_t size) {
 
 void secrets_free(void *ptr) {
     if (!ptr) return;
-    SecureHeader *hdr = (SecureHeader *)((char *)ptr - sizeof(SecureHeader));
-    if (hdr->magic == SECRETS_MAGIC) {
-        size_t alloc_sz = hdr->alloc_size;
-        uint32_t is_mmap = hdr->is_mmap;
-        secure_bzero(hdr, alloc_sz);
-        if (is_mmap) {
-            (void)munlock(hdr, alloc_sz);
-            (void)munmap(hdr, alloc_sz);
-        } else {
-            free(hdr);
-        }
-    } else {
+    void *base = (void *)((char *)ptr - sizeof(SecureHeader));
+    size_t alloc_size = 0;
+    int is_mmap = 0;
+    if (!live_slot_take(base, &alloc_size, &is_mmap)) {
+        /* Not a secure allocation: an ordinary pointer. free() reads no header. */
         free(ptr);
+        return;
+    }
+    secure_bzero(base, alloc_size);
+    if (is_mmap) {
+        (void)munlock(base, alloc_size);
+        (void)munmap(base, alloc_size);
+    } else {
+        free(base);
     }
 }
 
@@ -206,9 +331,14 @@ void secrets_scrub_inplace(char *buf) {
 char *secrets_scrub_string(const char *input) {
     if (!input) return NULL;
     size_t in_len = strlen(input);
+    /* Refuse inputs whose output size cannot be represented, rather than wrap the
+       capacity and hand back a buffer that looks scrubbed but is truncated. */
+    if (in_len > (SIZE_MAX - 128) / 2) return NULL;
     size_t cap = in_len * 2 + 128;
-    char *out = (char *)malloc(cap);
-    if (!out) return strdup(input);
+    char *out = (char *)keystore_malloc(cap);
+    /* Fail CLOSED. Returning the input here (the old behaviour) handed an
+       unredacted secret back to every caller that then printed or stored it. */
+    if (!out) return NULL;
 
     size_t o = 0;
     size_t i = 0;
@@ -219,8 +349,8 @@ char *secrets_scrub_string(const char *input) {
             size_t mask_len = sizeof(mask) - 1;
             if (o + mask_len + 1 >= cap) {
                 cap = (cap + mask_len) * 2;
-                char *new_out = (char *)realloc(out, cap);
-                if (!new_out) { free(out); return strdup(input); }
+                char *new_out = (char *)keystore_realloc(out, cap);
+                if (!new_out) { free(out); return NULL; }
                 out = new_out;
             }
             memcpy(out + o, mask, mask_len);
@@ -229,8 +359,8 @@ char *secrets_scrub_string(const char *input) {
         } else {
             if (o + 1 >= cap) {
                 cap *= 2;
-                char *new_out = (char *)realloc(out, cap);
-                if (!new_out) { free(out); return strdup(input); }
+                char *new_out = (char *)keystore_realloc(out, cap);
+                if (!new_out) { free(out); return NULL; }
                 out = new_out;
             }
             out[o++] = input[i++];
