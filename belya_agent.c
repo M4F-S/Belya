@@ -479,7 +479,9 @@ void belya_agent_log_timeline(BelyaAgent *agent, const char *event_type, const c
     const char *sql = "INSERT INTO agent_timeline (event_type, summary) VALUES (?, ?);";
     if (sqlite3_prepare_v2(agent->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, event_type, -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 2, clean_sum ? clean_sum : summary, -1, SQLITE_STATIC);
+        /* NULL means the scrubber could not allocate: store a marker, never the raw text. */
+        sqlite3_bind_text(stmt, 2, clean_sum ? clean_sum : "[timeline text withheld: scrub allocation failed]",
+                          -1, SQLITE_STATIC);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
@@ -521,8 +523,16 @@ void belya_agent_persist_memory_scoped(BelyaAgent *agent, const char *topic, con
 
     char *scrubbed_content = secrets_scrub_string(content);
     char *scrubbed_topic = secrets_scrub_string(topic);
-    const char *save_content = scrubbed_content ? scrubbed_content : content;
-    const char *save_topic = scrubbed_topic ? scrubbed_topic : topic;
+    /* A NULL scrub means the redactor could not allocate. Storing the original
+       would write a live credential into the memory DB (and its FTS mirror). */
+    if (!scrubbed_content || !scrubbed_topic) {
+        free(scrubbed_content);
+        free(scrubbed_topic);
+        fprintf(stderr, "[memory] scrub allocation failed: refusing to store unredacted memory\n");
+        return;
+    }
+    const char *save_content = scrubbed_content;
+    const char *save_topic = scrubbed_topic;
 
     // Delete existing duplicate with identical topic, wing, and room to prevent pollution
     sqlite3_stmt *del_stmt;
