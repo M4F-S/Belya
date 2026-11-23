@@ -110,9 +110,18 @@ MCPClient *mcp_client_start(const char *command_line) {
                for MCP children (never for the agent's own shell). */
             const char *home = getenv("HOME");
             if (home && *home) {
-                char extra[1024];
-                snprintf(extra, sizeof extra, "%s/.local/share:%s/.cache:%s/.npm:%s/.config",
-                         home, home, home, home);
+                char extra[2048];
+                /* Known tool-state dirs. BELYA_MCP_EXTRA_WRITE appends more
+                   (colon separated) so a new server can be accommodated without
+                   rebuilding. */
+                snprintf(extra, sizeof extra,
+                         "%s/.local/share:%s/.cache:%s/.npm:%s/.config:%s/.serena",
+                         home, home, home, home, home);
+                const char *more = getenv("BELYA_MCP_EXTRA_WRITE");
+                if (more && *more) {
+                    size_t used = strlen(extra);
+                    snprintf(extra + used, sizeof extra - used, ":%s", more);
+                }
                 setenv("BELYA_SANDBOX_EXTRA_WRITE", extra, 1);
             }
             g_confine_fn(g_confine_ws);
