@@ -104,6 +104,17 @@ MCPClient *mcp_client_start(const char *command_line) {
             setenv("XDG_CACHE_HOME", "/tmp/.cache", 1);
             setenv("npm_config_cache", "/tmp/.npm", 1);
             setenv("UV_CACHE_DIR", "/tmp/.uv_cache", 1);
+            /* Package managers also keep installed tools/state in $HOME, which
+               the jail makes read-only: uv fails with "Could not create
+               temporary file ... Permission denied". Allow exactly those dirs
+               for MCP children (never for the agent's own shell). */
+            const char *home = getenv("HOME");
+            if (home && *home) {
+                char extra[1024];
+                snprintf(extra, sizeof extra, "%s/.local/share:%s/.cache:%s/.npm:%s/.config",
+                         home, home, home, home);
+                setenv("BELYA_SANDBOX_EXTRA_WRITE", extra, 1);
+            }
             g_confine_fn(g_confine_ws);
         }
 
