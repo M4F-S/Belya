@@ -229,6 +229,22 @@ int sandbox_apply(const char *workspace) {
     /* /dev/null and friends are opened for write by ordinary shell redirection. */
     allow_path(ruleset, "/dev", LANDLOCK_ACCESS_FS_WRITE_FILE);
 
+    /* Per-child extra writable paths, colon separated (BELYA_SANDBOX_EXTRA_WRITE).
+     * Only set for confined MCP server children: uv/npm/pip keep package state in
+     * $HOME and refuse to start when that is read-only (EACCES on
+     * ~/.local/share/uv). Everything else keeps the workspace-only rule. */
+    {
+        const char *extra = getenv("BELYA_SANDBOX_EXTRA_WRITE");
+        if (extra && *extra) {
+            char buf[2048];
+            snprintf(buf, sizeof buf, "%s", extra);
+            char *save = NULL;
+            for (char *tok = strtok_r(buf, ":", &save); tok; tok = strtok_r(NULL, ":", &save)) {
+                if (*tok) allow_path(ruleset, tok, SB_WRITE_RIGHTS);
+            }
+        }
+    }
+
 #ifdef LANDLOCK_ACCESS_NET_CONNECT_TCP
     if (handle_net) {
         unsigned short ports[SB_MAX_ALLOW_PORTS];
