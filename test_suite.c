@@ -6,6 +6,7 @@
 #include "belya_company.h"
 #include "build_info.h"
 #include "sandbox.h"
+#include "mcp_http.h"
 #include <assert.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -6197,6 +6198,98 @@ static void test_version_reports_build(void) {
     printf("  -> %s PASSED\n", v);
 }
 
+/* An MCP response is SSE only when a LINE begins with "data:". Matching the
+ * substring inside a normal JSON value ("metadata") dropped the whole reply. */
+static void test_mcp_body_sse_detection(void) {
+    printf("[Test] MCP body: SSE detection must not fire on JSON substrings...\n");
+
+    JsonValue *v = mcp_http_parse_body("{\"result\":{\"metadata\":\"ok\"}}");
+    assert(v != NULL && v->type == JSON_OBJECT);
+    json_free(v);
+
+    v = mcp_http_parse_body("{\"url\":\"https://x.test/?data:1\"}");
+    assert(v != NULL && v->type == JSON_OBJECT);
+    json_free(v);
+
+    /* Real SSE frames must still parse. */
+    v = mcp_http_parse_body("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n");
+    assert(v != NULL && v->type == JSON_OBJECT);
+    json_free(v);
+
+    v = mcp_http_parse_body("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}\n\n");
+    assert(v != NULL && v->type == JSON_OBJECT);
+    json_free(v);
+}
+
+/* A corrupt memory DB used to answer "No matching memory records located." and
+ * keep accepting writes: silent total forgetting. It must say it is unusable. */
+static void test_corrupt_memory_db_reports_error(void) {
+    printf("[Test] Corrupt memory DB must report an error, not 'no memories'...\n");
+
+    const char *path = "test_corrupt_memory.sqlite";
+    unlink(path);
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    for (int i = 0; i < 4096; i++) fputc(0x41, f);
+    fclose(f);
+
+    /* A stack agent keeps this test on the search path only: no heap agent to
+     * tear down, so it exercises the fix without depending on init/teardown. */
+    sqlite3 *db = NULL;
+    assert(sqlite3_open(path, &db) == SQLITE_OK);
+    assert(db != NULL);
+
+    BelyaAgent probe;
+    memset(&probe, 0, sizeof probe);
+    probe.db = db;
+    probe.has_fts5 = false;
+
+    char *res = belya_agent_search_memory(&probe, "anything");
+    assert(res != NULL);
+    assert(strstr(res, "Error: memory database unavailable") != NULL);
+    assert(strstr(res, "No matching memory records") == NULL);
+    free(res);
+
+    sqlite3_close(db);
+    unlink(path);
+}
+
+static void test_bash_e2big_reports_failure(void) {
+    printf("[Test] Oversized shell command must report failure, not silence...\n");
+
+    ModelGateway *gw = model_gateway_init("http://127.0.0.1:1/v1/chat/completions", "k", "m");
+    BelyaAgent *agent = belya_agent_init(gw, ":memory:", "Test");
+    BelyaHarness *h = belya_harness_init(agent);
+    assert(h != NULL);
+
+    BelyaToolCallback cb = NULL;
+    for (size_t t = 0; t < h->tool_count; t++) {
+        if (strcmp(h->tools[t].name, "bash") == 0) cb = h->tools[t].callback;
+    }
+    assert(cb != NULL);
+
+    size_t n = 300u * 1024u;
+    char *cmd = malloc(n + 1);
+    assert(cmd != NULL);
+    memset(cmd, 'a', n);
+    cmd[0] = 'e';
+    cmd[n] = '\0';
+
+    JsonValue *args = json_create_object();
+    json_obj_add(args, "command", json_create_string(cmd));
+    char *res = cb(agent, args);
+    assert(res != NULL);
+    assert(strstr(res, "Error: command failed") != NULL);
+    assert(strstr(res, "Command executed with no output") == NULL);
+
+    free(res);
+    json_free(args);
+    free(cmd);
+    /* belya_harness_free() frees h->agent itself; freeing both double-frees. */
+    belya_harness_free(h);
+    model_gateway_free(gw);
+}
+
 int main(void) {
     printf("\n================ Running BelyaHarness & BelyaAgent Super Strict Test Suite ================\n");
     test_dyn_string();
@@ -6282,7 +6375,10 @@ int main(void) {
     test_git_tools_take_no_shell();
     test_mcp_synthesis_rejects_hostile_names();
     test_version_reports_build();
-    printf("================ All Tests Passed Successfully (83/83 - 100%%) ================\n\n");
+    test_mcp_body_sse_detection();
+    test_corrupt_memory_db_reports_error();
+    test_bash_e2big_reports_failure();
+    printf("================ All Tests Passed Successfully (86/86 - 100%%) ================\n\n");
     return 0;
 }
 

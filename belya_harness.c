@@ -600,6 +600,8 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
 
     const char *to_env = getenv("BASH_TIMEOUT");
     double max_timeout = (to_env && atof(to_env) > 0) ? atof(to_env) : 30.0;
+    int child_status = 0;      /* only meaningful when child_exited */
+    bool child_exited = false;
 
     while (1) {
         char buf[512];
@@ -619,6 +621,9 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         int status;
         pid_t res = waitpid(pid, &status, WNOHANG);
         if (res == pid) {
+            child_exited = true;
+            child_status = WIFEXITED(status) ? WEXITSTATUS(status)
+                                             : (WIFSIGNALED(status) ? -WTERMSIG(status) : -1);
             while ((bytes = read(pipefd[0], buf, sizeof(buf) - 1)) > 0) {
                 buf[bytes] = '\0';
                 dyn_str_append(&out, buf);
@@ -645,7 +650,16 @@ static char *tool_bash(BelyaAgent *agent, const JsonValue *args) {
         dyn_str_appendf(&out, "\n[Process killed: Execution exceeded %.0fs timeout]", max_timeout);
     }
 
-    if (out.len == 0) dyn_str_append(&out, "Command executed with no output.");
+    if (out.len == 0) {
+        /* A command the kernel refused to spawn (E2BIG from a 900KB argument,
+           a missing interpreter) exits non-zero with no output. That used to be
+           reported as "executed with no output", i.e. as success. */
+        if (!timed_out && child_exited && child_status != 0) {
+            dyn_str_appendf(&out, "Error: command failed (exit code %d, no output).", child_status);
+        } else {
+            dyn_str_append(&out, "Command executed with no output.");
+        }
+    }
     return out.data;
 }
 
@@ -6191,6 +6205,11 @@ PermTier belya_harness_permission_gate(BelyaHarness *h, const char *tool_name, c
     /* No approver: unattended callers (Telegram daemon, cron) must not block on
        stdin. Permissive keeps today's behaviour, strict refuses. */
     if (h && h->permission_mode == BELYA_PERM_STRICT) return PERM_TIER_DENY;
+    /* Permissive/unattended: the call proceeds with no human. Record it, so a
+       turbo run is auditable instead of silently indistinguishable from an
+       approved one. Behaviour is unchanged. */
+    fprintf(stderr, "[perm] auto-approved (permissive, no approver): %s\n",
+            tool_name ? tool_name : "(unknown)");
     return PERM_TIER_ALLOW;
 }
 
@@ -8669,7 +8688,12 @@ void belya_harness_execute_turn(BelyaHarness *h, const char *prompt) {
 
                 char *breaker_alert = NULL;
                 bool tripped = belya_harness_record_tool_observation(h, tc->name, tc->arguments_json, observation, &breaker_alert);
-                const char *final_obs = breaker_alert ? breaker_alert : (observation ? observation : "Success");
+                /* A NULL observation is a failed call, not a success. Reporting
+                   "Success" here taught the model that a no-op had worked and
+                   diverged from the Telegram loop, which already says this. */
+                const char *final_obs = breaker_alert ? breaker_alert
+                                     : (observation ? observation
+                                                    : "Error: tool returned no result.");
 
                 BelyaHookResult post_hook = belya_run_lifecycle_hook(h, BELYA_HOOK_POST_TOOL_USE, tc->name, tc->arguments_json, final_obs);
                 belya_hook_result_free(&post_hook);

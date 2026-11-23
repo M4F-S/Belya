@@ -122,10 +122,17 @@ $(TGSEND_TARGET): $(TGSEND_SRCS) | $(BUILD_DIR)
 test-tools: $(TARGET)
 	@BELYA_BIN=./$(TARGET) python3 tests/tool_probe.py ./$(TARGET) bash read_file write_file list_dir search_files git_status
 
+# Ephemeral port + readiness probe: the fixed 18081 with a blind sleep 0.8 made
+# this fail whenever anything else on the host used that port.
 test-loop: $(LOOP_TARGET)
-	@python3 tests/mock_model_server.py --port 18081 --script tests/loop_script.json & \
-	  pid=$$!; sleep 0.8; \
-	  MODEL_MOCK_URL=http://127.0.0.1:18081/v1/chat/completions ./$(LOOP_TARGET); \
+	@port=$$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'); \
+	  python3 tests/mock_model_server.py --port $$port --script tests/loop_script.json & \
+	  pid=$$!; \
+	  for i in $$(seq 1 60); do \
+	    if python3 -c "import socket,sys;s=socket.socket();s.settimeout(0.2);sys.exit(0 if s.connect_ex(('127.0.0.1',$$port))==0 else 1)"; then break; fi; \
+	    sleep 0.1; \
+	  done; \
+	  MODEL_MOCK_URL=http://127.0.0.1:$$port/v1/chat/completions ./$(LOOP_TARGET); \
 	  rc=$$?; kill $$pid 2>/dev/null; wait $$pid 2>/dev/null; exit $$rc
 
 $(LOOP_TARGET): $(LOOP_SRCS) | $(BUILD_DIR)
@@ -240,5 +247,5 @@ prd-lock:
 # One command for the whole gate, runnable on any host with the dev headers
 # (Debian/Ubuntu: libcurl4-openssl-dev libsqlite3-dev) or inside the pinned
 # image via Dockerfile.verify. This is what CI should call.
-verify: $(TARGET) test test-mock test-perms test-tgrender test-tgsend test-sandbox test-retry test-compaction test-tools
+verify: $(TARGET) test test-mock test-perms test-tgrender test-tgsend test-sandbox test-retry test-compaction test-tools test-loop test_asan test-company-adv test-crucible
 	@echo "verify: all targets passed"

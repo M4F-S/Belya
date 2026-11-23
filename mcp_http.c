@@ -118,10 +118,25 @@ char *mcp_http_build_body(const char *method, JsonValue *params, int id) {
     return build_body(MCP_HTTP_PROTOCOL_VERSION, method, params, id, 1, 0);
 }
 
+/* True only when a LINE starts with "data:". SSE frames look like that; a plain
+ * JSON body may contain the same bytes inside a value ({"metadata": ...}),
+ * and matching the substring sent the whole response down the SSE path, where
+ * no line-qualified frame was found and the response was dropped. */
+static bool body_has_sse_frames(const char *body) {
+    const char *p = body;
+    while (p && *p) {
+        if (strncmp(p, "data:", 5) == 0) return true;
+        const char *nl = strchr(p, '\n');
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return false;
+}
+
 JsonValue *mcp_http_parse_body(const char *body) {
     if (!body || !*body) return NULL;
 
-    if (!strstr(body, "data:")) {
+    if (!body_has_sse_frames(body)) {
         return parse_json_slice(body, strlen(body));
     }
 
