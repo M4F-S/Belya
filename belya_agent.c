@@ -706,7 +706,18 @@ char *belya_agent_search_memory(BelyaAgent *agent, const char *query) {
         }
     }
 
-    if (out.len == 0) dyn_str_append(&out, "No matching memory records located.");
+    if (out.len == 0) {
+        /* A corrupt or unreadable DB produced the same words as a genuine
+           empty result: "No matching memory records located." The agent then
+           silently forgot everything and kept accepting writes. Say so. */
+        int ec = sqlite3_extended_errcode(agent->db);
+        if (ec != SQLITE_OK && ec != SQLITE_ROW && ec != SQLITE_DONE) {
+            dyn_str_appendf(&out, "Error: memory database unavailable (%s). No results were read.",
+                            sqlite3_errmsg(agent->db));
+        } else {
+            dyn_str_append(&out, "No matching memory records located.");
+        }
+    }
     return out.data;
 }
 

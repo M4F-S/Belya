@@ -156,6 +156,19 @@ static void *mesh_server_worker(void *arg) {
         int conn = accept(mesh->listen_fd, NULL, NULL);
         if (conn < 0) continue;
 
+#if defined(SO_PEERCRED) && defined(__linux__)
+        /* Permissions are not enough on a shared /tmp: verify the peer's uid. */
+        {
+            struct ucred cr;
+            socklen_t crlen = sizeof cr;
+            if (getsockopt(conn, SOL_SOCKET, SO_PEERCRED, &cr, &crlen) == 0 &&
+                cr.uid != 0 && cr.uid != geteuid()) {
+                close(conn);
+                continue;
+            }
+        }
+#endif
+
         struct timeval tv;
         tv.tv_sec = 2;
         tv.tv_usec = 0;
@@ -267,7 +280,9 @@ bool agent_mesh_start(AgentMesh *mesh) {
         close(srv_fd);
         return false;
     }
-    chmod(mesh->socket_path, 0666);
+    /* Owner-only. This socket carries agent-to-agent instructions; 0666 let
+       any local user inject frames into the mesh. */
+    chmod(mesh->socket_path, 0600);
 
     if (listen(srv_fd, 16) != 0) {
         close(srv_fd);

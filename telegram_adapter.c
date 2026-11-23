@@ -2,6 +2,7 @@
 #include "telegram_adapter.h"
 #include "belya_channel.h"
 #include "telegram_render.h"
+#include "build_info.h"
 #include <curl/curl.h>
 #include <signal.h>
 #include <time.h>
@@ -717,7 +718,7 @@ void telegram_bot_run(TelegramBot *bot, BelyaHarness *harness) {
                sub_boot.swept, sub_boot.collected, sub_boot.resumed, sub_boot.resume_failed);
     }
 
-    printf("\033[1;32m=== Belya Telegram Bot Daemon Online (v7.0.0) ===\033[0m\n");
+    printf("\033[1;32m=== Belya Telegram Bot Daemon Online (%s) ===\033[0m\n", belya_version_string());
     printf("Allowed Chat ID: \033[1;36m%s\033[0m\n", strlen(bot->allowed_chat_id) > 0 ? bot->allowed_chat_id : "[None - Zero Trust Mode]");
     printf("Model:           \033[1;33m%s\033[0m\n", harness->agent->gateway->model);
     printf("Listening for Telegram updates via long polling...\n\n");
