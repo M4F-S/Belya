@@ -26,7 +26,7 @@ JevClient *jev_client_init(const char *api_key) {
 
     client->base_url = xstrdup("https://jevtypesafeai.com/api/v1");
     if (!client->base_url) {
-        free(client->api_key);
+        secrets_free(client->api_key);
         free(client);
         return NULL;
     }

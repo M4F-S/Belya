@@ -1090,7 +1090,7 @@ ModelGateway *model_gateway_init(const char *endpoint, const char *api_key, cons
     gw->user_agent = xstrdup(ua_env && strlen(ua_env) > 0 ? ua_env : "BelyaAgent/4.0 (Autonomous C99 Engine)");
     if (!gw->endpoint || !gw->api_key || !gw->model || !gw->user_agent) {
         if (gw->endpoint) free(gw->endpoint);
-        if (gw->api_key) free(gw->api_key);
+        if (gw->api_key) secrets_free(gw->api_key);
         if (gw->model) free(gw->model);
         if (gw->user_agent) free(gw->user_agent);
         free(gw);
