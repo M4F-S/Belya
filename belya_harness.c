@@ -8132,7 +8132,7 @@ void belya_harness_repl(BelyaHarness *h) {
                 h->agent->gateway->endpoint = xstrdup("http://localhost:11434/v1/chat/completions");
                 free(h->agent->gateway->model);
                 h->agent->gateway->model = xstrdup(clean_m);
-                free(h->agent->gateway->api_key);
+                secrets_free(h->agent->gateway->api_key);
                 h->agent->gateway->api_key = xstrdup("ollama");
                 printf("\033[1;32mSwitched to Local Ollama: Model: %s | Endpoint: %s\033[0m\n\n", h->agent->gateway->model, h->agent->gateway->endpoint);
                 continue;
